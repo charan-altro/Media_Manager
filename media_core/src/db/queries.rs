@@ -272,9 +272,14 @@ pub async fn get_movie_by_id(pool: &SqlitePool, id: i64) -> Result<Option<Movie>
 }
 
 pub async fn get_unique_genres(pool: &SqlitePool) -> Result<Vec<String>> {
-    let rows: Vec<(Option<String>,)> = sqlx::query_as("SELECT DISTINCT genres FROM movies WHERE genres IS NOT NULL")
-        .fetch_all(pool)
-        .await?;
+    // H1 fix: query both movies and tv_shows
+    let rows: Vec<(Option<String>,)> = sqlx::query_as(
+        "SELECT genres FROM movies WHERE genres IS NOT NULL
+         UNION ALL
+         SELECT genres FROM tv_shows WHERE genres IS NOT NULL"
+    )
+    .fetch_all(pool)
+    .await?;
     
     let mut genres = std::collections::HashSet::new();
     for (row,) in rows {
@@ -291,13 +296,19 @@ pub async fn get_unique_genres(pool: &SqlitePool) -> Result<Vec<String>> {
 }
 
 pub async fn get_unique_languages(pool: &SqlitePool) -> Result<Vec<String>> {
-    let rows: Vec<(Option<String>,)> = sqlx::query_as("SELECT DISTINCT language FROM movies WHERE language IS NOT NULL")
-        .fetch_all(pool)
-        .await?;
+    // H1 fix: query both movies and tv_shows
+    let rows: Vec<(Option<String>,)> = sqlx::query_as(
+        "SELECT language FROM movies WHERE language IS NOT NULL
+         UNION ALL
+         SELECT language FROM tv_shows WHERE language IS NOT NULL"
+    )
+    .fetch_all(pool)
+    .await?;
     
-    let mut langs: Vec<String> = rows.into_iter().filter_map(|(l,)| l).collect();
-    langs.sort();
-    Ok(langs)
+    let langs: std::collections::HashSet<String> = rows.into_iter().filter_map(|(l,)| l).collect();
+    let mut result: Vec<String> = langs.into_iter().collect();
+    result.sort();
+    Ok(result)
 }
 
 pub async fn get_movies_by_ids(pool: &SqlitePool, ids: &[i64]) -> Result<Vec<Movie>> {

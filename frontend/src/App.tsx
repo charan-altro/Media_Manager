@@ -3,6 +3,7 @@ import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-d
 import { api, API_BASE, IS_TAURI } from './api/adapter'
 import { listen } from '@tauri-apps/api/event'
 import { LoaderCircle, Star, Wand2 } from 'lucide-react'
+import toast from 'react-hot-toast'
 
 // Components
 import Navbar from './components/Navbar'
@@ -138,7 +139,7 @@ function App() {
     setRefreshingIds(prev => ({ ...prev, [id]: true }));
     try {
       await api.request('process_movie_advanced', `/movies/${id}/process-advanced`, { method: 'POST' });
-      alert('Advanced analysis started in background.');
+      toast.success('Advanced analysis started in background.');
     } catch (err) {
       console.error('Failed to start advanced analysis', err);
       setRefreshingIds(prev => ({ ...prev, [id]: false }));
@@ -151,9 +152,9 @@ function App() {
         const dest = window.prompt("Enter destination directory path:");
         if (!dest) return;
         await api.downloadToLocal(id, type, dest + '\\downloaded_' + id);
-        alert('Download complete!');
+        toast.success('Download complete!');
       } catch (err: any) {
-        alert('Download failed: ' + err.message);
+        toast.error('Download failed: ' + err.message);
       }
     } else {
       window.open(`${API_BASE}/${type === 'movie' ? 'movies' : 'episodes'}/${id}/download`);

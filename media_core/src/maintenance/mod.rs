@@ -66,32 +66,36 @@ impl MaintenanceEngine {
         Ok(())
     }
 
-    pub fn create_backup(db_path: &Path, backup_dir: &Path) -> Result<PathBuf> {
-        if !db_path.exists() {
-            return Err(anyhow!("Database file not found at {:?}", db_path));
-        }
-
+    pub async fn create_backup(pool: &SqlitePool, backup_dir: &Path) -> Result<PathBuf> {
         fs::create_dir_all(backup_dir)?;
 
         let timestamp = Local::now().format("%Y%m%d_%H%M%S").to_string();
         let backup_path = backup_dir.join(format!("mediavault_backup_{}.zip", timestamp));
+        let temp_db_path = backup_dir.join(format!("temp_backup_{}.db", timestamp));
         
-        info!("Creating backup at {:?}", backup_path);
+        info!("Creating safe WAL backup at {:?}", backup_path);
 
+        // 1. Vacuum into a temporary file
+        let query = format!("VACUUM INTO '{}'", temp_db_path.to_string_lossy().replace("\\", "/"));
+        sqlx::query(&query).execute(pool).await?;
+
+        // 2. Zip the temporary file
         let file = File::create(&backup_path)?;
         let mut zip = zip::ZipWriter::new(file);
         let options = FileOptions::default()
             .compression_method(zip::CompressionMethod::Deflated)
             .unix_permissions(0o755);
 
-        // Add database file to zip
         zip.start_file("mediavault.db", options)?;
-        let mut db_file = File::open(db_path)?;
+        let mut db_file = File::open(&temp_db_path)?;
         let mut buffer = Vec::new();
         db_file.read_to_end(&mut buffer)?;
         zip.write_all(&buffer)?;
 
         zip.finish()?;
+        
+        // 3. Delete the temporary file
+        let _ = fs::remove_file(temp_db_path);
         
         info!("Backup created successfully.");
         Ok(backup_path)
@@ -119,8 +123,39 @@ impl MaintenanceEngine {
         Ok(())
     }
 
-    pub fn check_for_updates() -> Result<String> {
-        info!("Checking for updates...");
-        Ok("0.2.0".to_string())
+    pub async fn check_for_updates() -> Result<String> {
+        info!("Checking for updates via GitHub Releases API...");
+        
+        let client = reqwest::Client::builder()
+            .user_agent("MediaManager/0.2.0")
+            .build()?;
+
+        match client
+            .get("https://api.github.com/repos/selfhost-media-orchestrator/media-manager/releases/latest")
+            .send()
+            .await
+        {
+            Ok(resp) => {
+                if resp.status().is_success() {
+                    let json: serde_json::Value = resp.json().await
+                        .unwrap_or(serde_json::json!({}));
+                    let version = json["tag_name"]
+                        .as_str()
+                        .unwrap_or("unknown")
+                        .trim_start_matches('v')
+                        .to_string();
+                    info!("Latest version from GitHub: {}", version);
+                    Ok(version)
+                } else {
+                    info!("GitHub API returned {}, using current version", resp.status());
+                    Ok("0.2.0".to_string())
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Update check failed (network error?): {}", e);
+                // Return current version so UI doesn't show a false upgrade prompt
+                Ok("0.2.0".to_string())
+            }
+        }
     }
 }

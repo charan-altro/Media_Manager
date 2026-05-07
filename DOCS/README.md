@@ -1,20 +1,23 @@
 # Media Manager – Documentation Index
 
-This directory contains the full design and planning documentation for the Rust/Tauri migration.
+This directory contains the consolidated design, planning, and migration documentation for the Media Manager ecosystem.
 
-## Structure
+---
 
-| Directory | Contents |
-|---|---|
-| `ARCHITECTURE/` | System design, component breakdown, data flow diagrams |
-| `PLAN/` | Implementation plan, phased task lists, tech stack reference |
-| `PRODUCT/` | MVP scope, performance targets, roadmap |
-| `MIGRATION/` | Python → Rust module mapping, API surface, risk register |
+## 📘 Primary Reference
+- **[MASTER PROJECT BOOK](MASTER_PROJECT_BOOK.md)** — **Start here.** The comprehensive, consolidated reference for the entire project, architecture, and current status.
 
-## Reading Order (First-Time Setup)
+---
 
-1. **[System Design](ARCHITECTURE/system_design.md)** — Start here. Understand the monorepo structure and dual-deployment architecture.
-2. **[MVP Scope](PRODUCT/mvp.md)** — Understand what's in and out of scope.
-3. **[Implementation Plan](PLAN/implementation_plan.md)** — The full phased build plan with code stubs.
-4. **[Migration Guide](MIGRATION/python_to_rust_migration.md)** — Line-by-line module mapping from Python to Rust.
-5. **[Application Architecture](ARCHITECTURE/application_architecture.md)** — Deep dive into each Rust module's internals.
+## 📑 Detailed Documentation
+- **[ARCHITECTURE](ARCHITECTURE.md)** — System design, component breakdown, and technical logic.
+- **[PRODUCT](PRODUCT.md)** — MVP scope, feature matrix, and product vision.
+- **[MIGRATION](MIGRATION.md)** — Python → Rust mapping, performance actuals, and migration report.
+- **[PLAN](PLAN.md)** — Phased implementation roadmap and final completion status.
+
+---
+
+## 🚀 Technical Highlights
+- **Stack**: Rust (Axum/Tauri) · React · SQLite (SQLx)
+- **Performance**: ~4.2s library scans, 42MB Docker image, 8MB Windows binary.
+- **Architecture**: Unified Rust Core with dynamic API Adapter for Desktop/Server deployment.

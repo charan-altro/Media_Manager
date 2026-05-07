@@ -30,6 +30,8 @@ chrono = "0.4"
 dotenvy = "0.15"
 scraper = "0.19"
 html-escape = "0.2"
+urlencoding = "2.1"
+rust_xlsxwriter = "0.79"
 
 [profile.release]
 opt-level = 3

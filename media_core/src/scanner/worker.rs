@@ -421,3 +421,53 @@ fn is_video_file(path: &Path) -> bool {
         .map(|ext| VIDEO_EXTENSIONS.iter().any(|&v| v.eq_ignore_ascii_case(ext)))
         .unwrap_or(false)
 }
+
+pub async fn scan_single_file(
+    pool: &SqlitePool,
+    library: &Library,
+    path: PathBuf,
+    task_id: String,
+    tx: &crate::task_manager::TaskManager,
+) -> Result<()> {
+    tracing::info!("Targeted scan for single file: {:?}", path);
+
+    if !path.exists() || !is_video_file(&path) {
+        return Ok(());
+    }
+
+    let filename = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+    let metadata = nfo::reader::detect_metadata(&path);
+    
+    let item = ParsedFile {
+        path: path.clone(),
+        parsed: parser::parse_filename(filename),
+        size: path.metadata().map(|m| m.len() as i64).unwrap_or(0),
+        metadata,
+    };
+
+    tx.broadcast(TaskUpdate {
+        task_id: task_id.clone(),
+        status: "running".to_string(),
+        progress: 0,
+        total: 1,
+        message: format!("Processing new file: {}", filename),
+        started_at: None,
+        debug_info: None,
+    });
+
+    if let Err(e) = process_file(pool, library, &item).await {
+        tracing::error!("Failed to process single file {:?}: {}", item.path, e);
+    }
+
+    tx.broadcast(TaskUpdate {
+        task_id,
+        status: "completed".to_string(),
+        progress: 1,
+        total: 1,
+        message: "File processing complete".to_string(),
+        started_at: None,
+        debug_info: None,
+    });
+
+    Ok(())
+}

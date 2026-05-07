@@ -1,0 +1,13 @@
+target/
+frontend/node_modules/
+frontend/dist/
+apps/desktop/src-tauri/target/
+.git/
+.env
+data/
+media/
+transcodes/
+backups/
+mediavault.db*
+errors.txt
+scratch/

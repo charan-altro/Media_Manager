@@ -1,0 +1,120 @@
+    Checking media_core v0.1.0 (C:\Users\chara\New_Projects_antigravity\Media_Manager\media_core)
+warning: unused import: `anyhow`
+ --> media_core\src\scraper\moviemeter.rs:4:22
+  |
+4 | use anyhow::{Result, anyhow};
+  |                      ^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused imports: `Deserialize` and `Serialize`
+ --> media_core\src\scraper\thesportsdb.rs:2:13
+  |
+2 | use serde::{Deserialize, Serialize};
+  |             ^^^^^^^^^^^  ^^^^^^^^^
+
+warning: unused import: `anyhow`
+ --> media_core\src\scraper\thesportsdb.rs:4:22
+  |
+4 | use anyhow::{Result, anyhow};
+  |                      ^^^^^^
+
+warning: unused import: `anyhow`
+ --> media_core\src\scraper\ofdb.rs:3:22
+  |
+3 | use anyhow::{Result, anyhow};
+  |                      ^^^^^^
+
+warning: unused imports: `Deserialize` and `Serialize`
+ --> media_core\src\scraper\kyradb.rs:2:13
+  |
+2 | use serde::{Deserialize, Serialize};
+  |             ^^^^^^^^^^^  ^^^^^^^^^
+
+warning: unused import: `anyhow`
+ --> media_core\src\scraper\kyradb.rs:4:22
+  |
+4 | use anyhow::{Result, anyhow};
+  |                      ^^^^^^
+
+warning: unused import: `anyhow`
+ --> media_core\src\scraper\kodi.rs:5:22
+  |
+5 | use anyhow::{Result, anyhow};
+  |                      ^^^^^^
+
+error[E0609]: no field `year` on type `&tv::TVShow`
+  --> media_core\src\exporter\mod.rs:30:19
+   |
+30 |                 t.year.map(|y| y.to_string()).unwrap_or_default(),
+   |                   ^^^^ unknown field
+   |
+   = note: available fields are: `id`, `library_id`, `title`, `tmdb_id`, `imdb_id` ... and 14 others
+
+error[E0609]: no field `year` on type `&tv::TVShow`
+  --> media_core\src\exporter\mod.rs:97:19
+   |
+97 |                 t.year.map(|y| y.to_string()).unwrap_or_else(|| "—".to_string()),
+   |                   ^^^^ unknown field
+   |
+   = note: available fields are: `id`, `library_id`, `title`, `tmdb_id`, `imdb_id` ... and 14 others
+
+error[E0277]: the trait bound `std::string::String: std::convert::From<&&str>` is not satisfied
+    --> media_core\src\exporter\mod.rs:132:63
+     |
+ 132 |             worksheet.write_string_with_format(0, col as u16, header, &header_format)?;
+     |                       ------------------------                ^^^^^^ the trait `std::convert::From<&&str>` is not implemented for `std::string::String`
+     |                       |
+     |                       required by a bound introduced by this call
+     |
+     = help: consider casting the `&&str` value to `&str`
+     = note: required for `&&str` to implement `Into<std::string::String>`
+note: required by a bound in `Worksheet::write_string_with_format`
+    --> C:\Users\chara\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\rust_xlsxwriter-0.79.4\src\worksheet.rs:2846:22
+     |
+2842 |     pub fn write_string_with_format(
+     |            ------------------------ required by a bound in this associated function
+...
+2846 |         string: impl Into<String>,
+     |                      ^^^^^^^^^^^^ required by this bound in `Worksheet::write_string_with_format`
+help: consider dereferencing here
+     |
+ 132 |             worksheet.write_string_with_format(0, col as u16, *header, &header_format)?;
+     |                                                               +
+
+error[E0609]: no field `year` on type `&tv::TVShow`
+   --> media_core\src\exporter\mod.rs:189:35
+    |
+189 |             if let Some(year) = t.year {
+    |                                   ^^^^ unknown field
+    |
+    = note: available fields are: `id`, `library_id`, `title`, `tmdb_id`, `imdb_id` ... and 14 others
+
+warning: variable `new_paths_found` is assigned to, but never used
+  --> media_core\src\scanner\watchdog.rs:41:17
+   |
+41 |             let mut new_paths_found = false;
+   |                 ^^^^^^^^^^^^^^^^^^^
+   |
+   = note: consider using `_new_paths_found` instead
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: value assigned to `new_paths_found` is never read
+  --> media_core\src\scanner\watchdog.rs:51:29
+   |
+51 | ...                   new_paths_found = true;
+   |                       ^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: maybe it is overwritten before being read?
+   = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `q`
+  --> media_core\src\scraper\imdb.rs:46:25
+   |
+46 |                     let q = entry.get("q").and_then(|v| v.as_str());
+   |                         ^ help: if this is intentional, prefix it with an underscore: `_q`
+
+Some errors have detailed explanations: E0277, E0609.
+For more information about an error, try `rustc --explain E0277`.
+warning: `media_core` (lib) generated 10 warnings
+error: could not compile `media_core` (lib) due to 4 previous errors; 10 warnings emitted

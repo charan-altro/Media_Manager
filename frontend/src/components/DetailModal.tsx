@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { X, Star, Play, Info, Calendar, Clock, Monitor, Cpu, CheckCircle2, RefreshCw, Airplay } from 'lucide-react';
 import { getImageUrl, api, API_BASE } from '../api/adapter';
+import toast from 'react-hot-toast';
 
 interface DetailModalProps {
   item: any;
@@ -97,7 +98,7 @@ const DetailModal: React.FC<DetailModalProps> = ({
       loadData();
     } catch (err) {
       console.error('Failed to save metadata', err);
-      alert('Failed to save: ' + (err as any).message);
+      toast.error('Failed to save: ' + (err as any).message);
     }
   };
 
@@ -363,7 +364,7 @@ const DetailModal: React.FC<DetailModalProps> = ({
                             const playlistUrl = await api.startStreaming(item.id);
                             window.open(`${API_BASE}${playlistUrl}`, '_blank');
                           } catch (err: any) {
-                            alert('Streaming failed: ' + err.message);
+                            toast.error('Streaming failed: ' + err.message);
                           }
                         }}
                         className="flex-1 bg-zinc-800 hover:bg-zinc-700 py-4 rounded-xl font-black uppercase tracking-widest text-xs transition border border-zinc-700 flex items-center justify-center gap-2"
@@ -404,6 +405,37 @@ const DetailModal: React.FC<DetailModalProps> = ({
                       className="w-full bg-zinc-800 hover:bg-zinc-700 py-4 rounded-xl font-black uppercase tracking-widest text-xs transition border border-zinc-700 flex items-center justify-center gap-2"
                     >
                       <Monitor className={`w-4 h-4 ${refreshingIds[item.id] ? 'animate-pulse' : ''}`} /> Advanced Analysis
+                    </button>
+                  )}
+                  {!isShow && (
+                    <button 
+                      onClick={async () => {
+                        try {
+                          await api.renameMovie(item.id);
+                          toast.success('Rename started! The file will be reorganized based on your naming template.');
+                          loadData();
+                        } catch (err: any) {
+                          toast.error('Rename failed: ' + err.message);
+                        }
+                      }}
+                      className="w-full bg-zinc-800 hover:bg-zinc-700 py-4 rounded-xl font-black uppercase tracking-widest text-xs transition border border-zinc-700 flex items-center justify-center gap-2"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg> Rename File
+                    </button>
+                  )}
+                  {!isShow && item.imdb_id && (
+                    <button 
+                      onClick={async () => {
+                        try {
+                          const results = await api.searchSubtitles(item.id);
+                          toast.success('Subtitle search triggered! Check your media folder for downloaded .srt files.');
+                        } catch (err: any) {
+                          toast.error('Subtitle search failed: ' + err.message);
+                        }
+                      }}
+                      className="w-full bg-zinc-800 hover:bg-zinc-700 py-4 rounded-xl font-black uppercase tracking-widest text-xs transition border border-zinc-700 flex items-center justify-center gap-2"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M7 15h4m-4-4h2m6 4h2M13 7h4"/></svg> Search Subtitles
                     </button>
                   )}
                   {!isShow && (

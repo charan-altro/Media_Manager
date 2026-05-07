@@ -117,18 +117,10 @@ async fn scrape_batch(ids: Vec<i64>, media_type: String, state: State<'_, AppSta
     let pool = state.pool.clone();
     let task_manager = state.task_manager.clone();
     let task_id = uuid::Uuid::new_v4().to_string();
-    let tmdb_key = std::env::var("TMDB_API_KEY").unwrap_or_default();
-
-    if tmdb_key.is_empty() { return Err("TMDB API Key missing".to_string()); }
 
     tokio::spawn(async move {
         let start_ms = now_ms();
-        let tmdb_key = std::env::var("TMDB_API_KEY").unwrap_or_default();
-        let omdb_key = std::env::var("OMDB_API_KEY").unwrap_or_default();
-        let fanart_key = std::env::var("FANART_API_KEY").unwrap_or_default();
-        let trakt_key = std::env::var("TRAKT_API_KEY").unwrap_or_default();
-        let tvdb_key = std::env::var("TVDB_API_KEY").unwrap_or_default();
-        let clients = Arc::new(media_core::scraper::ScraperClients::new(tmdb_key, omdb_key, fanart_key, trakt_key, tvdb_key));
+        let clients = std::sync::Arc::new(media_core::scraper::ScraperClients::from_settings(&pool).await);
         
         let settings = db::queries::get_settings(&pool).await.unwrap_or_default();
         let script_path = settings.get("post_processing_script").cloned();
@@ -281,18 +273,7 @@ async fn refresh_metadata(id: i64, state: State<'_, AppState>) -> Result<(), Str
     let pool = state.pool.clone();
     let task_manager = state.task_manager.clone();
     let task_id = uuid::Uuid::new_v4().to_string();
-    let tmdb_key = std::env::var("TMDB_API_KEY").unwrap_or_default();
-
-    if tmdb_key.is_empty() { return Err("TMDB API Key missing".to_string()); }
-
-    tokio::spawn(async move {
-        let start_ms = now_ms();
-        let tmdb_key = std::env::var("TMDB_API_KEY").unwrap_or_default();
-        let omdb_key = std::env::var("OMDB_API_KEY").unwrap_or_default();
-        let fanart_key = std::env::var("FANART_API_KEY").unwrap_or_default();
-        let trakt_key = std::env::var("TRAKT_API_KEY").unwrap_or_default();
-        let tvdb_key = std::env::var("TVDB_API_KEY").unwrap_or_default();
-        let clients = media_core::scraper::ScraperClients::new(tmdb_key, omdb_key, fanart_key, trakt_key, tvdb_key);
+    let clients = media_core::scraper::ScraperClients::from_settings(&pool).await;
         let settings = db::queries::get_settings(&pool).await.unwrap_or_default();
         let script_path = settings.get("post_processing_script").map(|s| s.as_str());
 
@@ -334,34 +315,42 @@ async fn play_episode(id: i64, state: State<'_, AppState>) -> Result<(), String>
 #[tauri::command]
 async fn export_csv(state: State<'_, AppState>) -> Result<String, String> {
     let movies = db::queries::get_all_movies(&state.pool, None, None, None).await.unwrap_or_default();
-    Ok(Exporter::to_csv(&movies))
+    let tv_shows = db::queries::get_all_tv_shows(&state.pool, None, None, None).await.unwrap_or_default();
+    Ok(Exporter::to_csv(&movies, &tv_shows))
 }
 
 #[tauri::command]
 async fn export_html(state: State<'_, AppState>) -> Result<String, String> {
     let movies = db::queries::get_all_movies(&state.pool, None, None, None).await.unwrap_or_default();
-    Ok(Exporter::to_html(&movies))
+    let tv_shows = db::queries::get_all_tv_shows(&state.pool, None, None, None).await.unwrap_or_default();
+    Ok(Exporter::to_html(&movies, &tv_shows))
+}
+
+#[tauri::command]
+async fn export_json(state: State<'_, AppState>) -> Result<String, String> {
+    let movies = db::queries::get_all_movies(&state.pool, None, None, None).await.unwrap_or_default();
+    let tv_shows = db::queries::get_all_tv_shows(&state.pool, None, None, None).await.unwrap_or_default();
+    Exporter::to_json(&movies, &tv_shows).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn check_updates() -> Result<serde_json::Value, String> {
     media_core::maintenance::MaintenanceEngine::check_for_updates()
+        .await
         .map(|v| serde_json::json!({ "latest_version": v, "current_version": "0.1.0" }))
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn create_backup(state: State<'_, AppState>) -> Result<String, String> {
-    let db_path = std::path::Path::new("mediavault.db");
     let backup_dir = std::path::Path::new("backups");
-    
+
     let _ = media_core::maintenance::MaintenanceEngine::export_all_nfos(&state.pool).await;
 
-    media_core::maintenance::MaintenanceEngine::create_backup(db_path, backup_dir)
+    media_core::maintenance::MaintenanceEngine::create_backup(&state.pool, backup_dir).await
         .map(|p| format!("{:?}", p))
         .map_err(|e| e.to_string())
 }
-
 #[tauri::command]
 async fn bulk_scrape(id: i64, state: State<'_, AppState>) -> Result<String, String> {
     let pool = state.pool.clone();
@@ -374,37 +363,42 @@ async fn bulk_scrape(id: i64, state: State<'_, AppState>) -> Result<String, Stri
         let task_manager_clone = task_manager.clone();
         
         tokio::spawn(async move {
-            let movies = db::queries::get_all_movies(&pool_clone, Some(id), None, None).await.unwrap_or_default();
-            let ids: Vec<i64> = movies.into_iter()
-                .filter(|m| m.status == media_core::models::MediaStatus::Unmatched)
-                .map(|m| m.id)
-                .collect();
-            
-            // Logic from scrape_batch
+            // H4 fix: fetch both movies AND tv shows from the library
+            let mut all_ids_movies: Vec<i64> = Vec::new();
+            let mut all_ids_tv: Vec<i64> = Vec::new();
+
+            if let Ok(movies) = db::queries::get_all_movies(&pool_clone, Some(id), None, None).await {
+                all_ids_movies = movies.into_iter()
+                    .filter(|m| m.status == media_core::models::MediaStatus::Unmatched)
+                    .map(|m| m.id)
+                    .collect();
+            }
+            if let Ok(shows) = db::queries::get_all_tv_shows(&pool_clone, Some(id), None, None).await {
+                all_ids_tv = shows.into_iter()
+                    .filter(|s| s.status == media_core::models::MediaStatus::Unmatched)
+                    .map(|s| s.id)
+                    .collect();
+            }
+
             let start_ms = now_ms();
-            let tmdb_key = std::env::var("TMDB_API_KEY").unwrap_or_default();
-            let omdb_key = std::env::var("OMDB_API_KEY").unwrap_or_default();
-            let fanart_key = std::env::var("FANART_API_KEY").unwrap_or_default();
-            let trakt_key = std::env::var("TRAKT_API_KEY").unwrap_or_default();
-            let tvdb_key = std::env::var("TVDB_API_KEY").unwrap_or_default();
-            
-            if tmdb_key.is_empty() { return; }
-            
-            let clients = Arc::new(media_core::scraper::ScraperClients::new(tmdb_key, omdb_key, fanart_key, trakt_key, tvdb_key));
+            let clients = std::sync::Arc::new(media_core::scraper::ScraperClients::from_settings(&pool).await);
             let settings = db::queries::get_settings(&pool_clone).await.unwrap_or_default();
             let script_path = settings.get("post_processing_script").cloned();
-            
-            let mut all_tasks = Vec::new();
-            if let Ok(movies) = db::queries::get_movies_by_ids(&pool_clone, &ids).await {
+
+            let mut all_tasks: Vec<(i64, String, Option<i32>, &str)> = Vec::new();
+            if let Ok(movies) = db::queries::get_movies_by_ids(&pool_clone, &all_ids_movies).await {
                 all_tasks.extend(movies.into_iter().map(|m| (m.id, m.title, m.year, "movie")));
             }
-            
+            if let Ok(shows) = db::queries::get_tv_shows_by_ids(&pool_clone, &all_ids_tv).await {
+                all_tasks.extend(shows.into_iter().map(|s| (s.id, s.title, None, "tv")));
+            }
+
             let total = all_tasks.len() as i32;
             let pool_clone_inner = Arc::new(pool_clone);
-            
+
             use futures::StreamExt;
             let stream = futures::stream::iter(all_tasks.into_iter().enumerate());
-            
+
             stream.for_each_concurrent(5, |(i, (id, title, year, m_type))| {
                 let clients = clients.clone();
                 let pool = pool_clone_inner.clone();
@@ -412,14 +406,14 @@ async fn bulk_scrape(id: i64, state: State<'_, AppState>) -> Result<String, Stri
                 let task_id = task_id.clone();
                 let title_clone = title.clone();
                 let script_path_clone = script_path.clone();
-                
+
                 async move {
                     if m_type == "movie" {
                         let _ = media_core::scraper::scrape_movie(id, &title_clone, year, &clients, &pool, script_path_clone.as_deref()).await;
                     } else {
                         let _ = media_core::scraper::scrape_tv_show(id, &title_clone, &clients, &pool, script_path_clone.as_deref()).await;
                     }
-                    
+
                     task_manager.broadcast(TaskUpdate {
                         task_id,
                         status: "running".to_string(),
@@ -448,6 +442,7 @@ async fn bulk_scrape(id: i64, state: State<'_, AppState>) -> Result<String, Stri
     }
 }
 
+
 fn main() {
 
     dotenvy::dotenv().ok();
@@ -460,6 +455,9 @@ fn main() {
     let task_manager_clone = task_manager.clone();
     let pool_for_watchdog = pool.clone();
     let task_manager_for_watchdog = task_manager.clone();
+    // H7 fix: clones for notification monitor
+    let pool_for_notifications = pool.clone();
+    let task_manager_for_notifications = task_manager.clone();
 
     tauri::Builder::default()
         .manage(AppState { pool, task_manager })
@@ -469,10 +467,27 @@ fn main() {
             get_genres, get_languages, start_scan, scrape_batch,
             cleanup_batch, update_movie, update_tv_show,
             get_settings, set_settings, refresh_metadata,
-            play_movie, play_episode, export_csv, export_html,
+            play_movie, play_episode, export_csv, export_html, export_json,
             check_updates, create_backup, bulk_scrape
         ])
         .setup(|app| {
+            // H7 fix: Start Discord notification monitor (mirrors server implementation)
+            tauri::async_runtime::spawn(async move {
+                let mut rx = task_manager_for_notifications.subscribe();
+                let notifier = media_core::notifications::Notifier::new();
+                while let Ok(update) = rx.recv().await {
+                    if update.status == "completed" || update.status == "error" {
+                        if let Ok(settings) = db::queries::get_settings(&pool_for_notifications).await {
+                            if let Some(url) = settings.get("discord_webhook_url") {
+                                if !url.is_empty() {
+                                    let _ = notifier.send_discord_webhook(url, &update).await;
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+
             // Start Watchdog
             tokio::spawn(async move {
                 let watchdog = media_core::scanner::watchdog::Watchdog::new(pool_for_watchdog, task_manager_for_watchdog);

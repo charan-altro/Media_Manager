@@ -49,6 +49,8 @@ pub struct EpisodeNfo {
     pub episode: i32,
     pub plot: Option<String>,
     pub rating: Option<f32>,
+    pub thumb: Option<String>,
+    pub runtime: Option<i32>,
 }
 
 pub struct NfoWriter;
@@ -117,6 +119,8 @@ impl NfoWriter {
             episode: episode.episode_number,
             plot: None,
             rating: None,
+            thumb: episode.thumbnail_path.clone(),
+            runtime: None,
         };
 
         let xml = to_string(&nfo)?;

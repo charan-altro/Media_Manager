@@ -70,17 +70,8 @@ async fn main() -> Result<()> {
         Commands::Scrape { library_id, media_type } => {
             println!("Starting bulk scrape for library ID: {} (Type: {})", library_id, media_type);
             
-            let tmdb_key = std::env::var("TMDB_API_KEY").unwrap_or_default();
-            let omdb_key = std::env::var("OMDB_API_KEY").unwrap_or_default();
-            // In a real scenario, we might fetch these from the settings table we added in Phase B
+            let clients = Arc::new(media_core::scraper::ScraperClients::from_settings(&pool).await);
             let settings = db::queries::get_settings(&pool).await.unwrap_or_default();
-            let fanart_key = settings.get("fanart_api_key").cloned().unwrap_or_default();
-            let trakt_key = settings.get("trakt_api_key").cloned().unwrap_or_default();
-            let tvdb_key = settings.get("tvdb_api_key").cloned().unwrap_or_default();
-
-            let clients = Arc::new(media_core::scraper::ScraperClients::new(
-                tmdb_key, omdb_key, fanart_key, trakt_key, tvdb_key
-            ));
 
             let mut all_tasks = Vec::new();
             if media_type == "movie" {
@@ -122,9 +113,8 @@ async fn main() -> Result<()> {
             }
         }
         Commands::Backup { dest } => {
-            let db_path = std::path::Path::new("mediavault.db");
             let backup_dir = dest.map(PathBuf::from).unwrap_or_else(|| PathBuf::from("backups"));
-            match media_core::maintenance::MaintenanceEngine::create_backup(db_path, &backup_dir) {
+            match media_core::maintenance::MaintenanceEngine::create_backup(&pool, &backup_dir).await {
                 Ok(path) => println!("Backup created successfully: {:?}", path),
                 Err(e) => println!("Error creating backup: {}", e),
             }

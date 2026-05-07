@@ -88,6 +88,16 @@ async fn main() {
         }
     });
 
+    let allowed_origin = std::env::var("ALLOWED_ORIGIN").unwrap_or_else(|_| "http://localhost:5173".to_string());
+    let cors = if allowed_origin == "*" {
+        CorsLayer::permissive()
+    } else {
+        CorsLayer::new()
+            .allow_origin(allowed_origin.parse::<axum::http::HeaderValue>().unwrap())
+            .allow_methods(tower_http::cors::Any)
+            .allow_headers(tower_http::cors::Any)
+    };
+
     let app = Router::new()
         .route("/api/health", get(health_check))
         .route("/api/webhooks/:source", post(handle_webhook))
@@ -96,6 +106,7 @@ async fn main() {
         .route("/api/libraries/:id/scan", post(scan_library))
         .route("/api/libraries/:id/scrape", post(bulk_scrape))
         .route("/api/movies/:id/scrape", post(scrape_single_movie))
+        .route("/api/tvshows/:id/scrape", post(scrape_single_tv_show))
         .route("/api/scrape/batch", post(scrape_batch))
         .route("/api/libraries/:id/cleanup/duplicates", post(cleanup_duplicates))
         .route("/api/libraries/:id/cleanup/empty-folders", post(cleanup_empty_folders))
@@ -127,10 +138,17 @@ async fn main() {
         .route("/api/tasks/stream", get(task_stream))
         .route("/api/export/csv", get(export_csv))
         .route("/api/export/html", get(export_html))
+        .route("/api/export/xlsx", get(export_xlsx))
+        .route("/api/export/json", get(export_json))
         .route("/api/maintenance/backup", post(create_backup))
         .route("/api/system/update-check", get(check_updates))
-        .layer(CorsLayer::permissive())
-        .with_state(app_state);
+        .route("/api/sync/trakt", post(sync_trakt))
+        .layer(cors)
+        .with_state(app_state)
+        .fallback_service(
+            tower_http::services::ServeDir::new("frontend/dist")
+                .fallback(tower_http::services::ServeFile::new("frontend/dist/index.html"))
+        );
 
     let addr = SocketAddr::from(([0, 0, 0, 0], 7878));
     tracing::info!("Server listening on {}", addr);
@@ -312,38 +330,7 @@ async fn bulk_scrape(State(state): State<Arc<AppState>>, Path(id): Path<i64>) ->
     let task_id = uuid::Uuid::new_v4().to_string();
 
     // We'll use hardcoded keys or get them from env
-    let tmdb_key = std::env::var("TMDB_API_KEY").unwrap_or_default();
-    let omdb_key = std::env::var("OMDB_API_KEY").unwrap_or_default();
-    let fanart_key = std::env::var("FANART_API_KEY").unwrap_or_default();
-    let trakt_key = std::env::var("TRAKT_API_KEY").unwrap_or_default();
-    let tvdb_key = std::env::var("TVDB_API_KEY").unwrap_or_default();
-
-    if tmdb_key.is_empty() {
-        task_manager.broadcast(media_core::models::TaskUpdate {
-            task_id: task_id.clone(),
-            status: "error".to_string(),
-            progress: 0,
-            total: 0,
-            message: "TMDB API Key missing. Please set it in your .env file.".to_string(),
-            started_at: None,
-            debug_info: None,
-        });
-        return Json("Scrape failed: API Key missing".to_string());
-    }
-
-    tokio::spawn(async move {
-        let start_ms = now_ms();
-        let moviemeter_key = std::env::var("MOVIEMETER_API_KEY").unwrap_or_default();
-    let sportsdb_key = std::env::var("SPORTSDB_API_KEY").unwrap_or_default();
-    let clients = Arc::new(media_core::scraper::ScraperClients::new(
-        tmdb_key, 
-        omdb_key,
-        fanart_key,
-        trakt_key,
-        tvdb_key,
-        moviemeter_key,
-        sportsdb_key,
-    ));
+    let clients = std::sync::Arc::new(media_core::scraper::ScraperClients::from_settings(&pool).await);
 
         // Fetch settings
         let settings = db::queries::get_settings(&pool).await.unwrap_or_default();
@@ -412,29 +399,41 @@ async fn bulk_scrape(State(state): State<Arc<AppState>>, Path(id): Path<i64>) ->
 }
 
 async fn scrape_single_movie(State(state): State<Arc<AppState>>, Path(id): Path<i64>) -> Json<String> {
+    // H3 fix: only handles movies — TV shows have their own route
     let pool = state.pool.clone();
     tokio::spawn(async move {
-        let tmdb_key = std::env::var("TMDB_API_KEY").unwrap_or_default();
-        let omdb_key = std::env::var("OMDB_API_KEY").unwrap_or_default();
-        let fanart_key = std::env::var("FANART_API_KEY").unwrap_or_default();
-        let trakt_key = std::env::var("TRAKT_API_KEY").unwrap_or_default();
-        let tvdb_key = std::env::var("TVDB_API_KEY").unwrap_or_default();
-        let clients = media_core::scraper::ScraperClients::new(tmdb_key, omdb_key, fanart_key, trakt_key, tvdb_key);
+        let clients = media_core::scraper::ScraperClients::from_settings(&pool).await;
 
         let settings = db::queries::get_settings(&pool).await.unwrap_or_default();
         let script_path = settings.get("post_processing_script").map(|s| s.as_str());
 
         if let Ok(Some(movie)) = db::queries::get_movie_by_id(&pool, id).await {
             let _ = media_core::scraper::scrape_movie(movie.id, &movie.title, movie.year, &clients, &pool, script_path).await;
-        } else if let Ok(shows) = db::queries::get_all_tv_shows(&pool, None, None, None).await {
-            if let Some(show) = shows.into_iter().find(|s| s.id == id) {
-                 let _ = media_core::scraper::scrape_tv_show(show.id, &show.title, &clients, &pool, script_path).await;
-            }
         }
     });
 
     Json("Scrape started".to_string())
 }
+
+async fn scrape_single_tv_show(State(state): State<Arc<AppState>>, Path(id): Path<i64>) -> Json<String> {
+    // H3 fix: dedicated TV show scrape endpoint
+    let pool = state.pool.clone();
+    tokio::spawn(async move {
+        let clients = media_core::scraper::ScraperClients::from_settings(&pool).await;
+
+        let settings = db::queries::get_settings(&pool).await.unwrap_or_default();
+        let script_path = settings.get("post_processing_script").map(|s| s.as_str());
+
+        if let Ok(shows) = db::queries::get_all_tv_shows(&pool, None, None, None).await {
+            if let Some(show) = shows.into_iter().find(|s| s.id == id) {
+                let _ = media_core::scraper::scrape_tv_show(show.id, &show.title, &clients, &pool, script_path).await;
+            }
+        }
+    });
+
+    Json("TV show scrape started".to_string())
+}
+
 
 #[derive(serde::Deserialize)]
 struct BatchRequest {
@@ -447,20 +446,9 @@ async fn scrape_batch(State(state): State<Arc<AppState>>, Json(payload): Json<Ba
     let task_manager = state.task_manager.clone();
     let task_id = uuid::Uuid::new_v4().to_string();
 
-    let tmdb_key = std::env::var("TMDB_API_KEY").unwrap_or_default();
-
-    if tmdb_key.is_empty() {
-        return Json("TMDB API Key missing".to_string());
-    }
-
     tokio::spawn(async move {
         let start_ms = now_ms();
-        let tmdb_key = std::env::var("TMDB_API_KEY").unwrap_or_default();
-        let omdb_key = std::env::var("OMDB_API_KEY").unwrap_or_default();
-        let fanart_key = std::env::var("FANART_API_KEY").unwrap_or_default();
-        let trakt_key = std::env::var("TRAKT_API_KEY").unwrap_or_default();
-        let tvdb_key = std::env::var("TVDB_API_KEY").unwrap_or_default();
-        let clients = Arc::new(media_core::scraper::ScraperClients::new(tmdb_key, omdb_key, fanart_key, trakt_key, tvdb_key));
+        let clients = std::sync::Arc::new(media_core::scraper::ScraperClients::from_settings(&pool).await);
         
         let settings = db::queries::get_settings(&pool).await.unwrap_or_default();
         let script_path = settings.get("post_processing_script").cloned();
@@ -830,20 +818,7 @@ async fn refresh_metadata(State(state): State<Arc<AppState>>, Path(id): Path<i64
     let pool = state.pool.clone();
     let task_manager = state.task_manager.clone();
     let task_id = uuid::Uuid::new_v4().to_string();
-    let tmdb_key = std::env::var("TMDB_API_KEY").unwrap_or_default();
-
-    if tmdb_key.is_empty() {
-        return (StatusCode::BAD_REQUEST, "TMDB API Key missing").into_response();
-    }
-
-    tokio::spawn(async move {
-        let start_ms = now_ms();
-        let tmdb_key = std::env::var("TMDB_API_KEY").unwrap_or_default();
-        let omdb_key = std::env::var("OMDB_API_KEY").unwrap_or_default();
-        let fanart_key = std::env::var("FANART_API_KEY").unwrap_or_default();
-        let trakt_key = std::env::var("TRAKT_API_KEY").unwrap_or_default();
-        let tvdb_key = std::env::var("TVDB_API_KEY").unwrap_or_default();
-        let clients = media_core::scraper::ScraperClients::new(tmdb_key, omdb_key, fanart_key, trakt_key, tvdb_key);
+    let clients = media_core::scraper::ScraperClients::from_settings(&pool).await;
         
         let settings = db::queries::get_settings(&pool).await.unwrap_or_default();
         let script_path = settings.get("post_processing_script").map(|s| s.as_str());
@@ -1067,7 +1042,8 @@ async fn search_subtitles(State(state): State<Arc<AppState>>, Path(id): Path<i64
 
 async fn export_csv(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let movies = db::queries::get_all_movies(&state.pool, None, None, None).await.unwrap_or_default();
-    let csv = Exporter::to_csv(&movies);
+    let tv_shows = db::queries::get_all_tv_shows(&state.pool, None, None, None).await.unwrap_or_default();
+    let csv = Exporter::to_csv(&movies, &tv_shows);
     (
         [
             (header::CONTENT_TYPE, "text/csv"),
@@ -1079,11 +1055,83 @@ async fn export_csv(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 
 async fn export_html(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let movies = db::queries::get_all_movies(&state.pool, None, None, None).await.unwrap_or_default();
-    let html = Exporter::to_html(&movies);
+    let tv_shows = db::queries::get_all_tv_shows(&state.pool, None, None, None).await.unwrap_or_default();
+    let html = Exporter::to_html(&movies, &tv_shows);
     (
         [(header::CONTENT_TYPE, "text/html")],
         html,
     )
+}
+
+async fn export_xlsx(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let movies = db::queries::get_all_movies(&state.pool, None, None, None).await.unwrap_or_default();
+    let tv_shows = db::queries::get_all_tv_shows(&state.pool, None, None, None).await.unwrap_or_default();
+    match Exporter::to_xlsx(&movies, &tv_shows) {
+        Ok(bytes) => {
+            (
+                [
+                    (header::CONTENT_TYPE, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+                    (header::CONTENT_DISPOSITION, "attachment; filename=\"library.xlsx\""),
+                ],
+                bytes,
+            ).into_response()
+        },
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn export_json(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let movies = db::queries::get_all_movies(&state.pool, None, None, None).await.unwrap_or_default();
+    let tv_shows = db::queries::get_all_tv_shows(&state.pool, None, None, None).await.unwrap_or_default();
+    match Exporter::to_json(&movies, &tv_shows) {
+        Ok(json) => {
+            (
+                [
+                    (header::CONTENT_TYPE, "application/json"),
+                    (header::CONTENT_DISPOSITION, "attachment; filename=\"library.json\""),
+                ],
+                json,
+            ).into_response()
+        },
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn sync_trakt(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let _permit = state.task_manager.acquire_heavy_permit().await;
+    
+    // Check if Trakt OAuth is configured
+    let settings_map = db::queries::get_settings(&state.pool).await.unwrap_or_default();
+    let access_token = match settings_map.get("trakt_access_token") {
+        Some(t) if !t.is_empty() => t.clone(),
+        _ => return (StatusCode::BAD_REQUEST, "Trakt is not authenticated. Please configure Trakt OAuth first.").into_response(),
+    };
+
+    let scraper_clients = media_core::scraper::ScraperClients::from_settings(&state.pool).await;
+
+    // Get all movies
+    let movies = db::queries::get_all_movies(&state.pool, None, None, None).await.unwrap_or_default();
+    
+    let mut trakt_movies = Vec::new();
+    for m in movies {
+        if let Some(tmdb) = m.tmdb_id {
+            trakt_movies.push(serde_json::json!({
+                "ids": {
+                    "tmdb": tmdb,
+                    "imdb": m.imdb_id
+                }
+            }));
+        }
+    }
+
+    if !trakt_movies.is_empty() {
+        match scraper_clients.trakt.add_to_collection(&access_token, trakt_movies).await {
+            Ok(res) => (StatusCode::OK, Json(res)).into_response(),
+            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        }
+    } else {
+        (StatusCode::OK, Json(serde_json::json!({"added": 0}))).into_response()
+    }
 }
 
 async fn task_stream(State(state): State<Arc<AppState>>) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
@@ -1411,20 +1459,18 @@ async fn process_library_advanced(State(state): State<Arc<AppState>>, Path(id): 
 }
 
 async fn create_backup(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let db_path = std::path::Path::new("mediavault.db");
     let backup_dir = std::path::Path::new("backups");
-    
+
     // First export all NFOs
     let _ = media_core::maintenance::MaintenanceEngine::export_all_nfos(&state.pool).await;
-    
-    match media_core::maintenance::MaintenanceEngine::create_backup(db_path, backup_dir) {
+
+    match media_core::maintenance::MaintenanceEngine::create_backup(&state.pool, backup_dir).await {
         Ok(path) => (StatusCode::OK, format!("Backup created: {:?}", path)).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
-
 async fn check_updates() -> impl IntoResponse {
-    match media_core::maintenance::MaintenanceEngine::check_for_updates() {
+    match media_core::maintenance::MaintenanceEngine::check_for_updates().await {
         Ok(version) => Json(serde_json::json!({ "latest_version": version, "current_version": "0.1.0" })).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }

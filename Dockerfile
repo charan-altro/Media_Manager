@@ -22,6 +22,7 @@ RUN cd frontend && npm run build
 FROM debian:13-slim
 # Upgrade base system to patch CVEs, then install runtime dependencies
 RUN apt-get update && apt-get upgrade -y && apt-get install -y libssl3 ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN mkdir -p /app/data
 WORKDIR /app
 COPY --from=builder /app/target/release/server /app/server
 COPY --from=frontend-builder /app/frontend/dist /app/frontend/dist

@@ -2,14 +2,28 @@ version: '3.8'
 
 services:
   media-manager:
-    build: .
+    image: charankumarbs/media-manager:latest
     container_name: media-manager
     ports:
       - "7878:7878"
     volumes:
+      # Persistent App Data (Database, config)
       - ./data:/app/data
-      - ./media:/media:ro
+      
+      # Media Mappings (Map your Windows paths to Linux paths inside the container)
+      # Format: "C:\Local\Path:/media/internal_name:ro"
+      - "D:\\MEDIA\\Movies_8+:/media/movies_d:ro"
+      - "D:\\torrents\\radarr:/media/torrents_d:ro"
+      - "F:\\MEDIA\\Movies:/media/movies_f:ro"
+      - "F:\\MEDIA\\TVShows:/media/tvshows_f:ro"
+      
     environment:
       - DATABASE_URL=sqlite:/app/data/mediavault.db
       - RUST_LOG=info
+      
+      # Uncomment and fill these if you want Trakt sync to work in Docker
+      # - TRAKT_CLIENT_ID=your_id
+      # - TRAKT_CLIENT_SECRET=your_secret
+      
     restart: unless-stopped
+

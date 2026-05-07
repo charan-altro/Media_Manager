@@ -1,7 +1,7 @@
 // apps/desktop/src/main.rs
 use std::sync::Arc;
 use std::path::PathBuf;
-use tauri::{State, Emitter};
+use tauri::{State, Emitter, Manager};
 use media_core::db;
 use media_core::task_manager::TaskManager;
 use media_core::models::{Library, Movie, MediaType, TVShow, Season, Episode, TaskUpdate};
@@ -483,9 +483,20 @@ async fn search_subtitles(id: i64, state: State<'_, AppState>) -> Result<(), Str
     let pool = state.pool.clone();
     let task_manager = state.task_manager.clone();
     let task_id = uuid::Uuid::new_v4().to_string();
-    let api_key = std::env::var("OPENSUBTITLES_API_KEY").unwrap_or_default();
+    
+    // Check environment first, then database settings
+    let mut api_key = std::env::var("OPENSUBTITLES_API_KEY").unwrap_or_default();
+    if api_key.is_empty() {
+        if let Ok(settings) = db::queries::get_settings(&pool).await {
+            if let Some(key) = settings.get("opensubtitles_api_key") {
+                api_key = key.clone();
+            }
+        }
+    }
 
-    if api_key.is_empty() { return Err("OpenSubtitles API Key missing".to_string()); }
+    if api_key.is_empty() { 
+        return Err("OpenSubtitles API Key missing. Please add it in Settings (opensubtitles_api_key).".to_string()); 
+    }
 
     tauri::async_runtime::spawn(async move {
         let start_ms = now_ms();
@@ -701,16 +712,39 @@ async fn download_to_local(id: i64, media_type: String, dest_path: String, state
 
     if let Some(src_str) = file_path {
         let src = std::path::Path::new(&src_str);
-        let dest = std::path::Path::new(&dest_path);
+        if !src.exists() {
+            return Err(format!("Source file not found: {}", src_str));
+        }
+
+        let mut dest = std::path::PathBuf::from(&dest_path);
+        
+        // If dest is a directory, or ends with a slash, use the original filename
+        if dest.is_dir() || dest_path.ends_with('\\') || dest_path.ends_with('/') {
+            if let Some(filename) = src.file_name() {
+                dest.push(filename);
+            }
+        } else if dest.extension().is_none() {
+            // If no extension, try to add it from source
+            if let Some(ext) = src.extension() {
+                dest.set_extension(ext);
+            }
+        }
+        
+        let metadata = src.metadata().map_err(|e| e.to_string())?;
+        let src_size = metadata.len();
+        tracing::info!("Starting copy of {} bytes from {:?} to {:?}", src_size, src, dest);
         
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
         
-        std::fs::copy(src, dest).map_err(|e| e.to_string())?;
-        Ok(format!("Copied to {}", dest_path))
+        let bytes_copied = std::fs::copy(src, &dest).map_err(|e| e.to_string())?;
+        if bytes_copied != src_size {
+            return Err(format!("Copy mismatch: expected {} bytes, but only copied {} bytes", src_size, bytes_copied));
+        }
+        Ok(format!("Successfully copied {} bytes to {}", bytes_copied, dest.display()))
     } else {
-        Err("Media not found".to_string())
+        Err("Media file not found in database".to_string())
     }
 }
 
@@ -783,6 +817,31 @@ fn main() {
             download_to_local, get_playback_status, update_playback_progress
         ])
         .setup(|app| {
+            // Resolve sidecar paths
+            let handle = app.handle();
+            
+            // Sidecars are named with the target triple, e.g., ffmpeg-x86_64-pc-windows-msvc.exe
+            // Tauri's sidecar() helper handles this, but we need the absolute path for Command::new
+            
+            #[cfg(target_os = "windows")]
+            let (ffmpeg_name, ffprobe_name) = ("ffmpeg.exe", "ffprobe.exe");
+            #[cfg(not(target_os = "windows"))]
+            let (ffmpeg_name, ffprobe_name) = ("ffmpeg", "ffprobe");
+
+            if let Ok(ffmpeg_path) = handle.path().resolve_for_resource(format!("bin/{}", ffmpeg_name)) {
+                if ffmpeg_path.exists() {
+                    tracing::info!("Found bundled FFmpeg at: {:?}", ffmpeg_path);
+                    media_core::config::set_ffmpeg_path(ffmpeg_path.to_string_lossy().to_string());
+                }
+            }
+
+            if let Ok(ffprobe_path) = handle.path().resolve_for_resource(format!("bin/{}", ffprobe_name)) {
+                if ffprobe_path.exists() {
+                    tracing::info!("Found bundled ffprobe at: {:?}", ffprobe_path);
+                    media_core::config::set_ffprobe_path(ffprobe_path.to_string_lossy().to_string());
+                }
+            }
+
             tauri::async_runtime::spawn(async move {
                 let mut rx = task_manager_for_notifications.subscribe();
                 let notifier = media_core::notifications::Notifier::new();

@@ -130,8 +130,8 @@ function App() {
       try {
         const dest = window.prompt("Enter destination directory path:");
         if (!dest) return;
-        await api.downloadToLocal(id, type, dest + '\\downloaded_' + id);
-        toast.success('Download complete!');
+        const result = await api.downloadToLocal(id, type, dest);
+        toast.success(result);
       } catch (err: any) {
         toast.error('Download failed: ' + err.message);
       }

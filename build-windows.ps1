@@ -36,8 +36,43 @@ try {
     Set-Location ..
     Write-Host-Color "Frontend build successful." "Green"
 
-    # 4. Desktop App Build
-    Write-Host-Color "Step 4: Compiling Rust Desktop App & Bundling..." "Yellow"
+    # 4. Prepare FFmpeg Sidecars
+    Write-Host-Color "Step 4: Preparing FFmpeg Sidecars..." "Yellow"
+    $BinDir = "apps/desktop/bin"
+    if (!(Test-Path $BinDir)) { New-Item -ItemType Directory $BinDir }
+
+    $TargetTriple = "x86_64-pc-windows-msvc"
+    $FFmpegDest = "$BinDir/ffmpeg-$TargetTriple.exe"
+    $FFprobeDest = "$BinDir/ffprobe-$TargetTriple.exe"
+
+    if (!(Test-Path $FFmpegDest) -or !(Test-Path $FFprobeDest)) {
+        Write-Host-Color "Downloading FFmpeg binaries..." "Magenta"
+        $TempZip = "$PSScriptRoot/ffmpeg_temp.zip"
+        # Using a reliable builds source (gyan.dev)
+        $DownloadUrl = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+        
+        Invoke-WebRequest -Uri $DownloadUrl -OutFile $TempZip
+        
+        Write-Host-Color "Extracting FFmpeg..." "Magenta"
+        $ExtractPath = "$PSScriptRoot/ffmpeg_extract"
+        Expand-Archive -Path $TempZip -DestinationPath $ExtractPath -Force
+        
+        $FFmpegExe = Get-ChildItem -Path $ExtractPath -Filter "ffmpeg.exe" -Recurse | Select-Object -ExpandProperty FullName -First 1
+        $FFprobeExe = Get-ChildItem -Path $ExtractPath -Filter "ffprobe.exe" -Recurse | Select-Object -ExpandProperty FullName -First 1
+        
+        Copy-Item $FFmpegExe $FFmpegDest -Force
+        Copy-Item $FFprobeExe $FFprobeDest -Force
+        
+        # Cleanup
+        Remove-Item $TempZip -Force
+        Remove-Item -Recurse -Force $ExtractPath
+        Write-Host-Color "FFmpeg sidecars prepared." "Green"
+    } else {
+        Write-Host-Color "FFmpeg sidecars already present." "Green"
+    }
+
+    # 5. Desktop App Build
+    Write-Host-Color "Step 5: Compiling Rust Desktop App & Bundling..." "Yellow"
     Set-Location apps/desktop
     
     # We use --verbose to get detailed logs
@@ -45,7 +80,7 @@ try {
     
     Set-Location ../..
 
-    # 5. Summary
+    # 6. Summary
     $Duration = (Get-Date) - $StartTime
     Write-Host-Color "===============================================" "Cyan"
     Write-Host-Color "BUILD COMPLETED SUCCESSFULLY!" "Green"

@@ -74,3 +74,89 @@ Extract the `currentTime` state and the specific UI that depends on it (presumab
 
 ### 3. Separation of Concerns
 **Action:** Move API data transformation (e.g., merging library data, grouping seasons) into isolated utility functions or custom hooks (`useLibrary()`, `useMovies()`) instead of managing it all sequentially in `loadData()` inside `App.tsx`.
+
+
+ Integrating FFmpeg as a sidecar means:
+   1. Zero Installation: The user doesn't need to install anything on their system.
+   2. Compatibility: You bundle the exact version of FFmpeg that you've tested.
+   3. Portability: The app works "out of the box" as a single package.
+
+  Here is the plan to implement this:
+
+  1. Configure Tauri Sidecars
+  We need to tell Tauri that we are bundling external binaries.
+
+  File: apps/desktop/tauri.conf.json
+
+    1 {
+    2   "bundle": {
+    3     "active": true,
+    4     "externalBin": [
+    5       "bin/ffmpeg",
+    6       "bin/ffprobe"
+    7     ],
+    8     ...
+    9   }
+   10 }
+
+  2. Update media_core to support Custom Binary Paths
+  Currently, the core logic is hardcoded to look for "ffmpeg" in the system PATH. We need to allow the desktop app to "tell" the core where the bundled
+  binaries are.
+
+  File: media_core/src/lib.rs (Adding a configuration module)
+
+    1 pub mod config {
+    2     use std::sync::RwLock;
+    3     use once_cell::sync::Lazy;
+    4
+    5     static FFMPEG_PATH: Lazy<RwLock<String>> = Lazy::new(|| RwLock::new("ffmpeg".to_string()));
+    6     static FFPROBE_PATH: Lazy<RwLock<String>> = Lazy::new(|| RwLock::new("ffprobe".to_string()));
+    7
+    8     pub fn set_ffmpeg_path(path: String) {
+    9         if let Ok(mut p) = FFMPEG_PATH.write() { *p = path; }
+   10     }
+   11     pub fn get_ffmpeg_path() -> String {
+   12         FFMPEG_PATH.read().map(|p| p.clone()).unwrap_or_else(|_| "ffmpeg".to_string())
+   13     }
+   14
+   15     pub fn set_ffprobe_path(path: String) {
+   16         if let Ok(mut p) = FFPROBE_PATH.write() { *p = path; }
+   17     }
+   18     pub fn get_ffprobe_path() -> String {
+   19         FFPROBE_PATH.read().map(|p| p.clone()).unwrap_or_else(|_| "ffprobe".to_string())
+   20     }
+   21 }
+
+  3. Update the Desktop App to Resolve Sidecars
+  When the desktop app starts, it will find the bundled binaries and pass their paths to media_core.
+
+  File: apps/desktop/src/main.rs
+
+    1 use tauri::Manager;
+    2
+    3 // Inside main() or setup()
+    4 .setup(|app| {
+    5     // Resolve the sidecar paths
+    6     // Note: Tauri 2.0 uses 'app.path().resolve_resource' for sidecars
+    7     let ffmpeg_path = app.path().resolve_resource("bin/ffmpeg.exe").ok();
+    8     let ffprobe_path = app.path().resolve_resource("bin/ffprobe.exe").ok();
+    9
+   10     if let Some(path) = ffmpeg_path {
+   11         media_core::config::set_ffmpeg_path(path.to_string_lossy().to_string());
+   12     }
+   13     if let Some(path) = ffprobe_path {
+   14         media_core::config::set_ffprobe_path(path.to_string_lossy().to_string());
+   15     }
+   16     ...
+   17 })
+
+  4. Update the Build Script
+  I will update build-windows.ps1 to automatically download the correct FFmpeg binaries for Windows and place them in the correct folder (apps/desktop/bin/)
+  so they get bundled into your .exe.
+
+  ---
+
+  Would you like me to proceed with implementing these code changes and updating the build script to handle the FFmpeg download automatically?
+
+  Note: For the build to succeed, you will need to place ffmpeg.exe and ffprobe.exe into apps/desktop/bin/ffmpeg-x86_64-pc-windows-msvc.exe (Tauri requires
+  the target triple suffix for sidecars).

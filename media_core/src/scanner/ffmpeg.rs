@@ -7,10 +7,27 @@ use tracing::{info, error};
 pub struct FfmpegEngine;
 
 impl FfmpegEngine {
+    fn check_ffmpeg() -> Result<()> {
+        let ffmpeg_path = crate::config::get_ffmpeg_path();
+        let output = Command::new(&ffmpeg_path)
+            .arg("-version")
+            .output();
+
+        match output {
+            Ok(_) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                error!("FFmpeg was not found at {}. Please install FFmpeg to enable streaming and analysis.", ffmpeg_path);
+                Err(anyhow!("FFmpeg not found at {}: Please ensure 'ffmpeg' is installed and added to your system PATH or bundled as a sidecar.", ffmpeg_path))
+            }
+            Err(e) => Err(anyhow!("Failed to check FFmpeg at {}: {}", ffmpeg_path, e)),
+        }
+    }
+
     pub fn extract_thumbnail(input_path: &Path, dest_path: &Path, time_offset: &str) -> Result<PathBuf> {
+        Self::check_ffmpeg()?;
         info!("Extracting thumbnail from {:?} at {}", input_path, time_offset);
         
-        let output = Command::new("ffmpeg")
+        let output = Command::new(crate::config::get_ffmpeg_path())
             .args(&[
                 "-ss", time_offset,
                 "-i", input_path.to_str().ok_or_else(|| anyhow!("Invalid input path"))?,
@@ -31,10 +48,11 @@ impl FfmpegEngine {
     }
 
     pub fn detect_aspect_ratio(input_path: &Path) -> Result<String> {
+        Self::check_ffmpeg()?;
         info!("Detecting aspect ratio for {:?}", input_path);
         
         // We'll analyze 10 frames around the 5-minute mark to avoid credits/intros
-        let output = Command::new("ffmpeg")
+        let output = Command::new(crate::config::get_ffmpeg_path())
             .args(&[
                 "-ss", "00:05:00",
                 "-i", input_path.to_str().ok_or_else(|| anyhow!("Invalid path"))?,
@@ -81,6 +99,7 @@ impl FfmpegEngine {
     }
 
     pub fn create_hls_stream(input_path: &Path, output_dir: &Path) -> Result<PathBuf> {
+        Self::check_ffmpeg()?;
         info!("Starting HLS transcode for {:?} into {:?}", input_path, output_dir);
         
         if !output_dir.exists() {
@@ -98,7 +117,7 @@ impl FfmpegEngine {
             "libx264"
         };
 
-        let _ = Command::new("ffmpeg")
+        let _ = Command::new(crate::config::get_ffmpeg_path())
             .args(&[
                 "-i", input_path.to_str().ok_or_else(|| anyhow!("Invalid path"))?,
                 "-c:v", encoder,

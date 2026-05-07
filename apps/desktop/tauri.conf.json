@@ -26,6 +26,10 @@
   },
   "bundle": {
     "active": true,
+    "externalBin": [
+      "bin/ffmpeg",
+      "bin/ffprobe"
+    ],
     "icon": [
       "icons/icon.ico"
     ],

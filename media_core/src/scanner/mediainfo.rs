@@ -14,8 +14,24 @@ pub struct MediaDetails {
     pub size_bytes: i64,
 }
 
+fn check_ffprobe() -> Result<()> {
+    let ffprobe_path = crate::config::get_ffprobe_path();
+    let output = Command::new(&ffprobe_path)
+        .arg("-version")
+        .output();
+
+    match output {
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            Err(anyhow!("ffprobe not found at {}: Please ensure FFmpeg (which includes ffprobe) is installed and in your system PATH or bundled as a sidecar.", ffprobe_path))
+        }
+        Err(e) => Err(anyhow!("Failed to check ffprobe at {}: {}", ffprobe_path, e)),
+    }
+}
+
 pub fn get_media_info(path: &Path) -> Result<MediaDetails> {
-    let output = Command::new("ffprobe")
+    check_ffprobe()?;
+    let output = Command::new(crate::config::get_ffprobe_path())
         .args(&[
             "-v", "quiet",
             "-print_format", "json",

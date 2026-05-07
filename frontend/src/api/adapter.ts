@@ -163,11 +163,11 @@ export const api = {
     return request<TVShow[]>('get_tv_shows', `/tvshows${qs}`, { method: 'GET', library_id, genre, language });
   },
   getSeasons: (show_id: number) =>
-    request<Season[]>('get_seasons', `/tvshows/${show_id}/seasons`, { method: 'GET', show_id, id: show_id }),
+    request<Season[]>('get_seasons', `/tvshows/${show_id}/seasons`, { method: 'GET', show_id }),
   getEpisodes: (season_id: number) =>
-    request<Episode[]>('get_episodes', `/seasons/${season_id}/episodes`, { method: 'GET', season_id, id: season_id }),
+    request<Episode[]>('get_episodes', `/seasons/${season_id}/episodes`, { method: 'GET', season_id }),
   startScan: (library_id: number) => 
-    request<string>('start_scan', `/libraries/${library_id}/scan`, { method: 'POST', library_id, id: library_id }),
+    request<string>('start_scan', `/libraries/${library_id}/scan`, { method: 'POST', library_id }),
   cleanupDuplicates: (library_id: number) =>
     request<string[]>('cleanup_duplicates', `/libraries/${library_id}/cleanup/duplicates`, { method: 'POST', id: library_id }),
   cleanupEmptyFolders: (library_id: number) =>
@@ -200,7 +200,6 @@ export const api = {
 
   updateMovie: (id: number, data: Partial<Movie>) => {
     const { title, year, plot, rating, genres } = data;
-    // genres in Movie interface is string, but Rust expects Vec<String>
     const genres_vec = typeof genres === 'string' ? genres.split(',').map(g => g.trim()) : genres;
     return request<void>('update_movie', `/movies/${id}`, { method: 'PUT', id, title, year, plot, rating, genres: genres_vec });
   },
@@ -215,7 +214,7 @@ export const api = {
     request<Record<string, string>>('get_settings', '/settings'),
 
   setSettings: (settings: Record<string, string>) =>
-    request<void>('set_settings', '/settings', { method: 'POST', ...settings }),
+    request<void>('set_settings', '/settings', { method: 'POST', settings }),
 
   createBackup: () =>
     request<string>('create_backup', '/maintenance/backup', { method: 'POST' }),
@@ -224,7 +223,7 @@ export const api = {
     request<UpdateCheckResult>('check_updates', '/system/update-check', { method: 'GET' }),
 
   startStreaming: (id: number, type: 'movie' | 'episode' = 'movie') =>
-    request<string>('start_streaming', `/stream/${id}/start?type=${type}`, { method: 'POST', id, mediaType: type }),
+    request<string>('start_streaming', `/stream/${id}/start?type=${type}`, { method: 'POST', id, media_type: type }),
 
   searchSubtitles: (id: number) =>
     request<void>('search_subtitles', `/movies/${id}/subtitles/search`, { method: 'GET', id }),
@@ -232,7 +231,14 @@ export const api = {
   getPlaybackStatus: (type: string, id: number) =>
     request<PlaybackStatus>('get_playback_status', `/playback/status/${type}/${id}`, { method: 'GET', id, mediaType: type }),
   updatePlaybackProgress: (data: PlaybackProgressPayload) =>
-    request<any>('update_playback_progress', `/playback/heartbeat`, { method: 'POST', ...data }),
+    request<any>('update_playback_progress', `/playback/heartbeat`, { 
+      method: 'POST', 
+      media_id: data.media_id,
+      media_type: data.media_type,
+      position_ms: data.position_ms,
+      duration_ms: data.duration_ms,
+      is_finished: data.is_finished
+    }),
 
   exportCsv: () => window.open(`${API_BASE}/export/csv`),
   exportHtml: () => window.open(`${API_BASE}/export/html`),

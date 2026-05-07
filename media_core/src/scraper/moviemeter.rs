@@ -1,4 +1,5 @@
 // core/src/scraper/moviemeter.rs
+use serde::{Deserialize, Serialize};
 use reqwest::Client;
 use anyhow::Result;
 

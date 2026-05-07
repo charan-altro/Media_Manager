@@ -11,6 +11,8 @@ env:
   REGISTRY: docker.io
   # Hardcoded username fallback to prevent empty image names if secret is missing during tag generation
   IMAGE_NAME: charankumarbs/media-manager
+  # Opt-in to Node.js 24 for actions to avoid deprecation warnings
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   build:

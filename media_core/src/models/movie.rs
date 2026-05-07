@@ -42,4 +42,6 @@ pub struct MovieFile {
     pub codec: Option<String>,
     pub aspect_ratio: Option<String>,
     pub thumbnail_path: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
 }

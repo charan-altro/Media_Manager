@@ -1,8 +1,11 @@
 # Stage 1: Build Rust binary
-FROM rust:slim AS builder
+FROM debian:13-slim AS builder
 WORKDIR /app
-# Install build dependencies
-RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
+# Install build dependencies and Rust toolchain
+RUN apt-get update && apt-get upgrade -y && \
+    apt-get install -y curl pkg-config libssl-dev build-essential && \
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/root/.cargo/bin:${PATH}"
 COPY . .
 # We build the server crate specifically
 RUN cargo build --release -p server
@@ -17,7 +20,8 @@ RUN cd frontend && npm run build
 
 # Stage 3: Minimal runtime image
 FROM debian:13-slim
-RUN apt-get update && apt-get install -y libssl3 ca-certificates && rm -rf /var/lib/apt/lists/*
+# Upgrade base system to patch CVEs, then install runtime dependencies
+RUN apt-get update && apt-get upgrade -y && apt-get install -y libssl3 ca-certificates && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=builder /app/target/release/server /app/server
 COPY --from=frontend-builder /app/frontend/dist /app/frontend/dist

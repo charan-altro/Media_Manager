@@ -1,10 +1,11 @@
 // core/src/models/tv.rs
 use serde::{Deserialize, Serialize};
+use crate::models::{TvShowId, LibraryId, SeasonId, EpisodeId};
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct TVShow {
-    pub id: i64,
-    pub library_id: i64,
+    pub id: TvShowId,
+    pub library_id: LibraryId,
     pub title: String,
     pub tmdb_id: Option<i32>,
     pub imdb_id: Option<String>,
@@ -26,15 +27,15 @@ pub struct TVShow {
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct Season {
-    pub id: i64,
-    pub show_id: i64,
+    pub id: SeasonId,
+    pub show_id: TvShowId,
     pub season_number: i32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct Episode {
-    pub id: i64,
-    pub season_id: i64,
+    pub id: EpisodeId,
+    pub season_id: SeasonId,
     pub episode_number: i32,
     pub title: Option<String>,
     pub file_path: String,

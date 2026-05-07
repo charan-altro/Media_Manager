@@ -3,11 +3,13 @@ pub mod library;
 pub mod movie;
 pub mod tv;
 pub mod task;
+pub mod ids;
 
 pub use library::*;
 pub use movie::*;
 pub use tv::*;
 pub use task::*;
+pub use ids::*;
 
 use serde::{Deserialize, Serialize};
 

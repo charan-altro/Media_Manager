@@ -149,7 +149,7 @@ impl Exporter {
         // Write data rows
         for m in movies.iter() {
             worksheet.write_string_with_format(current_row, 0, "Movie", &data_format)?;
-            worksheet.write_number_with_format(current_row, 1, m.id as f64, &data_format)?;
+            worksheet.write_number_with_format(current_row, 1, m.id.0 as f64, &data_format)?;
             worksheet.write_string_with_format(current_row, 2, &m.title, &data_format)?;
             
             if let Some(year) = m.year {
@@ -183,7 +183,7 @@ impl Exporter {
 
         for t in tv_shows.iter() {
             worksheet.write_string_with_format(current_row, 0, "TV Show", &data_format)?;
-            worksheet.write_number_with_format(current_row, 1, t.id as f64, &data_format)?;
+            worksheet.write_number_with_format(current_row, 1, t.id.0 as f64, &data_format)?;
             worksheet.write_string_with_format(current_row, 2, &t.title, &data_format)?;
             
             worksheet.write_string_with_format(current_row, 3, "", &data_format)?;

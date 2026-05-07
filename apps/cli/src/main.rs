@@ -1,5 +1,6 @@
 use clap::{Parser, Subcommand};
 use media_core::db;
+use media_core::models::{MovieId, TvShowId, LibraryId};
 use media_core::scanner::worker::scan_library;
 use media_core::task_manager::TaskManager;
 use std::sync::Arc;
@@ -59,7 +60,7 @@ async fn main() -> Result<()> {
         Commands::Scan { library_id } => {
             println!("Starting scan for library ID: {}", library_id);
             let libraries = db::queries::get_all_libraries(&pool).await?;
-            if let Some(lib) = libraries.into_iter().find(|l| l.id == library_id) {
+            if let Some(lib) = libraries.into_iter().find(|l| l.id == LibraryId(library_id)) {
                 let task_id = uuid::Uuid::new_v4().to_string();
                 scan_library(&pool, &lib, task_id, &task_manager).await?;
                 println!("Scan completed.");
@@ -75,14 +76,14 @@ async fn main() -> Result<()> {
 
             let mut all_tasks = Vec::new();
             if media_type == "movie" {
-                if let Ok(movies) = db::queries::get_all_movies(&pool, Some(library_id), None, None).await {
+                if let Ok(movies) = db::queries::get_all_movies(&pool, Some(LibraryId(library_id)), None, None).await {
                     let unmatched: Vec<_> = movies.into_iter().filter(|m| m.status == media_core::models::MediaStatus::Unmatched).collect();
-                    all_tasks.extend(unmatched.into_iter().map(|m| (m.id, m.title, m.year, "movie")));
+                    all_tasks.extend(unmatched.into_iter().map(|m| (m.id.into(), m.title, m.year, "movie")));
                 }
             } else {
-                if let Ok(shows) = db::queries::get_all_tv_shows(&pool, Some(library_id), None, None).await {
+                if let Ok(shows) = db::queries::get_all_tv_shows(&pool, Some(LibraryId(library_id)), None, None).await {
                     let unmatched: Vec<_> = shows.into_iter().filter(|s| s.status == media_core::models::MediaStatus::Unmatched).collect();
-                    all_tasks.extend(unmatched.into_iter().map(|s| (s.id, s.title, None, "tv")));
+                    all_tasks.extend(unmatched.into_iter().map(|s| (s.id.into(), s.title, None, "tv")));
                 }
             }
 
@@ -102,7 +103,7 @@ async fn main() -> Result<()> {
         Commands::Cleanup { library_id } => {
             println!("Starting cleanup for library ID: {}", library_id);
             let libraries = db::queries::get_all_libraries(&pool).await?;
-            if let Some(lib) = libraries.into_iter().find(|l| l.id == library_id) {
+            if let Some(lib) = libraries.into_iter().find(|l| l.id == LibraryId(library_id)) {
                 let cleanup = media_core::cleanup::CleanupService::new(PathBuf::from(lib.path));
                 let dupes = cleanup.remove_duplicate_artwork()?;
                 println!("Removed {} duplicate artwork files.", dupes.len());

@@ -2,9 +2,11 @@
 use serde::{Deserialize, Serialize};
 use sqlx::Type;
 
+use crate::models::LibraryId;
+
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct Library {
-    pub id: i64,
+    pub id: LibraryId,
     pub name: String,
     pub path: String,
     pub media_type: MediaType,

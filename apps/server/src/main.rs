@@ -12,6 +12,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::path::PathBuf;
 use media_core::db;
+use media_core::models::{MovieId, TvShowId, LibraryId, SeasonId, EpisodeId};
 use media_core::task_manager::TaskManager;
 use media_core::cleanup::CleanupService;
 use media_core::exporter::Exporter;
@@ -250,7 +251,7 @@ async fn create_library(State(state): State<Arc<AppState>>, Json(payload): Json<
 
 async fn delete_library(State(state): State<Arc<AppState>>, Path(id): Path<i64>) -> impl IntoResponse {
     tracing::info!("Deleting library ID: {}", id);
-    match db::queries::delete_library(&state.pool, id).await {
+    match db::queries::delete_library(&state.pool, LibraryId(id)).await {
         Ok(_) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => {
             tracing::error!("Failed to delete library {}: {}", id, e);
@@ -267,7 +268,7 @@ struct MovieQuery {
 }
 
 async fn get_movies(State(state): State<Arc<AppState>>, Query(query): Query<MovieQuery>) -> impl IntoResponse {
-    match db::queries::get_all_movies(&state.pool, query.library_id, query.genre, query.language).await {
+    match db::queries::get_all_movies(&state.pool, query.library_id.map(LibraryId), query.genre, query.language).await {
         Ok(movies) => Json(movies).into_response(),
         Err(e) => {
             tracing::error!("Failed to fetch movies: {}", e);
@@ -277,7 +278,7 @@ async fn get_movies(State(state): State<Arc<AppState>>, Query(query): Query<Movi
 }
 
 async fn get_tv_shows(State(state): State<Arc<AppState>>, Query(query): Query<MovieQuery>) -> impl IntoResponse {
-    match db::queries::get_all_tv_shows(&state.pool, query.library_id, query.genre, query.language).await {
+    match db::queries::get_all_tv_shows(&state.pool, query.library_id.map(LibraryId), query.genre, query.language).await {
         Ok(shows) => Json(shows).into_response(),
         Err(e) => {
             tracing::error!("Failed to fetch TV shows: {}", e);
@@ -287,7 +288,7 @@ async fn get_tv_shows(State(state): State<Arc<AppState>>, Query(query): Query<Mo
 }
 
 async fn get_seasons(State(state): State<Arc<AppState>>, Path(id): Path<i64>) -> impl IntoResponse {
-    match db::queries::get_seasons_by_show_id(&state.pool, id).await {
+    match db::queries::get_seasons_by_show_id(&state.pool, TvShowId(id)).await {
         Ok(seasons) => Json(seasons).into_response(),
         Err(e) => {
             tracing::error!("Failed to fetch seasons: {}", e);
@@ -297,7 +298,7 @@ async fn get_seasons(State(state): State<Arc<AppState>>, Path(id): Path<i64>) ->
 }
 
 async fn get_episodes(State(state): State<Arc<AppState>>, Path(id): Path<i64>) -> impl IntoResponse {
-    match db::queries::get_episodes_by_season_id(&state.pool, id).await {
+    match db::queries::get_episodes_by_season_id(&state.pool, SeasonId(id)).await {
         Ok(episodes) => Json(episodes).into_response(),
         Err(e) => {
             tracing::error!("Failed to fetch episodes: {}", e);
@@ -314,7 +315,7 @@ async fn scan_library(State(state): State<Arc<AppState>>, Path(id): Path<i64>) -
     // Check if a scan task is already running for this library
     // (Simple check by searching through active tasks)
     let libraries = db::queries::get_all_libraries(&pool).await.unwrap_or_default();
-    if let Some(lib) = libraries.into_iter().find(|l| l.id == id) {
+    if let Some(lib) = libraries.into_iter().find(|l| l.id == LibraryId(id)) {
         tokio::spawn(async move {
             let _ = media_core::scanner::worker::scan_library(&pool, &lib, task_id, &task_manager).await;
         });
@@ -341,14 +342,14 @@ async fn bulk_scrape(State(state): State<Arc<AppState>>, Path(id): Path<i64>) ->
 
         let mut all_tasks = Vec::new();
 
-        if let Ok(movies) = db::queries::get_all_movies(&pool, Some(id), None, None).await {
+        if let Ok(movies) = db::queries::get_all_movies(&pool, Some(LibraryId(id)), None, None).await {
             let unmatched: Vec<_> = movies.into_iter().filter(|m| m.status == media_core::models::MediaStatus::Unmatched).collect();
-            all_tasks.extend(unmatched.into_iter().map(|m| (m.id, m.title, m.year, "movie")));
+            all_tasks.extend(unmatched.into_iter().map(|m| (m.id.0, m.title, m.year, "movie")));
         }
 
-        if let Ok(shows) = db::queries::get_all_tv_shows(&pool, Some(id), None, None).await {
+        if let Ok(shows) = db::queries::get_all_tv_shows(&pool, Some(LibraryId(id)), None, None).await {
             let unmatched: Vec<_> = shows.into_iter().filter(|s| s.status == media_core::models::MediaStatus::Unmatched).collect();
-            all_tasks.extend(unmatched.into_iter().map(|s| (s.id, s.title, None, "tv")));
+            all_tasks.extend(unmatched.into_iter().map(|s| (s.id.0, s.title, None, "tv")));
         }
 
         let total = all_tasks.len() as i32;
@@ -370,9 +371,9 @@ async fn bulk_scrape(State(state): State<Arc<AppState>>, Path(id): Path<i64>) ->
             
             async move {
                 if m_type == "movie" {
-                    let _ = media_core::scraper::scrape_movie(id, &title_clone, year, &clients, &pool, script_path_clone.as_deref()).await;
+                    let _ = media_core::scraper::scrape_movie(id.into(), &title_clone, year, &clients, &pool, script_path_clone.as_deref()).await;
                 } else {
-                    let _ = media_core::scraper::scrape_tv_show(id, &title_clone, &clients, &pool, script_path_clone.as_deref()).await;
+                    let _ = media_core::scraper::scrape_tv_show(id.into(), &title_clone, &clients, &pool, script_path_clone.as_deref()).await;
                 }
                 
                 task_manager.broadcast(media_core::models::TaskUpdate {
@@ -410,8 +411,8 @@ async fn scrape_single_movie(State(state): State<Arc<AppState>>, Path(id): Path<
         let settings = db::queries::get_settings(&pool).await.unwrap_or_default();
         let script_path = settings.get("post_processing_script").map(|s| s.as_str());
 
-        if let Ok(Some(movie)) = db::queries::get_movie_by_id(&pool, id).await {
-            let _ = media_core::scraper::scrape_movie(movie.id, &movie.title, movie.year, &clients, &pool, script_path).await;
+        if let Ok(Some(movie)) = db::queries::get_movie_by_id(&pool, MovieId(id)).await {
+            let _ = media_core::scraper::scrape_movie(movie.id.0, &movie.title, movie.year, &clients, &pool, script_path).await;
         }
     });
 
@@ -428,8 +429,8 @@ async fn scrape_single_tv_show(State(state): State<Arc<AppState>>, Path(id): Pat
         let script_path = settings.get("post_processing_script").map(|s| s.as_str());
 
         if let Ok(shows) = db::queries::get_all_tv_shows(&pool, None, None, None).await {
-            if let Some(show) = shows.into_iter().find(|s| s.id == id) {
-                let _ = media_core::scraper::scrape_tv_show(show.id, &show.title, &clients, &pool, script_path).await;
+            if let Some(show) = shows.into_iter().find(|s| s.id == TvShowId(id)) {
+                let _ = media_core::scraper::scrape_tv_show(show.id.0, &show.title, &clients, &pool, script_path).await;
             }
         }
     });
@@ -459,12 +460,14 @@ async fn scrape_batch(State(state): State<Arc<AppState>>, Json(payload): Json<Ba
         let mut all_tasks = Vec::new();
 
         if payload.media_type == "movie" {
-            if let Ok(movies) = db::queries::get_movies_by_ids(&pool, &payload.ids).await {
-                all_tasks.extend(movies.into_iter().map(|m| (m.id, m.title, m.year, "movie")));
+            let movie_ids: Vec<MovieId> = payload.ids.iter().map(|&id| MovieId(id)).collect();
+            if let Ok(movies) = db::queries::get_movies_by_ids(&pool, &movie_ids).await {
+                all_tasks.extend(movies.into_iter().map(|m| (m.id.0, m.title, m.year, "movie")));
             }
         } else {
-            if let Ok(shows) = db::queries::get_tv_shows_by_ids(&pool, &payload.ids).await {
-                all_tasks.extend(shows.into_iter().map(|s| (s.id, s.title, None, "tv")));
+            let show_ids: Vec<TvShowId> = payload.ids.iter().map(|&id| TvShowId(id)).collect();
+            if let Ok(shows) = db::queries::get_tv_shows_by_ids(&pool, &show_ids).await {
+                all_tasks.extend(shows.into_iter().map(|s| (s.id.0, s.title, None, "tv")));
             }
         }
 
@@ -486,9 +489,9 @@ async fn scrape_batch(State(state): State<Arc<AppState>>, Json(payload): Json<Ba
             
             async move {
                 if m_type == "movie" {
-                    let _ = media_core::scraper::scrape_movie(id, &title_clone, year, &clients, &pool, script_path_clone.as_deref()).await;
+                    let _ = media_core::scraper::scrape_movie(id.into(), &title_clone, year, &clients, &pool, script_path_clone.as_deref()).await;
                 } else {
-                    let _ = media_core::scraper::scrape_tv_show(id, &title_clone, &clients, &pool, script_path_clone.as_deref()).await;
+                    let _ = media_core::scraper::scrape_tv_show(id.into(), &title_clone, &clients, &pool, script_path_clone.as_deref()).await;
                 }
                 
                 task_manager.broadcast(media_core::models::TaskUpdate {
@@ -519,7 +522,7 @@ async fn scrape_batch(State(state): State<Arc<AppState>>, Json(payload): Json<Ba
 
 async fn cleanup_duplicates(State(state): State<Arc<AppState>>, Path(id): Path<i64>) -> Json<Vec<PathBuf>> {
     let libraries = db::queries::get_all_libraries(&state.pool).await.unwrap_or_default();
-    if let Some(lib) = libraries.into_iter().find(|l| l.id == id) {
+    if let Some(lib) = libraries.into_iter().find(|l| l.id == LibraryId(id)) {
         let cleanup = CleanupService::new(PathBuf::from(lib.path));
         Json(cleanup.remove_duplicate_artwork().unwrap_or_default())
     } else {
@@ -529,7 +532,7 @@ async fn cleanup_duplicates(State(state): State<Arc<AppState>>, Path(id): Path<i
 
 async fn cleanup_empty_folders(State(state): State<Arc<AppState>>, Path(id): Path<i64>) -> Json<Vec<PathBuf>> {
     let libraries = db::queries::get_all_libraries(&state.pool).await.unwrap_or_default();
-    if let Some(lib) = libraries.into_iter().find(|l| l.id == id) {
+    if let Some(lib) = libraries.into_iter().find(|l| l.id == LibraryId(id)) {
         let cleanup = CleanupService::new(PathBuf::from(lib.path));
         Json(cleanup.remove_empty_folders().unwrap_or_default())
     } else {
@@ -552,7 +555,7 @@ async fn cleanup_batch(State(state): State<Arc<AppState>>, Json(payload): Json<B
             for id in &payload.ids {
                 processed += 1;
                 
-                if let Ok(Some(movie)) = db::queries::get_movie_by_id(&pool, *id).await {
+                if let Ok(Some(movie)) = db::queries::get_movie_by_id(&pool, MovieId(*id)).await {
                     let libraries = db::queries::get_all_libraries(&pool).await.unwrap_or_default();
                     if let Some(lib) = libraries.into_iter().find(|l| l.id == movie.library_id) {
                         let lib_root = PathBuf::from(&lib.path);
@@ -631,7 +634,7 @@ async fn cleanup_batch(State(state): State<Arc<AppState>>, Json(payload): Json<B
                 let files: Vec<(String,)> = sqlx::query_as(
                     "SELECT e.file_path FROM episodes e JOIN seasons s ON e.season_id = s.id WHERE s.show_id = ?"
                 )
-                .bind(id)
+                .bind(TvShowId(*id))
                 .fetch_all(&pool)
                 .await
                 .unwrap_or_default();
@@ -711,7 +714,7 @@ async fn get_local_artwork(Query(query): Query<ArtworkQuery>, req: axum::extract
 async fn rename_movie(State(state): State<Arc<AppState>>, Path(id): Path<i64>) -> impl IntoResponse {
     let pool = state.pool.clone();
     
-    match db::queries::get_movie_by_id(&pool, id).await {
+    match db::queries::get_movie_by_id(&pool, media_core::models::MovieId(id)).await {
         Ok(Some(movie)) => {
             let movie_id = movie.id;
             let libraries = db::queries::get_all_libraries(&pool).await.unwrap_or_default();
@@ -768,7 +771,7 @@ async fn rename_movie(State(state): State<Arc<AppState>>, Path(id): Path<i64>) -
 }
 
 async fn play_movie(State(state): State<Arc<AppState>>, Path(id): Path<i64>) -> Json<String> {
-    if let Ok(Some(movie)) = db::queries::get_movie_by_id(&state.pool, id).await {
+    if let Ok(Some(movie)) = db::queries::get_movie_by_id(&state.pool, media_core::models::MovieId(id)).await {
         let movie_id = movie.id;
         let pool = state.pool.clone();
         tokio::spawn(async move {
@@ -830,7 +833,7 @@ async fn refresh_metadata(State(state): State<Arc<AppState>>, Path(id): Path<i64
         let script_path = settings.get("post_processing_script").map(|s| s.as_str());
 
         // Try as movie
-        if let Ok(Some(movie)) = db::queries::get_movie_by_id(&pool, id).await {
+        if let Ok(Some(movie)) = db::queries::get_movie_by_id(&pool, media_core::models::MovieId(id)).await {
             task_manager.broadcast(media_core::models::TaskUpdate {
                 task_id: task_id.clone(),
                 status: "running".to_string(),
@@ -841,11 +844,11 @@ async fn refresh_metadata(State(state): State<Arc<AppState>>, Path(id): Path<i64
                 debug_info: Some(format!("Refetching TMDB data for: {}", movie.title)),
             });
 
-            let _ = media_core::scraper::scrape_movie(movie.id, &movie.title, movie.year, &clients, &pool, script_path).await;
+            let _ = media_core::scraper::scrape_movie(movie.id.0, &movie.title, movie.year, &clients, &pool, script_path).await;
         } else {
             // Try as TV show
             let shows = db::queries::get_all_tv_shows(&pool, None, None, None).await.unwrap_or_default();
-            if let Some(show) = shows.into_iter().find(|s| s.id == id) {
+            if let Some(show) = shows.into_iter().find(|s| s.id == media_core::models::TvShowId(id)) {
                 task_manager.broadcast(media_core::models::TaskUpdate {
                     task_id: task_id.clone(),
                     status: "running".to_string(),
@@ -855,7 +858,7 @@ async fn refresh_metadata(State(state): State<Arc<AppState>>, Path(id): Path<i64
                     started_at: Some(start_ms),
                     debug_info: Some(format!("Refetching TMDB data for TV Show: {}", show.title)),
                 });
-                let _ = media_core::scraper::scrape_tv_show(show.id, &show.title, &clients, &pool, script_path).await;
+                let _ = media_core::scraper::scrape_tv_show(show.id.0, &show.title, &clients, &pool, script_path).await;
             }
         }
 
@@ -875,7 +878,7 @@ async fn refresh_metadata(State(state): State<Arc<AppState>>, Path(id): Path<i64
 
 async fn download_movie(State(state): State<Arc<AppState>>, Path(id): Path<i64>, req: axum::extract::Request) -> impl IntoResponse {
     let pool = state.pool.clone();
-    let movie = db::queries::get_movie_by_id(&pool, id).await.unwrap_or_default();
+    let movie = db::queries::get_movie_by_id(&pool, media_core::models::MovieId(id)).await.unwrap_or_default();
     
     if let Some(_m) = movie {
         let movie_files: Vec<(String,)> = sqlx::query_as("SELECT file_path FROM movie_files WHERE movie_id = ?")
@@ -934,7 +937,7 @@ async fn search_subtitles(State(state): State<Arc<AppState>>, Path(id): Path<i64
 
     tokio::spawn(async move {
         let start_ms = now_ms();
-        if let Ok(Some(movie)) = db::queries::get_movie_by_id(&pool, id).await {
+        if let Ok(Some(movie)) = db::queries::get_movie_by_id(&pool, media_core::models::MovieId(id)).await {
             let file_info: Option<(String,)> = sqlx::query_as("SELECT file_path FROM movie_files WHERE movie_id = ? LIMIT 1")
                 .bind(id)
                 .fetch_optional(&pool)
@@ -1169,7 +1172,7 @@ async fn update_movie_metadata(
     let genres_json = payload.genres.map(|g| serde_json::to_string(&g).unwrap_or_default());
     match db::queries::update_movie(
         &state.pool, 
-        id, 
+        media_core::models::MovieId(id), 
         &payload.title, 
         payload.year, 
         payload.plot.as_deref(), 
@@ -1201,7 +1204,7 @@ async fn update_tv_show_metadata(
     let genres_json = payload.genres.map(|g| serde_json::to_string(&g).unwrap_or_default());
     match db::queries::update_tv_show(
         &state.pool, 
-        id, 
+        media_core::models::TvShowId(id), 
         &payload.title, 
         payload.plot.as_deref(), 
         payload.rating, 
@@ -1243,7 +1246,7 @@ async fn process_movie_advanced(State(state): State<Arc<AppState>>, Path(id): Pa
     tokio::spawn(async move {
         let _permit = task_manager.acquire_heavy_permit().await;
         let start_ms = now_ms();
-        if let Ok(Some(movie)) = db::queries::get_movie_by_id(&pool, id).await {
+        if let Ok(Some(movie)) = db::queries::get_movie_by_id(&pool, media_core::models::MovieId(id)).await {
             let file_info: Option<media_core::models::MovieFile> = sqlx::query_as("SELECT * FROM movie_files WHERE movie_id = ? LIMIT 1")
                 .bind(id)
                 .fetch_optional(&pool)
@@ -1304,7 +1307,7 @@ async fn process_tv_show_advanced(State(state): State<Arc<AppState>>, Path(id): 
 
     tokio::spawn(async move {
         let start_ms = now_ms();
-        if let Ok(show) = db::queries::get_tv_show_by_id(&pool, id).await {
+        if let Ok(show) = db::queries::get_tv_show_by_id(&pool, media_core::models::TvShowId(id)).await {
             if let Some(show) = show {
                 let seasons = db::queries::get_seasons_by_show_id(&pool, show.id).await.unwrap_or_default();
                 let mut all_episodes = Vec::new();
@@ -1369,7 +1372,7 @@ async fn process_library_advanced(State(state): State<Arc<AppState>>, Path(id): 
         let start_ms = now_ms();
         
         // 1. Process Movies
-        if let Ok(movies) = db::queries::get_all_movies(&pool, Some(id), None, None).await {
+        if let Ok(movies) = db::queries::get_all_movies(&pool, Some(media_core::models::LibraryId(id)), None, None).await {
             let total = movies.len() as i32;
             for (i, movie) in movies.into_iter().enumerate() {
                 let _permit = task_manager.acquire_heavy_permit().await;
@@ -1410,7 +1413,7 @@ async fn process_library_advanced(State(state): State<Arc<AppState>>, Path(id): 
         }
 
         // 2. Process TV Shows
-        if let Ok(shows) = db::queries::get_all_tv_shows(&pool, Some(id), None, None).await {
+        if let Ok(shows) = db::queries::get_all_tv_shows(&pool, Some(media_core::models::LibraryId(id)), None, None).await {
             let total_shows = shows.len();
             for (si, show) in shows.into_iter().enumerate() {
                 let seasons = db::queries::get_seasons_by_show_id(&pool, show.id).await.unwrap_or_default();
@@ -1486,7 +1489,7 @@ async fn start_streaming(State(state): State<Arc<AppState>>, Path(id): Path<i64>
     let pool = state.pool.clone();
     
     // Try as movie
-    if let Ok(Some(_movie)) = db::queries::get_movie_by_id(&pool, id).await {
+    if let Ok(Some(_movie)) = db::queries::get_movie_by_id(&pool, media_core::models::MovieId(id)).await {
         let file_info: Option<media_core::models::MovieFile> = sqlx::query_as("SELECT * FROM movie_files WHERE movie_id = ? LIMIT 1")
             .bind(id)
             .fetch_optional(&pool)

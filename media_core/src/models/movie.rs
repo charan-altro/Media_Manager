@@ -1,10 +1,11 @@
 // core/src/models/movie.rs
 use serde::{Deserialize, Serialize};
+use crate::models::{MovieId, LibraryId, MovieFileId};
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct Movie {
-    pub id: i64,
-    pub library_id: i64,
+    pub id: MovieId,
+    pub library_id: LibraryId,
     pub title: String,
     pub year: Option<i32>,
     pub tmdb_id: Option<i32>,
@@ -33,8 +34,8 @@ pub struct CastMember {
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct MovieFile {
-    pub id: i64,
-    pub movie_id: i64,
+    pub id: MovieFileId,
+    pub movie_id: MovieId,
     pub file_path: String,
     pub original_name: String,
     pub size_bytes: i64,

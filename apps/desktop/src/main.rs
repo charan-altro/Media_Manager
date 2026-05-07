@@ -47,12 +47,12 @@ async fn create_library(
         let _ = media_core::scanner::worker::scan_library(&pool, &library, task_id, &task_manager).await;
     });
 
-    Ok(id)
+    Ok(id.into())
 }
 
 #[tauri::command]
 async fn delete_library(id: i64, state: State<'_, AppState>) -> Result<(), String> {
-    db::queries::delete_library(&state.pool, id).await.map_err(|e| e.to_string())
+    db::queries::delete_library(&state.pool, media_core::models::LibraryId(id)).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -62,7 +62,7 @@ async fn get_movies(
     language: Option<String>, 
     state: State<'_, AppState>
 ) -> Result<Vec<Movie>, String> {
-    db::queries::get_all_movies(&state.pool, library_id, genre, language).await.map_err(|e| e.to_string())
+    db::queries::get_all_movies(&state.pool, library_id.map(media_core::models::LibraryId), genre, language).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -72,17 +72,17 @@ async fn get_tv_shows(
     language: Option<String>, 
     state: State<'_, AppState>
 ) -> Result<Vec<TVShow>, String> {
-    db::queries::get_all_tv_shows(&state.pool, library_id, genre, language).await.map_err(|e| e.to_string())
+    db::queries::get_all_tv_shows(&state.pool, library_id.map(media_core::models::LibraryId), genre, language).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn get_seasons(show_id: i64, state: State<'_, AppState>) -> Result<Vec<Season>, String> {
-    db::queries::get_seasons_by_show_id(&state.pool, show_id).await.map_err(|e| e.to_string())
+    db::queries::get_seasons_by_show_id(&state.pool, media_core::models::TvShowId(show_id)).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn get_episodes(season_id: i64, state: State<'_, AppState>) -> Result<Vec<Episode>, String> {
-    db::queries::get_episodes_by_season_id(&state.pool, season_id).await.map_err(|e| e.to_string())
+    db::queries::get_episodes_by_season_id(&state.pool, media_core::models::SeasonId(season_id)).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -102,7 +102,7 @@ async fn start_scan(library_id: i64, state: State<'_, AppState>) -> Result<Strin
     let task_id = uuid::Uuid::new_v4().to_string();
     
     let libraries = db::queries::get_all_libraries(&pool).await.map_err(|e| e.to_string())?;
-    if let Some(lib) = libraries.into_iter().find(|l| l.id == library_id) {
+    if let Some(lib) = libraries.into_iter().find(|l| l.id == media_core::models::LibraryId(library_id)) {
         tauri::async_runtime::spawn(async move {
             let _ = media_core::scanner::worker::scan_library(&pool, &lib, task_id, &task_manager).await;
         });
@@ -127,12 +127,12 @@ async fn scrape_batch(ids: Vec<i64>, media_type: String, state: State<'_, AppSta
 
         let mut all_tasks = Vec::new();
         if media_type == "movie" {
-            if let Ok(movies) = db::queries::get_movies_by_ids(&pool, &ids).await {
-                all_tasks.extend(movies.into_iter().map(|m| (m.id, m.title, m.year, "movie")));
+            if let Ok(movies) = db::queries::get_movies_by_ids(&pool, &ids.iter().map(|&x| media_core::models::MovieId(x)).collect::<Vec<_>>()).await {
+                all_tasks.extend(movies.into_iter().map(|m| (m.id.0, m.title, m.year, "movie")));
             }
         } else {
-            if let Ok(shows) = db::queries::get_tv_shows_by_ids(&pool, &ids).await {
-                all_tasks.extend(shows.into_iter().map(|s| (s.id, s.title, None, "tv")));
+            if let Ok(shows) = db::queries::get_tv_shows_by_ids(&pool, &ids.iter().map(|&x| media_core::models::TvShowId(x)).collect::<Vec<_>>()).await {
+                all_tasks.extend(shows.into_iter().map(|s| (s.id.0, s.title, None, "tv")));
             }
         }
 
@@ -154,9 +154,9 @@ async fn scrape_batch(ids: Vec<i64>, media_type: String, state: State<'_, AppSta
             
             async move {
                 if m_type == "movie" {
-                    let _ = media_core::scraper::scrape_movie(id, &title_clone, year, &clients, &pool, script_path_clone.as_deref()).await;
+                    let _ = media_core::scraper::scrape_movie(id.into(), &title_clone, year, &clients, &pool, script_path_clone.as_deref()).await;
                 } else {
-                    let _ = media_core::scraper::scrape_tv_show(id, &title_clone, &clients, &pool, script_path_clone.as_deref()).await;
+                    let _ = media_core::scraper::scrape_tv_show(id.into(), &title_clone, &clients, &pool, script_path_clone.as_deref()).await;
                 }
                 
                 task_manager.broadcast(TaskUpdate {
@@ -200,7 +200,7 @@ async fn cleanup_batch(ids: Vec<i64>, media_type: String, state: State<'_, AppSt
             let renamer = media_core::renamer::Renamer::new(None, None);
             for id in ids {
                 processed += 1;
-                if let Ok(Some(movie)) = db::queries::get_movie_by_id(&pool, id).await {
+                if let Ok(Some(movie)) = db::queries::get_movie_by_id(&pool, media_core::models::MovieId(id)).await {
                     let libraries = db::queries::get_all_libraries(&pool).await.unwrap_or_default();
                     if let Some(lib) = libraries.into_iter().find(|l| l.id == movie.library_id) {
                         let lib_root = PathBuf::from(&lib.path);
@@ -246,13 +246,13 @@ async fn cleanup_batch(ids: Vec<i64>, media_type: String, state: State<'_, AppSt
 #[tauri::command]
 async fn update_movie(id: i64, title: String, year: Option<i32>, plot: Option<String>, rating: Option<f32>, genres: Option<Vec<String>>, state: State<'_, AppState>) -> Result<(), String> {
     let genres_json = genres.map(|g| serde_json::to_string(&g).unwrap_or_default());
-    db::queries::update_movie(&state.pool, id, &title, year, plot.as_deref(), rating, genres_json.as_deref()).await.map_err(|e| e.to_string())
+    db::queries::update_movie(&state.pool, media_core::models::MovieId(id), &title, year, plot.as_deref(), rating, genres_json.as_deref()).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn update_tv_show(id: i64, title: String, plot: Option<String>, rating: Option<f32>, genres: Option<Vec<String>>, state: State<'_, AppState>) -> Result<(), String> {
     let genres_json = genres.map(|g| serde_json::to_string(&g).unwrap_or_default());
-    db::queries::update_tv_show(&state.pool, id, &title, plot.as_deref(), rating, genres_json.as_deref(), None, None, None, None).await.map_err(|e| e.to_string())
+    db::queries::update_tv_show(&state.pool, media_core::models::TvShowId(id), &title, plot.as_deref(), rating, genres_json.as_deref(), None, None, None, None).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -278,12 +278,12 @@ async fn refresh_metadata(id: i64, state: State<'_, AppState>) -> Result<(), Str
     let settings = db::queries::get_settings(&pool).await.unwrap_or_default();
     let script_path = settings.get("post_processing_script").map(|s| s.as_str());
 
-    if let Ok(Some(movie)) = db::queries::get_movie_by_id(&pool, id).await {
-        let _ = media_core::scraper::scrape_movie(movie.id, &movie.title, movie.year, &clients, &pool, script_path).await;
+    if let Ok(Some(movie)) = db::queries::get_movie_by_id(&pool, media_core::models::MovieId(id)).await {
+        let _ = media_core::scraper::scrape_movie(movie.id.0, &movie.title, movie.year, &clients, &pool, script_path).await;
     } else {
         let shows = db::queries::get_all_tv_shows(&pool, None, None, None).await.unwrap_or_default();
-        if let Some(show) = shows.into_iter().find(|s| s.id == id) {
-            let _ = media_core::scraper::scrape_tv_show(show.id, &show.title, &clients, &pool, script_path).await;
+        if let Some(show) = shows.into_iter().find(|s| s.id == media_core::models::TvShowId(id)) {
+            let _ = media_core::scraper::scrape_tv_show(show.id.0, &show.title, &clients, &pool, script_path).await;
         }
     }
     task_manager.broadcast(TaskUpdate { task_id, status: "completed".to_string(), progress: 1, total: 1, message: "Metadata refresh complete".to_string(), started_at: Some(start_ms), debug_info: None });
@@ -359,7 +359,7 @@ async fn bulk_scrape(id: i64, state: State<'_, AppState>) -> Result<String, Stri
     let task_id = uuid::Uuid::new_v4().to_string();
     
     let libraries = db::queries::get_all_libraries(&pool).await.map_err(|e| e.to_string())?;
-    if let Some(_lib) = libraries.into_iter().find(|l| l.id == id) {
+    if let Some(_lib) = libraries.into_iter().find(|l| l.id == media_core::models::LibraryId(id)) {
         let pool_clone = pool.clone();
         let task_manager_clone = task_manager.clone();
         
@@ -368,16 +368,16 @@ async fn bulk_scrape(id: i64, state: State<'_, AppState>) -> Result<String, Stri
             let mut all_ids_movies: Vec<i64> = Vec::new();
             let mut all_ids_tv: Vec<i64> = Vec::new();
 
-            if let Ok(movies) = db::queries::get_all_movies(&pool_clone, Some(id), None, None).await {
+            if let Ok(movies) = db::queries::get_all_movies(&pool_clone, Some(media_core::models::LibraryId(id)), None, None).await {
                 all_ids_movies = movies.into_iter()
                     .filter(|m| m.status == media_core::models::MediaStatus::Unmatched)
-                    .map(|m| m.id)
+                    .map(|m| m.id.0)
                     .collect();
             }
-            if let Ok(shows) = db::queries::get_all_tv_shows(&pool_clone, Some(id), None, None).await {
+            if let Ok(shows) = db::queries::get_all_tv_shows(&pool_clone, Some(media_core::models::LibraryId(id)), None, None).await {
                 all_ids_tv = shows.into_iter()
                     .filter(|s| s.status == media_core::models::MediaStatus::Unmatched)
-                    .map(|s| s.id)
+                    .map(|s| s.id.0)
                     .collect();
             }
 
@@ -387,11 +387,11 @@ async fn bulk_scrape(id: i64, state: State<'_, AppState>) -> Result<String, Stri
             let script_path = settings.get("post_processing_script").cloned();
 
             let mut all_tasks: Vec<(i64, String, Option<i32>, &str)> = Vec::new();
-            if let Ok(movies) = db::queries::get_movies_by_ids(&pool_clone, &all_ids_movies).await {
-                all_tasks.extend(movies.into_iter().map(|m| (m.id, m.title, m.year, "movie")));
+            if let Ok(movies) = db::queries::get_movies_by_ids(&pool_clone, &all_ids_movies.iter().map(|&x| media_core::models::MovieId(x)).collect::<Vec<_>>()).await {
+                all_tasks.extend(movies.into_iter().map(|m| (m.id.0, m.title, m.year, "movie")));
             }
-            if let Ok(shows) = db::queries::get_tv_shows_by_ids(&pool_clone, &all_ids_tv).await {
-                all_tasks.extend(shows.into_iter().map(|s| (s.id, s.title, None, "tv")));
+            if let Ok(shows) = db::queries::get_tv_shows_by_ids(&pool_clone, &all_ids_tv.iter().map(|&x| media_core::models::TvShowId(x)).collect::<Vec<_>>()).await {
+                all_tasks.extend(shows.into_iter().map(|s| (s.id.0, s.title, None, "tv")));
             }
 
             let total = all_tasks.len() as i32;
@@ -410,9 +410,9 @@ async fn bulk_scrape(id: i64, state: State<'_, AppState>) -> Result<String, Stri
 
                 async move {
                     if m_type == "movie" {
-                        let _ = media_core::scraper::scrape_movie(id, &title_clone, year, &clients, &pool, script_path_clone.as_deref()).await;
+                        let _ = media_core::scraper::scrape_movie(id.into(), &title_clone, year, &clients, &pool, script_path_clone.as_deref()).await;
                     } else {
-                        let _ = media_core::scraper::scrape_tv_show(id, &title_clone, &clients, &pool, script_path_clone.as_deref()).await;
+                        let _ = media_core::scraper::scrape_tv_show(id.into(), &title_clone, &clients, &pool, script_path_clone.as_deref()).await;
                     }
 
                     task_manager.broadcast(TaskUpdate {

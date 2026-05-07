@@ -5,6 +5,10 @@ import { listen } from '@tauri-apps/api/event'
 import { Star, Wand2 } from 'lucide-react'
 import toast from 'react-hot-toast'
 
+// Hooks
+import { useLibraryData } from './hooks/useLibraryData'
+import { useMediaActions } from './hooks/useMediaActions'
+
 // Components
 import Navbar from './components/Navbar'
 import DetailModal from './components/DetailModal'
@@ -26,31 +30,42 @@ export interface TaskUpdate {
 }
 
 function App() {
-  const [libraries, setLibraries] = useState<any[]>([])
-  const [movies, setMovies] = useState<any[]>([])
-  const [tvShows, setTvShows] = useState<any[]>([])
+  const {
+    libraries,
+    movies,
+    tvShows,
+    loading,
+    selectedLibrary,
+    setSelectedLibrary,
+    genreFilter,
+    setGenreFilter,
+    languageFilter,
+    setLanguageFilter,
+    allGenres,
+    allLanguages,
+    loadData
+  } = useLibraryData();
+
+  const {
+    refreshingIds,
+    setRefreshingIds,
+    handleRefreshMetadata,
+    handleProcessAdvanced
+  } = useMediaActions();
+
   const [tasks, setTasks] = useState<Record<string, TaskUpdate>>({})
-  const [loading, setLoading] = useState(true)
-  const [selectedLibrary, setSelectedLibrary] = useState<number | null>(null)
   const [isScrolled, setIsScrolled] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   
   const [selectedItem, setSelectedItem] = useState<any | null>(null);
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [selectionMode, setSelectionMode] = useState(false);
-  const [genreFilter, setGenreFilter] = useState('');
-  const [languageFilter, setLanguageFilter] = useState('');
-  const [allGenres, setAllGenres] = useState<string[]>([]);
-  const [allLanguages, setAllLanguages] = useState<string[]>([]);
   const [showFilterMenu, setShowFilterMenu] = useState(false);
-  const [refreshingIds, setRefreshingIds] = useState<Record<number, boolean>>({});
   const [appSettings, setAppSettings] = useState<Record<string, string>>({});
-  const [currentTime, setCurrentTime] = useState(Date.now());
 
   useEffect(() => {
-    loadData()
     loadSettings()
-  }, [selectedLibrary, genreFilter, languageFilter])
+  }, [])
 
   useEffect(() => {
     let cleanupTasks: () => void = () => {};
@@ -64,13 +79,11 @@ function App() {
       cleanupTasks = subscribeToTasks();
     }
 
-    const timer = setInterval(() => setCurrentTime(Date.now()), 1000);
     const handleScroll = () => setIsScrolled(window.scrollY > 0);
     window.addEventListener('scroll', handleScroll);
 
     return () => {
       cleanupTasks();
-      clearInterval(timer);
       window.removeEventListener('scroll', handleScroll);
     };
   }, [])
@@ -95,28 +108,6 @@ function App() {
     }
   };
 
-  const loadData = async () => {
-    try {
-      const [libs, movs, shows, genres, langs] = await Promise.all([
-        api.getLibraries(),
-        api.getMovies(selectedLibrary || undefined, genreFilter, languageFilter),
-        api.getTvShows(selectedLibrary || undefined, genreFilter, languageFilter),
-        api.getGenres(),
-        api.getLanguages()
-      ]);
-      
-      setLibraries(libs)
-      setMovies(movs)
-      setTvShows(shows)
-      setAllGenres(genres)
-      setAllLanguages(langs)
-    } catch (err) {
-      console.error('Failed to load data', err)
-    } finally {
-      setLoading(false)
-    }
-  }
-
   const loadSettings = async () => {
     try {
       const data = await api.getSettings();
@@ -133,29 +124,6 @@ function App() {
     };
     return () => eventSource.close();
   }
-
-  const handleRefreshMetadata = async (id: number) => {
-    if (refreshingIds[id]) return;
-    setRefreshingIds(prev => ({ ...prev, [id]: true }));
-    try {
-      await api.refreshMetadata(id);
-    } catch (err) {
-      console.error('Failed to refresh metadata', err);
-      setRefreshingIds(prev => ({ ...prev, [id]: false }));
-    }
-  }
-
-  const handleProcessAdvanced = async (id: number) => {
-    if (refreshingIds[id]) return;
-    setRefreshingIds(prev => ({ ...prev, [id]: true }));
-    try {
-      await api.request('process_movie_advanced', `/movies/${id}/process-advanced`, { method: 'POST' });
-      toast.success('Advanced analysis started in background.');
-    } catch (err) {
-      console.error('Failed to start advanced analysis', err);
-      setRefreshingIds(prev => ({ ...prev, [id]: false }));
-    }
-  };
 
   const handleDownload = async (id: number, type: 'movie' | 'tv') => {
     if (IS_TAURI) {
@@ -235,7 +203,7 @@ function App() {
               setShowFilterMenu={setShowFilterMenu}
             />
           } />
-          <Route path="/tasks" element={<TasksPage tasks={Object.values(tasks)} currentTime={currentTime} />} />
+          <Route path="/tasks" element={<TasksPage tasks={Object.values(tasks)} />} />
           <Route path="/settings" element={
             <SettingsPage 
               appSettings={appSettings}

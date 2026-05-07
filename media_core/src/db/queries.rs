@@ -1,9 +1,9 @@
 // core/src/db/queries.rs
 use sqlx::sqlite::SqlitePool;
-use anyhow::Result;
-use crate::models::{Library, MediaType, Movie};
+use crate::db::Result;
+use crate::models::{Library, MediaType, Movie, LibraryId, MovieId, TvShowId, SeasonId, EpisodeId, MovieFileId};
 
-pub async fn delete_library(pool: &SqlitePool, id: i64) -> Result<()> {
+pub async fn delete_library(pool: &SqlitePool, id: LibraryId) -> Result<()> {
     sqlx::query("DELETE FROM libraries WHERE id = ?")
         .bind(id)
         .execute(pool)
@@ -24,7 +24,7 @@ pub async fn get_all_libraries(pool: &SqlitePool) -> Result<Vec<Library>> {
     Ok(libraries)
 }
 
-pub async fn insert_library(pool: &SqlitePool, name: &str, path: &str, media_type: MediaType) -> Result<i64> {
+pub async fn insert_library(pool: &SqlitePool, name: &str, path: &str, media_type: MediaType) -> Result<LibraryId> {
     let mt_str = match media_type {
         MediaType::Movie => "movie",
         MediaType::Tv => "tv",
@@ -43,7 +43,7 @@ pub async fn insert_library(pool: &SqlitePool, name: &str, path: &str, media_typ
     .execute(pool)
     .await?;
 
-    let row: (i64,) = sqlx::query_as("SELECT id FROM libraries WHERE path = ?")
+    let row: (LibraryId,) = sqlx::query_as("SELECT id FROM libraries WHERE path = ?")
         .bind(path)
         .fetch_one(pool)
         .await?;
@@ -51,9 +51,9 @@ pub async fn insert_library(pool: &SqlitePool, name: &str, path: &str, media_typ
     Ok(row.0)
 }
 
-pub async fn upsert_movie<'c, E>(executor: E, library_id: i64, title: &str, year: Option<i32>) -> Result<i64> 
+pub async fn upsert_movie<'c, E>(executor: E, library_id: LibraryId, title: &str, year: Option<i32>) -> Result<MovieId> 
 where E: sqlx::Executor<'c, Database = sqlx::Sqlite> {
-    let row: (i64,) = sqlx::query_as(
+    let row: (MovieId,) = sqlx::query_as(
         r#"
         INSERT INTO movies (library_id, title, year)
         VALUES (?, ?, ?)
@@ -70,9 +70,9 @@ where E: sqlx::Executor<'c, Database = sqlx::Sqlite> {
     Ok(row.0)
 }
 
-pub async fn upsert_tv_show<'c, E>(executor: E, library_id: i64, title: &str) -> Result<i64> 
+pub async fn upsert_tv_show<'c, E>(executor: E, library_id: LibraryId, title: &str) -> Result<TvShowId> 
 where E: sqlx::Executor<'c, Database = sqlx::Sqlite> {
-    let row: (i64,) = sqlx::query_as(
+    let row: (TvShowId,) = sqlx::query_as(
         r#"
         INSERT INTO tv_shows (library_id, title) 
         VALUES (?, ?) 
@@ -88,9 +88,9 @@ where E: sqlx::Executor<'c, Database = sqlx::Sqlite> {
     Ok(row.0)
 }
 
-pub async fn upsert_season<'c, E>(executor: E, show_id: i64, season_number: i32) -> Result<i64> 
+pub async fn upsert_season<'c, E>(executor: E, show_id: TvShowId, season_number: i32) -> Result<SeasonId> 
 where E: sqlx::Executor<'c, Database = sqlx::Sqlite> {
-    let row: (i64,) = sqlx::query_as(
+    let row: (SeasonId,) = sqlx::query_as(
         r#"
         INSERT INTO seasons (show_id, season_number) 
         VALUES (?, ?) 
@@ -108,16 +108,16 @@ where E: sqlx::Executor<'c, Database = sqlx::Sqlite> {
 
 pub async fn upsert_episode<'c, E>(
     executor: E, 
-    season_id: i64, 
+    season_id: SeasonId, 
     episode_number: i32, 
     file_path: &str, 
     original_name: &str, 
     size_bytes: i64,
     resolution: Option<crate::models::Resolution>,
     codec: Option<&str>
-) -> Result<i64> 
+) -> Result<EpisodeId> 
 where E: sqlx::Executor<'c, Database = sqlx::Sqlite> {
-    let row: (i64,) = sqlx::query_as(
+    let row: (EpisodeId,) = sqlx::query_as(
         r#"
         INSERT INTO episodes (season_id, episode_number, file_path, original_name, size_bytes, resolution, codec)
         VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -145,15 +145,15 @@ where E: sqlx::Executor<'c, Database = sqlx::Sqlite> {
 /// Insert or ignore a movie_file record (keyed on file_path).
 pub async fn upsert_movie_file<'c, E>(
     executor: E, 
-    movie_id: i64, 
+    movie_id: MovieId, 
     file_path: &str, 
     original_name: &str, 
     size_bytes: i64,
     resolution: Option<crate::models::Resolution>,
     codec: Option<&str>
-) -> Result<i64> 
+) -> Result<MovieFileId> 
 where E: sqlx::Executor<'c, Database = sqlx::Sqlite> {
-    let row: (i64,) = sqlx::query_as(
+    let row: (MovieFileId,) = sqlx::query_as(
         r#"
         INSERT INTO movie_files (movie_id, file_path, original_name, size_bytes, resolution, codec)
         VALUES (?, ?, ?, ?, ?, ?)
@@ -179,7 +179,7 @@ where E: sqlx::Executor<'c, Database = sqlx::Sqlite> {
 
 pub async fn get_all_movies(
     pool: &SqlitePool, 
-    library_id: Option<i64>,
+    library_id: Option<LibraryId>,
     genre: Option<String>,
     language: Option<String>
 ) -> Result<Vec<Movie>> {
@@ -220,7 +220,7 @@ pub async fn get_all_movies(
 
 pub async fn get_all_tv_shows(
     pool: &SqlitePool, 
-    library_id: Option<i64>,
+    library_id: Option<LibraryId>,
     genre: Option<String>,
     language: Option<String>
 ) -> Result<Vec<crate::models::TVShow>> {
@@ -259,7 +259,7 @@ pub async fn get_all_tv_shows(
     Ok(shows)
 }
 
-pub async fn get_seasons_by_show_id(pool: &SqlitePool, show_id: i64) -> Result<Vec<crate::models::Season>> {
+pub async fn get_seasons_by_show_id(pool: &SqlitePool, show_id: TvShowId) -> Result<Vec<crate::models::Season>> {
     let seasons = sqlx::query_as::<_, crate::models::Season>(
         "SELECT * FROM seasons WHERE show_id = ? ORDER BY season_number ASC"
     )
@@ -269,7 +269,7 @@ pub async fn get_seasons_by_show_id(pool: &SqlitePool, show_id: i64) -> Result<V
     Ok(seasons)
 }
 
-pub async fn get_episodes_by_season_id(pool: &SqlitePool, season_id: i64) -> Result<Vec<crate::models::Episode>> {
+pub async fn get_episodes_by_season_id(pool: &SqlitePool, season_id: SeasonId) -> Result<Vec<crate::models::Episode>> {
     let episodes = sqlx::query_as::<_, crate::models::Episode>(
         "SELECT * FROM episodes WHERE season_id = ? ORDER BY episode_number ASC"
     )
@@ -279,7 +279,7 @@ pub async fn get_episodes_by_season_id(pool: &SqlitePool, season_id: i64) -> Res
     Ok(episodes)
 }
 
-pub async fn get_movie_by_id(pool: &SqlitePool, id: i64) -> Result<Option<Movie>> {
+pub async fn get_movie_by_id(pool: &SqlitePool, id: MovieId) -> Result<Option<Movie>> {
     let movie = sqlx::query_as::<_, Movie>("SELECT * FROM movies WHERE id = ?")
         .bind(id)
         .fetch_optional(pool)
@@ -327,7 +327,7 @@ pub async fn get_unique_languages(pool: &SqlitePool) -> Result<Vec<String>> {
     Ok(result)
 }
 
-pub async fn get_movies_by_ids(pool: &SqlitePool, ids: &[i64]) -> Result<Vec<Movie>> {
+pub async fn get_movies_by_ids(pool: &SqlitePool, ids: &[MovieId]) -> Result<Vec<Movie>> {
     if ids.is_empty() { return Ok(vec![]); }
     let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
     let query = format!("SELECT * FROM movies WHERE id IN ({})", placeholders);
@@ -340,7 +340,7 @@ pub async fn get_movies_by_ids(pool: &SqlitePool, ids: &[i64]) -> Result<Vec<Mov
     Ok(movies)
 }
 
-pub async fn get_tv_shows_by_ids(pool: &SqlitePool, ids: &[i64]) -> Result<Vec<crate::models::TVShow>> {
+pub async fn get_tv_shows_by_ids(pool: &SqlitePool, ids: &[TvShowId]) -> Result<Vec<crate::models::TVShow>> {
     if ids.is_empty() { return Ok(vec![]); }
     let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
     let query = format!("SELECT id, library_id, title, tmdb_id, imdb_id, status, plot, rating, poster_url, backdrop_url, tagline, runtime, genres, language, cast_list, trailer_url, nfo_path, created_at, updated_at FROM tv_shows WHERE id IN ({})", placeholders);
@@ -355,7 +355,7 @@ pub async fn get_tv_shows_by_ids(pool: &SqlitePool, ids: &[i64]) -> Result<Vec<c
 
 pub async fn update_movie(
     pool: &SqlitePool, 
-    id: i64, 
+    id: MovieId, 
     title: &str, 
     year: Option<i32>, 
     plot: Option<&str>,
@@ -380,7 +380,7 @@ pub async fn update_movie(
     Ok(())
 }
 
-pub async fn get_tv_show_by_id(pool: &SqlitePool, id: i64) -> Result<Option<crate::models::TVShow>> {
+pub async fn get_tv_show_by_id(pool: &SqlitePool, id: TvShowId) -> Result<Option<crate::models::TVShow>> {
     let show = sqlx::query_as::<_, crate::models::TVShow>(
         "SELECT id, library_id, title, tmdb_id, imdb_id, status, plot, rating, poster_url, backdrop_url, tagline, runtime, genres, language, cast_list, trailer_url, nfo_path, created_at, updated_at FROM tv_shows WHERE id = ?"
     )
@@ -392,7 +392,7 @@ pub async fn get_tv_show_by_id(pool: &SqlitePool, id: i64) -> Result<Option<crat
 
 pub async fn update_tv_show(
     pool: &SqlitePool, 
-    id: i64, 
+    id: TvShowId, 
     title: &str, 
     plot: Option<&str>,
     rating: Option<f32>,

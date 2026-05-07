@@ -1,12 +1,18 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { Activity, Clock, Cpu } from 'lucide-react';
 
 interface TasksPageProps {
   tasks: any[];
-  currentTime: number;
 }
 
-const TasksPage: React.FC<TasksPageProps> = ({ tasks, currentTime }) => {
+const TasksPage: React.FC<TasksPageProps> = ({ tasks }) => {
+  const [currentTime, setCurrentTime] = useState(Date.now());
+
+  useEffect(() => {
+    const timer = setInterval(() => setCurrentTime(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
   return (
     <div className="px-4 md:px-12 py-24 min-h-screen">
       <div className="max-w-4xl mx-auto space-y-8">

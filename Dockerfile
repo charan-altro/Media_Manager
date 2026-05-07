@@ -4,6 +4,7 @@ WORKDIR /app
 
 # Install build dependencies
 RUN apt-get update && \
+    apt-get upgrade -y && \
     apt-get install -y --no-install-recommends \
     curl pkg-config libssl-dev build-essential ca-certificates && \
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
@@ -32,6 +33,7 @@ FROM debian:13-slim
 # - ca-certificates: For HTTPS requests
 # - ffmpeg: For HLS transcoding and metadata extraction
 RUN apt-get update && \
+    apt-get upgrade -y && \
     apt-get install -y --no-install-recommends \
     libssl3 ca-certificates ffmpeg && \
     rm -rf /var/lib/apt/lists/*

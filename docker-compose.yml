@@ -6,6 +6,9 @@
 services:
   media-manager:
     image: charankumarbs/media-manager:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: media-manager
 
     ports:

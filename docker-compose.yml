@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  media-manager:
+    build: .
+    container_name: media-manager
+    ports:
+      - "7878:7878"
+    volumes:
+      - ./data:/app/data
+      - ./media:/media:ro
+    environment:
+      - DATABASE_URL=sqlite:/app/data/mediavault.db
+      - RUST_LOG=info
+    restart: unless-stopped

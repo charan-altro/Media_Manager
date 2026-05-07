@@ -136,7 +136,8 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
             </div>
             <div className="space-y-2">
               <label className="text-xs font-black text-zinc-500 uppercase tracking-[0.2em]">Directory Path</label>
-              <input name="path" placeholder="C:\Media\Movies" className="w-full bg-black border border-zinc-800 rounded-xl p-4 text-sm font-medium text-white focus:border-red-600 focus:ring-1 focus:ring-red-600 outline-none transition shadow-inner" required />
+              <input name="path" placeholder="/media/movies" className="w-full bg-black border border-zinc-800 rounded-xl p-4 text-sm font-medium text-white focus:border-red-600 focus:ring-1 focus:ring-red-600 outline-none transition shadow-inner" required />
+
             </div>
             <button 
               type="submit" 

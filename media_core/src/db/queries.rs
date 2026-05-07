@@ -279,6 +279,22 @@ pub async fn get_episodes_by_season_id(pool: &SqlitePool, season_id: SeasonId) -
     Ok(episodes)
 }
 
+pub async fn get_library_by_id(pool: &SqlitePool, id: LibraryId) -> Result<Option<Library>> {
+    let lib = sqlx::query_as::<_, Library>("SELECT * FROM libraries WHERE id = ?")
+        .bind(id)
+        .fetch_optional(pool)
+        .await?;
+    Ok(lib)
+}
+
+pub async fn get_episode_by_id(pool: &SqlitePool, id: EpisodeId) -> Result<Option<crate::models::Episode>> {
+    let ep = sqlx::query_as::<_, crate::models::Episode>("SELECT * FROM episodes WHERE id = ?")
+        .bind(id)
+        .fetch_optional(pool)
+        .await?;
+    Ok(ep)
+}
+
 pub async fn get_movie_by_id(pool: &SqlitePool, id: MovieId) -> Result<Option<Movie>> {
     let movie = sqlx::query_as::<_, Movie>("SELECT * FROM movies WHERE id = ?")
         .bind(id)

@@ -2,7 +2,7 @@
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 
 export const IS_TAURI = (window as any).__TAURI_INTERNALS__ !== undefined || (window as any).__TAURI__ !== undefined || (window as any).__TAURI_IPC__ !== undefined;
-export const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:7878/api';
+export const API_BASE = import.meta.env.VITE_API_URL || (IS_TAURI ? 'http://localhost:7878/api' : '/api');
 
 export interface Library {
   id: number;
@@ -142,89 +142,95 @@ export async function request<T>(command: string, path: string, args: any = {}):
 
 export const api = {
   getLibraries: () => request<Library[]>('get_libraries', '/libraries'),
-  createLibrary: (name: string, path: string, mediaType: string) => 
-    request<number>('create_library', '/libraries', { name, path, mediaType }),
-  deleteLibrary: (libraryId: number) =>
-    request<void>('delete_library', `/libraries/${libraryId}`, { method: 'DELETE', id: libraryId }),
-  getMovies: (libraryId?: number, genre?: string, language?: string) => {
+  createLibrary: (name: string, path: string, media_type: string) => 
+    request<number>('create_library', '/libraries', { name, path, media_type }),
+  deleteLibrary: (library_id: number) =>
+    request<void>('delete_library', `/libraries/${library_id}`, { method: 'DELETE', id: library_id }),
+  getMovies: (library_id?: number, genre?: string, language?: string) => {
     let q = [];
-    if (libraryId) q.push(`library_id=${libraryId}`);
+    if (library_id) q.push(`library_id=${library_id}`);
     if (genre) q.push(`genre=${encodeURIComponent(genre)}`);
     if (language) q.push(`language=${encodeURIComponent(language)}`);
     const qs = q.length > 0 ? `?${q.join('&')}` : '';
-    return request<Movie[]>('get_movies', `/movies${qs}`, { method: 'GET', libraryId, genre, language });
+    return request<Movie[]>('get_movies', `/movies${qs}`, { method: 'GET', library_id, genre, language });
   },
-  getTvShows: (libraryId?: number, genre?: string, language?: string) => {
+  getTvShows: (library_id?: number, genre?: string, language?: string) => {
     let q = [];
-    if (libraryId) q.push(`library_id=${libraryId}`);
+    if (library_id) q.push(`library_id=${library_id}`);
     if (genre) q.push(`genre=${encodeURIComponent(genre)}`);
     if (language) q.push(`language=${encodeURIComponent(language)}`);
     const qs = q.length > 0 ? `?${q.join('&')}` : '';
-    return request<TVShow[]>('get_tv_shows', `/tvshows${qs}`, { method: 'GET', libraryId, genre, language });
+    return request<TVShow[]>('get_tv_shows', `/tvshows${qs}`, { method: 'GET', library_id, genre, language });
   },
-  getSeasons: (showId: number) =>
-    request<Season[]>('get_seasons', `/tvshows/${showId}/seasons`, { method: 'GET', showId }),
-  getEpisodes: (seasonId: number) =>
-    request<Episode[]>('get_episodes', `/seasons/${seasonId}/episodes`, { method: 'GET', seasonId }),
-  startScan: (libraryId: number) => 
-    request<string>('start_scan', `/libraries/${libraryId}/scan`, { method: 'POST', libraryId }),
-  cleanupDuplicates: (libraryId: number) =>
-    request<string[]>('cleanup_duplicates', `/libraries/${libraryId}/cleanup/duplicates`, { method: 'POST' }),
-  cleanupEmptyFolders: (libraryId: number) =>
-    request<string[]>('cleanup_empty_folders', `/libraries/${libraryId}/cleanup/empty-folders`, { method: 'POST' }),
-  renameMovie: (movieId: number) =>
-    request<string>('rename_movie', `/movies/${movieId}/rename`, { method: 'POST' }),
-  playMovie: (movieId: number) =>
-    request<string>('play_movie', `/movies/${movieId}/play`, { method: 'POST', id: movieId }),
-  playEpisode: (episodeId: number) =>
-    request<string>('play_episode', `/episodes/${episodeId}/play`, { method: 'POST', id: episodeId }),
-  scrapeBatch: (ids: number[], mediaType: string) =>
-    request<string>('scrape_batch', `/scrape/batch`, { method: 'POST', ids, mediaType }),
-  cleanupBatch: (ids: number[], mediaType: string) =>
-    request<string>('cleanup_batch', `/cleanup/batch`, { method: 'POST', ids, mediaType }),
-  downloadToLocal: (id: number, mediaType: string, destPath: string) =>
-    request<string>('download_to_local', '', { id, mediaType, destPath }),
+  getSeasons: (show_id: number) =>
+    request<Season[]>('get_seasons', `/tvshows/${show_id}/seasons`, { method: 'GET', show_id, id: show_id }),
+  getEpisodes: (season_id: number) =>
+    request<Episode[]>('get_episodes', `/seasons/${season_id}/episodes`, { method: 'GET', season_id, id: season_id }),
+  startScan: (library_id: number) => 
+    request<string>('start_scan', `/libraries/${library_id}/scan`, { method: 'POST', library_id, id: library_id }),
+  cleanupDuplicates: (library_id: number) =>
+    request<string[]>('cleanup_duplicates', `/libraries/${library_id}/cleanup/duplicates`, { method: 'POST', id: library_id }),
+  cleanupEmptyFolders: (library_id: number) =>
+    request<string[]>('cleanup_empty_folders', `/libraries/${library_id}/cleanup/empty-folders`, { method: 'POST', id: library_id }),
+  renameMovie: (movie_id: number) =>
+    request<string>('rename_movie', `/movies/${movie_id}/rename`, { method: 'POST', id: movie_id }),
+  playMovie: (movie_id: number) =>
+    request<string>('play_movie', `/movies/${movie_id}/play`, { method: 'POST', id: movie_id }),
+  playEpisode: (episode_id: number) =>
+    request<string>('play_episode', `/episodes/${episode_id}/play`, { method: 'POST', id: episode_id }),
+  scrapeBatch: (ids: number[], media_type: string) =>
+    request<string>('scrape_batch', `/scrape/batch`, { method: 'POST', ids, media_type }),
+  cleanupBatch: (ids: number[], media_type: string) =>
+    request<string>('cleanup_batch', `/cleanup/batch`, { method: 'POST', ids, media_type }),
+  downloadToLocal: (id: number, media_type: string, dest_path: string) =>
+    request<string>('download_to_local', '', { id, media_type, dest_path }),
   getGenres: () => request<string[]>('get_genres', '/genres', { method: 'GET' }),
   getLanguages: () => request<string[]>('get_languages', '/languages', { method: 'GET' }),
-  refreshMetadata: (movieId: number) =>
-    request<string>('refresh_metadata', `/movies/${movieId}/refresh`, { method: 'POST', id: movieId }),
-  
-  processMovieAdvanced: (movieId: number) =>
-    request<void>('process_movie_advanced', `/movies/${movieId}/process-advanced`, { method: 'POST' }),
+  refreshMetadata: (movie_id: number) =>
+    request<string>('refresh_metadata', `/movies/${movie_id}/refresh`, { method: 'POST', id: movie_id }),
 
-  processTvShowAdvanced: (showId: number) =>
-    request<void>('process_tv_show_advanced', `/tvshows/${showId}/process-advanced`, { method: 'POST' }),
-    
-  processLibraryAdvanced: (libraryId: number) =>
-    request<void>('process_library_advanced', `/libraries/${libraryId}/process-advanced`, { method: 'POST' }),
+  processMovieAdvanced: (movie_id: number) =>
+    request<void>('process_movie_advanced', `/movies/${movie_id}/process-advanced`, { method: 'POST', id: movie_id }),
 
-  updateMovie: (id: number, data: Partial<Movie>) =>
-    request<void>('update_movie', `/movies/${id}`, { method: 'PUT', ...data }),
-    
-  updateTvShow: (id: number, data: Partial<TVShow>) =>
-    request<void>('update_tvshow', `/tvshows/${id}`, { method: 'PUT', ...data }),
-    
+  processTvShowAdvanced: (show_id: number) =>
+    request<void>('process_tv_show_advanced', `/tvshows/${show_id}/process-advanced`, { method: 'POST', id: show_id }),
+
+  processLibraryAdvanced: (library_id: number) =>
+    request<void>('process_library_advanced', `/libraries/${library_id}/process-advanced`, { method: 'POST', id: library_id }),
+
+  updateMovie: (id: number, data: Partial<Movie>) => {
+    const { title, year, plot, rating, genres } = data;
+    // genres in Movie interface is string, but Rust expects Vec<String>
+    const genres_vec = typeof genres === 'string' ? genres.split(',').map(g => g.trim()) : genres;
+    return request<void>('update_movie', `/movies/${id}`, { method: 'PUT', id, title, year, plot, rating, genres: genres_vec });
+  },
+
+  updateTvShow: (id: number, data: Partial<TVShow>) => {
+    const { title, plot, rating, genres } = data;
+    const genres_vec = typeof genres === 'string' ? genres.split(',').map(g => g.trim()) : genres;
+    return request<void>('update_tvshow', `/tvshows/${id}`, { method: 'PUT', id, title, plot, rating, genres: genres_vec });
+  },
+
   getSettings: () =>
     request<Record<string, string>>('get_settings', '/settings'),
-    
+
   setSettings: (settings: Record<string, string>) =>
     request<void>('set_settings', '/settings', { method: 'POST', ...settings }),
 
   createBackup: () =>
     request<string>('create_backup', '/maintenance/backup', { method: 'POST' }),
-    
+
   checkUpdates: () =>
     request<UpdateCheckResult>('check_updates', '/system/update-check', { method: 'GET' }),
 
   startStreaming: (id: number, type: 'movie' | 'episode' = 'movie') =>
-    request<string>('start_streaming', `/stream/${id}/start?type=${type}`, { method: 'POST' }),
+    request<string>('start_streaming', `/stream/${id}/start?type=${type}`, { method: 'POST', id, mediaType: type }),
 
   searchSubtitles: (id: number) =>
-    request<void>('search_subtitles', `/movies/${id}/subtitles/search`, { method: 'GET' }),
+    request<void>('search_subtitles', `/movies/${id}/subtitles/search`, { method: 'GET', id }),
 
   getPlaybackStatus: (type: string, id: number) =>
-    request<PlaybackStatus>('get_playback_status', `/playback/status/${type}/${id}`, { method: 'GET' }),
-
+    request<PlaybackStatus>('get_playback_status', `/playback/status/${type}/${id}`, { method: 'GET', id, mediaType: type }),
   updatePlaybackProgress: (data: PlaybackProgressPayload) =>
     request<any>('update_playback_progress', `/playback/heartbeat`, { method: 'POST', ...data }),
 

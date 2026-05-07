@@ -15,6 +15,8 @@ interface SettingsPageProps {
 const SettingsPage: React.FC<SettingsPageProps> = ({ 
   appSettings, setAppSettings, libraries, selectedLibrary, setSelectedLibrary, loadData 
 }) => {
+  const [isAdding, setIsAdding] = React.useState(false);
+
   return (
     <div className="px-4 md:px-12 py-24 min-h-screen">
       <div className="max-w-4xl mx-auto space-y-12">
@@ -101,6 +103,8 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
           </div>
           <form onSubmit={async (e) => {
             e.preventDefault();
+            if (isAdding) return;
+            setIsAdding(true);
             const form = e.currentTarget;
             const formData = new FormData(form);
             try {
@@ -113,6 +117,8 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
               toast.success('Library added successfully! Automatic scan has started.');
             } catch(err: any) {
               toast.error('Failed to add library: ' + err.message);
+            } finally {
+              setIsAdding(false);
             }
           }} className="grid gap-6">
             <div className="grid md:grid-cols-2 gap-6">
@@ -132,7 +138,13 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
               <label className="text-xs font-black text-zinc-500 uppercase tracking-[0.2em]">Directory Path</label>
               <input name="path" placeholder="C:\Media\Movies" className="w-full bg-black border border-zinc-800 rounded-xl p-4 text-sm font-medium text-white focus:border-red-600 focus:ring-1 focus:ring-red-600 outline-none transition shadow-inner" required />
             </div>
-            <button type="submit" className="bg-red-600 hover:bg-red-700 px-10 py-4 rounded-xl text-sm font-black transition uppercase tracking-widest text-white shadow-xl shadow-red-900/30 w-fit active:scale-95">Add Source</button>
+            <button 
+              type="submit" 
+              disabled={isAdding}
+              className={`${isAdding ? 'opacity-50 cursor-not-allowed' : 'hover:bg-red-700'} bg-red-600 px-10 py-4 rounded-xl text-sm font-black transition uppercase tracking-widest text-white shadow-xl shadow-red-900/30 w-fit active:scale-95`}
+            >
+              {isAdding ? 'Adding Source...' : 'Add Source'}
+            </button>
           </form>
         </div>
 

@@ -158,6 +158,24 @@ const MediaGrid: React.FC<MediaGridProps> = ({
           </div>
         ))}
       </div>
+
+      {items.length === 0 && (
+        <div className="flex flex-col items-center justify-center py-20 border-2 border-dashed border-zinc-900 rounded-3xl bg-zinc-950/50">
+           <div className="w-16 h-16 bg-zinc-900 rounded-2xl flex items-center justify-center mb-6 border border-zinc-800">
+              <Star className="w-8 h-8 text-zinc-700" />
+           </div>
+           <h4 className="text-lg font-black text-white uppercase italic tracking-tighter mb-2">No Titles Found</h4>
+           <p className="text-zinc-500 text-sm max-w-xs text-center font-medium">We couldn't find any media matching your current filters or search query.</p>
+           {(genreFilter || languageFilter) && (
+             <button 
+               onClick={() => { setGenreFilter(''); setLanguageFilter(''); }}
+               className="mt-6 text-red-500 text-xs font-black uppercase tracking-widest hover:text-red-400 transition"
+             >
+               Clear Active Filters
+             </button>
+           )}
+        </div>
+      )}
     </div>
   );
 };

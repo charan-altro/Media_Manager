@@ -24,10 +24,10 @@ const TasksPage: React.FC<TasksPageProps> = ({ tasks, currentTime }) => {
           )}
           {tasks.map(task => {
             const percentage = task.total > 0 ? Math.round((task.progress / task.total) * 100) : 0;
-            const duration = task.started_at ? Math.round((currentTime - task.started_at) / 1000) : null;
+            const duration = task.startedAt ? Math.round((currentTime - task.startedAt) / 1000) : null;
 
             return (
-              <div key={task.task_id} className="bg-[#181818] p-6 rounded-2xl border border-zinc-800 shadow-xl space-y-4">
+              <div key={task.taskId} className="bg-[#181818] p-6 rounded-2xl border border-zinc-800 shadow-xl space-y-4">
                 <div className="flex justify-between items-center">
                   <div className="flex items-center gap-4">
                     <div className={`p-2 rounded-lg ${task.status === 'completed' ? 'bg-green-500/10' : task.status === 'error' ? 'bg-red-500/10' : 'bg-blue-500/10'}`}>
@@ -66,13 +66,13 @@ const TasksPage: React.FC<TasksPageProps> = ({ tasks, currentTime }) => {
                   />
                 </div>
 
-                {task.debug_info && (
+                {task.debugInfo && (
                   <div className="bg-black/40 p-3 rounded-lg border border-zinc-800/50">
                     <div className="flex items-center gap-2 text-[10px] text-zinc-600 font-bold uppercase tracking-widest mb-1">
                       <Cpu className="w-3 h-3" /> Debug Information
                     </div>
                     <div className="text-[10px] font-mono text-zinc-500 break-all">
-                      {task.debug_info}
+                      {task.debugInfo}
                     </div>
                   </div>
                 )}

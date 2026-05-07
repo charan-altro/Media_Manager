@@ -67,12 +67,12 @@ const Navbar: React.FC<NavbarProps> = ({
             <div className="flex-1">
               <div className="flex justify-between items-center mb-1">
                 <span className="text-[10px] font-bold text-zinc-300 uppercase tracking-widest">{latestTask.message}</span>
-                <span className="text-[10px] font-mono text-zinc-500">{Math.round((latestTask.progress / latestTask.total) * 100)}%</span>
+                <span className="text-[10px] font-mono text-zinc-500">{latestTask.total > 0 ? Math.round((latestTask.progress / latestTask.total) * 100) : 0}%</span>
               </div>
               <div className="h-1 w-full bg-zinc-800 rounded-full overflow-hidden">
                 <div 
                   className="h-full bg-red-600 transition-all duration-300"
-                  style={{ width: `${(latestTask.progress / latestTask.total) * 100}%` }}
+                  style={{ width: `${latestTask.total > 0 ? (latestTask.progress / latestTask.total) * 100 : 0}%` }}
                 />
               </div>
             </div>

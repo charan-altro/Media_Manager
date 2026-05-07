@@ -20,8 +20,9 @@ FROM node:20-slim AS frontend-builder
 WORKDIR /app
 COPY frontend/package*.json ./frontend/
 RUN cd frontend && npm ci
-COPY frontend/ ./frontend/
-RUN cd frontend && npm run build
+COPY . .
+WORKDIR /app/frontend
+RUN npm run build
 
 # Stage 3: Minimal runtime image
 FROM debian:13-slim

@@ -187,10 +187,14 @@ pub async fn get_all_movies(
     if library_id.is_some() {
         query.push_str(" AND library_id = ?");
     }
-    if genre.is_some() {
+    
+    let genre_active = genre.as_ref().map(|s| !s.is_empty()).unwrap_or(false);
+    if genre_active {
         query.push_str(" AND genres LIKE ?");
     }
-    if language.is_some() {
+    
+    let language_active = language.as_ref().map(|s| !s.is_empty()).unwrap_or(false);
+    if language_active {
         query.push_str(" AND language = ?");
     }
     query.push_str(" ORDER BY title ASC");
@@ -199,11 +203,15 @@ pub async fn get_all_movies(
     if let Some(id) = library_id {
         q = q.bind(id);
     }
-    if let Some(ref g) = genre {
-        q = q.bind(format!("%\"{}\"%", g));
+    if genre_active {
+        if let Some(ref g) = genre {
+            q = q.bind(format!("%\"{}\"%", g));
+        }
     }
-    if let Some(ref l) = language {
-        q = q.bind(l);
+    if language_active {
+        if let Some(ref l) = language {
+            q = q.bind(l);
+        }
     }
 
     let movies = q.fetch_all(pool).await?;
@@ -220,10 +228,14 @@ pub async fn get_all_tv_shows(
     if library_id.is_some() {
         query.push_str(" AND library_id = ?");
     }
-    if genre.is_some() {
+    
+    let genre_active = genre.as_ref().map(|s| !s.is_empty()).unwrap_or(false);
+    if genre_active {
         query.push_str(" AND genres LIKE ?");
     }
-    if language.is_some() {
+    
+    let language_active = language.as_ref().map(|s| !s.is_empty()).unwrap_or(false);
+    if language_active {
         query.push_str(" AND language = ?");
     }
     query.push_str(" ORDER BY title ASC");
@@ -232,11 +244,15 @@ pub async fn get_all_tv_shows(
     if let Some(id) = library_id {
         q = q.bind(id);
     }
-    if let Some(ref g) = genre {
-        q = q.bind(format!("%\"{}\"%", g));
+    if genre_active {
+        if let Some(ref g) = genre {
+            q = q.bind(format!("%\"{}\"%", g));
+        }
     }
-    if let Some(ref l) = language {
-        q = q.bind(l);
+    if language_active {
+        if let Some(ref l) = language {
+            q = q.bind(l);
+        }
     }
 
     let shows = q.fetch_all(pool).await?;

@@ -5,7 +5,6 @@
 
 services:
   media-manager:
-    build: .
     image: charankumarbs/media-manager:latest
     container_name: media-manager
 

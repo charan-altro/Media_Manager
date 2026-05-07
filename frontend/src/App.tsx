@@ -16,13 +16,13 @@ import TasksPage from './pages/TasksPage'
 import SettingsPage from './pages/SettingsPage'
 
 export interface TaskUpdate {
-  task_id: string;
+  taskId: string;
   status: string;
   progress: number;
   total: number;
   message: string;
-  started_at?: number;
-  debug_info?: string;
+  startedAt?: number;
+  debugInfo?: string;
 }
 
 function App() {
@@ -77,8 +77,9 @@ function App() {
 
 
   const handleTaskUpdate = (update: TaskUpdate) => {
+    console.log('Frontend received task update:', update);
     setTasks(prev => {
-      const oldStatus = prev[update.task_id]?.status;
+      const oldStatus = prev[update.taskId]?.status;
 
       if (update.status === 'error' && oldStatus !== 'error') {
         toast.error(`Task Failed: ${update.message}`, { duration: 5000 });
@@ -86,7 +87,7 @@ function App() {
         toast.success(`Task Completed: ${update.message}`, { duration: 5000 });
       }
 
-      return { ...prev, [update.task_id]: update };
+      return { ...prev, [update.taskId]: update };
     });
     if (update.status === 'completed') {
       setRefreshingIds({}); 

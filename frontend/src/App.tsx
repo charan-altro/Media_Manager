@@ -77,7 +77,17 @@ function App() {
 
 
   const handleTaskUpdate = (update: TaskUpdate) => {
-    setTasks(prev => ({ ...prev, [update.task_id]: update }));
+    setTasks(prev => {
+      const oldStatus = prev[update.task_id]?.status;
+
+      if (update.status === 'error' && oldStatus !== 'error') {
+        toast.error(`Task Failed: ${update.message}`, { duration: 5000 });
+      } else if (update.status === 'completed' && oldStatus !== 'completed') {
+        toast.success(`Task Completed: ${update.message}`, { duration: 5000 });
+      }
+
+      return { ...prev, [update.task_id]: update };
+    });
     if (update.status === 'completed') {
       setRefreshingIds({}); 
       setTimeout(loadData, 1000);

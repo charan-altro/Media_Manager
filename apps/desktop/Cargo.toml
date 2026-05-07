@@ -14,8 +14,8 @@ tracing-subscriber.workspace = true
 uuid.workspace = true
 futures.workspace = true
 dotenvy.workspace = true
-tauri = { version = "2.0" }
+tauri = { version = "2.0", features = [] }
 opener.workspace = true
 
 [build-dependencies]
-tauri-build = { version = "2.0" }
+tauri-build = { version = "2.0", features = [] }

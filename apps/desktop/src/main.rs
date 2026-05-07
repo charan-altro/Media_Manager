@@ -43,7 +43,7 @@ async fn create_library(
     let task_id = uuid::Uuid::new_v4().to_string();
     let library = Library { id, name, path, media_type, created_at: "".to_string() };
     
-    tokio::spawn(async move {
+    tauri::async_runtime::spawn(async move {
         let _ = media_core::scanner::worker::scan_library(&pool, &library, task_id, &task_manager).await;
     });
 
@@ -103,7 +103,7 @@ async fn start_scan(library_id: i64, state: State<'_, AppState>) -> Result<Strin
     
     let libraries = db::queries::get_all_libraries(&pool).await.map_err(|e| e.to_string())?;
     if let Some(lib) = libraries.into_iter().find(|l| l.id == library_id) {
-        tokio::spawn(async move {
+        tauri::async_runtime::spawn(async move {
             let _ = media_core::scanner::worker::scan_library(&pool, &lib, task_id, &task_manager).await;
         });
         Ok("Scan started".to_string())
@@ -118,7 +118,7 @@ async fn scrape_batch(ids: Vec<i64>, media_type: String, state: State<'_, AppSta
     let task_manager = state.task_manager.clone();
     let task_id = uuid::Uuid::new_v4().to_string();
 
-    tokio::spawn(async move {
+    tauri::async_runtime::spawn(async move {
         let start_ms = now_ms();
         let clients = std::sync::Arc::new(media_core::scraper::ScraperClients::from_settings(&pool).await);
         
@@ -191,7 +191,7 @@ async fn cleanup_batch(ids: Vec<i64>, media_type: String, state: State<'_, AppSt
     let task_manager = state.task_manager.clone();
     let task_id = uuid::Uuid::new_v4().to_string();
 
-    tokio::spawn(async move {
+    tauri::async_runtime::spawn(async move {
         let start_ms = now_ms();
         let total = ids.len() as i32;
         let mut processed = 0;
@@ -270,23 +270,24 @@ async fn set_settings(settings: std::collections::HashMap<String, String>, state
 
 #[tauri::command]
 async fn refresh_metadata(id: i64, state: State<'_, AppState>) -> Result<(), String> {
+    let start_ms = now_ms();
     let pool = state.pool.clone();
     let task_manager = state.task_manager.clone();
     let task_id = uuid::Uuid::new_v4().to_string();
     let clients = media_core::scraper::ScraperClients::from_settings(&pool).await;
-        let settings = db::queries::get_settings(&pool).await.unwrap_or_default();
-        let script_path = settings.get("post_processing_script").map(|s| s.as_str());
+    let settings = db::queries::get_settings(&pool).await.unwrap_or_default();
+    let script_path = settings.get("post_processing_script").map(|s| s.as_str());
 
-        if let Ok(Some(movie)) = db::queries::get_movie_by_id(&pool, id).await {
-            let _ = media_core::scraper::scrape_movie(movie.id, &movie.title, movie.year, &clients, &pool, script_path).await;
-        } else {
-            let shows = db::queries::get_all_tv_shows(&pool, None, None, None).await.unwrap_or_default();
-            if let Some(show) = shows.into_iter().find(|s| s.id == id) {
-                let _ = media_core::scraper::scrape_tv_show(show.id, &show.title, &clients, &pool, script_path).await;
-            }
+    if let Ok(Some(movie)) = db::queries::get_movie_by_id(&pool, id).await {
+        let _ = media_core::scraper::scrape_movie(movie.id, &movie.title, movie.year, &clients, &pool, script_path).await;
+    } else {
+        let shows = db::queries::get_all_tv_shows(&pool, None, None, None).await.unwrap_or_default();
+        if let Some(show) = shows.into_iter().find(|s| s.id == id) {
+            let _ = media_core::scraper::scrape_tv_show(show.id, &show.title, &clients, &pool, script_path).await;
         }
-        task_manager.broadcast(TaskUpdate { task_id, status: "completed".to_string(), progress: 1, total: 1, message: "Metadata refresh complete".to_string(), started_at: Some(start_ms), debug_info: None });
-    });
+    }
+    task_manager.broadcast(TaskUpdate { task_id, status: "completed".to_string(), progress: 1, total: 1, message: "Metadata refresh complete".to_string(), started_at: Some(start_ms), debug_info: None });
+
     Ok(())
 }
 
@@ -362,7 +363,7 @@ async fn bulk_scrape(id: i64, state: State<'_, AppState>) -> Result<String, Stri
         let pool_clone = pool.clone();
         let task_manager_clone = task_manager.clone();
         
-        tokio::spawn(async move {
+        tauri::async_runtime::spawn(async move {
             // H4 fix: fetch both movies AND tv shows from the library
             let mut all_ids_movies: Vec<i64> = Vec::new();
             let mut all_ids_tv: Vec<i64> = Vec::new();
@@ -446,7 +447,18 @@ async fn bulk_scrape(id: i64, state: State<'_, AppState>) -> Result<String, Stri
 fn main() {
 
     dotenvy::dotenv().ok();
-    let database_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite:mediavault.db?mode=rwc".to_string());
+    let database_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| {
+        let app_data = std::env::var("APPDATA").unwrap_or_else(|_| ".".to_string());
+        let db_dir = std::path::PathBuf::from(app_data).join("MediaManager");
+        
+        if !db_dir.exists() {
+            std::fs::create_dir_all(&db_dir).expect("CRITICAL: Failed to create AppData directory for database. Check permissions.");
+        }
+        
+        let db_path = db_dir.join("mediavault.db");
+        format!("sqlite:{}?mode=rwc", db_path.to_string_lossy())
+    });
+    
     let pool = tauri::async_runtime::block_on(async {
         db::init_pool(&database_url).await.expect("Failed to initialize database pool")
     });
@@ -471,8 +483,9 @@ fn main() {
             check_updates, create_backup, bulk_scrape
         ])
         .setup(|app| {
-            // H7 fix: Start Discord notification monitor (mirrors server implementation)
+            // Start Discord notification monitor
             tauri::async_runtime::spawn(async move {
+
                 let mut rx = task_manager_for_notifications.subscribe();
                 let notifier = media_core::notifications::Notifier::new();
                 while let Ok(update) = rx.recv().await {
@@ -489,7 +502,7 @@ fn main() {
             });
 
             // Start Watchdog
-            tokio::spawn(async move {
+            tauri::async_runtime::spawn(async move {
                 let watchdog = media_core::scanner::watchdog::Watchdog::new(pool_for_watchdog, task_manager_for_watchdog);
                 if let Err(e) = watchdog.start().await {
                     eprintln!("Watchdog failed: {}", e);
@@ -499,8 +512,18 @@ fn main() {
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let mut rx = task_manager_clone.subscribe();
-                while let Ok(update) = rx.recv().await {
-                    let _ = handle.emit("task-update", update);
+                loop {
+                    match rx.recv().await {
+                        Ok(update) => {
+                            println!("EMITTING TASK UPDATE: {:?}", update);
+                            let _ = handle.emit("task-update", update);
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                            eprintln!("Event bridge lagged by {} messages", n);
+                            continue;
+                        }
+                        Err(_) => break,
+                    }
                 }
             });
             Ok(())

@@ -1,7 +1,7 @@
 // frontend/src/api/adapter.ts
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 
-export const IS_TAURI = (window as any).__TAURI_INTERNALS__ !== undefined;
+export const IS_TAURI = (window as any).__TAURI_INTERNALS__ !== undefined || (window as any).__TAURI__ !== undefined || (window as any).__TAURI_IPC__ !== undefined;
 export const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:7878/api';
 
 export interface Library {
@@ -111,7 +111,12 @@ export function getImageUrl(path: any): string {
 
 export async function request<T>(command: string, path: string, args: any = {}): Promise<T> {
   if (IS_TAURI) {
-    return await invoke<T>(command, args);
+    try {
+      return await invoke<T>(command, args);
+    } catch (err: any) {
+      // If Tauri returns a string, wrap it in a proper Error object
+      throw new Error(typeof err === 'string' ? err : (err.message || 'Unknown error'));
+    }
   } else {
     const { method: rawMethod, ...payload } = args;
     const method = rawMethod || (Object.keys(payload).length > 0 ? 'POST' : 'GET');
@@ -138,16 +143,16 @@ export async function request<T>(command: string, path: string, args: any = {}):
 export const api = {
   getLibraries: () => request<Library[]>('get_libraries', '/libraries'),
   createLibrary: (name: string, path: string, mediaType: string) => 
-    request<number>('create_library', '/libraries', { name, path, media_type: mediaType }),
+    request<number>('create_library', '/libraries', { name, path, mediaType }),
   deleteLibrary: (libraryId: number) =>
-    request<void>('delete_library', `/libraries/${libraryId}`, { method: 'DELETE' }),
+    request<void>('delete_library', `/libraries/${libraryId}`, { method: 'DELETE', id: libraryId }),
   getMovies: (libraryId?: number, genre?: string, language?: string) => {
     let q = [];
     if (libraryId) q.push(`library_id=${libraryId}`);
     if (genre) q.push(`genre=${encodeURIComponent(genre)}`);
     if (language) q.push(`language=${encodeURIComponent(language)}`);
     const qs = q.length > 0 ? `?${q.join('&')}` : '';
-    return request<Movie[]>('get_movies', `/movies${qs}`, { method: 'GET' });
+    return request<Movie[]>('get_movies', `/movies${qs}`, { method: 'GET', libraryId, genre, language });
   },
   getTvShows: (libraryId?: number, genre?: string, language?: string) => {
     let q = [];
@@ -155,14 +160,14 @@ export const api = {
     if (genre) q.push(`genre=${encodeURIComponent(genre)}`);
     if (language) q.push(`language=${encodeURIComponent(language)}`);
     const qs = q.length > 0 ? `?${q.join('&')}` : '';
-    return request<TVShow[]>('get_tvshows', `/tvshows${qs}`, { method: 'GET' });
+    return request<TVShow[]>('get_tv_shows', `/tvshows${qs}`, { method: 'GET', libraryId, genre, language });
   },
   getSeasons: (showId: number) =>
-    request<Season[]>('get_seasons', `/tvshows/${showId}/seasons`, { method: 'GET' }),
+    request<Season[]>('get_seasons', `/tvshows/${showId}/seasons`, { method: 'GET', showId }),
   getEpisodes: (seasonId: number) =>
-    request<Episode[]>('get_episodes', `/seasons/${seasonId}/episodes`, { method: 'GET' }),
+    request<Episode[]>('get_episodes', `/seasons/${seasonId}/episodes`, { method: 'GET', seasonId }),
   startScan: (libraryId: number) => 
-    request<string>('start_scan', `/libraries/${libraryId}/scan`, { method: 'POST' }),
+    request<string>('start_scan', `/libraries/${libraryId}/scan`, { method: 'POST', libraryId }),
   cleanupDuplicates: (libraryId: number) =>
     request<string[]>('cleanup_duplicates', `/libraries/${libraryId}/cleanup/duplicates`, { method: 'POST' }),
   cleanupEmptyFolders: (libraryId: number) =>
@@ -174,15 +179,15 @@ export const api = {
   playEpisode: (episodeId: number) =>
     request<string>('play_episode', `/episodes/${episodeId}/play`, { method: 'POST', id: episodeId }),
   scrapeBatch: (ids: number[], mediaType: string) =>
-    request<string>('scrape_batch', `/scrape/batch`, { method: 'POST', ids, media_type: mediaType }),
+    request<string>('scrape_batch', `/scrape/batch`, { method: 'POST', ids, mediaType }),
   cleanupBatch: (ids: number[], mediaType: string) =>
-    request<string>('cleanup_batch', `/cleanup/batch`, { method: 'POST', ids, media_type: mediaType }),
+    request<string>('cleanup_batch', `/cleanup/batch`, { method: 'POST', ids, mediaType }),
   downloadToLocal: (id: number, mediaType: string, destPath: string) =>
-    request<string>('download_to_local', '', { id, media_type: mediaType, dest_path: destPath }),
+    request<string>('download_to_local', '', { id, mediaType, destPath }),
   getGenres: () => request<string[]>('get_genres', '/genres', { method: 'GET' }),
   getLanguages: () => request<string[]>('get_languages', '/languages', { method: 'GET' }),
   refreshMetadata: (movieId: number) =>
-    request<string>('refresh_metadata', `/movies/${movieId}/refresh`, { method: 'POST' }),
+    request<string>('refresh_metadata', `/movies/${movieId}/refresh`, { method: 'POST', id: movieId }),
   
   processMovieAdvanced: (movieId: number) =>
     request<void>('process_movie_advanced', `/movies/${movieId}/process-advanced`, { method: 'POST' }),

@@ -14,6 +14,7 @@ pub struct Task {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub struct TaskUpdate {
     pub task_id: String,
     pub status: String,

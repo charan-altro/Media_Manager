@@ -1,29 +1,63 @@
-version: '3.8'
+# ─── Media Manager — Raspberry Pi 4B (8GB) ──────────────────────────────────
+# Access:
+#   Local LAN    → http://<PI-LAN-IP>:7878
+#   Public HTTPS → https://media.jedarabale.space (via Traefik)
 
 services:
   media-manager:
+    build: .
     image: charankumarbs/media-manager:latest
     container_name: media-manager
+
     ports:
       - "7878:7878"
+
+    devices:
+      - /dev/vchiq:/dev/vchiq # VC GPU (needed for some Pi GPU paths)
+      - /dev/video10:/dev/video10 # V4L2 H264 encoder
+      - /dev/video11:/dev/video11 # V4L2 H264 decoder
+      - /dev/video12:/dev/video12 # V4L2 HEVC decoder
+
     volumes:
-      # Persistent App Data (Database, config)
-      - ./data:/app/data
-      
-      # Media Mappings (Map your Windows paths to Linux paths inside the container)
-      # Format: "C:\Local\Path:/media/internal_name:ro"
-      - "D:\\MEDIA\\Movies_8+:/media/movies_d:ro"
-      - "D:\\torrents\\radarr:/media/torrents_d:ro"
-      - "F:\\MEDIA\\Movies:/media/movies_f:ro"
-      - "F:\\MEDIA\\TVShows:/media/tvshows_f:ro"
-      
+      # Config & Database — on external drive or local path
+      - /home/homeserver/app_configs/media_manager:/app/data
+      - /home/homeserver/app_configs/media_manager/backups:/app/backups
+
+      # Transcode RAM disk — protects SD card from HLS chunk writes
+      - type: tmpfs
+        target: /app/transcodes
+        tmpfs:
+          size: 2048M # 2GB for active transcoding sessions
+
+      # Media Mappings — Mount your Raspberry Pi storage paths
+      - /mnt/fastmedia/MEDIA/Movies:/media/movies:ro
+      - /mnt/fastmedia/MEDIA/TVShows:/media/tv:ro
+      - /mnt/fastmedia/torrents:/downloads_torrent
+      - /mnt/fastmedia:/data:ro
+
     environment:
       - DATABASE_URL=sqlite:/app/data/mediavault.db
       - RUST_LOG=info
-      
-      # Uncomment and fill these if you want Trakt sync to work in Docker
-      # - TRAKT_CLIENT_ID=your_id
-      # - TRAKT_CLIENT_SECRET=your_secret
-      
+      - PUID=1000
+      - PGID=1000
+      - TZ=Asia/Kolkata
+      - ALLOWED_ORIGIN=* # Allow access via domain
+
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.media-manager-https.rule=Host(`media.jedarabale.space`)"
+      - "traefik.http.routers.media-manager-https.entrypoints=websecure"
+      - "traefik.http.routers.media-manager-https.service=media-manager"
+      - "traefik.http.routers.media-manager-https.tls.certresolver=cloudflare"
+      - "traefik.http.services.media-manager.loadbalancer.server.port=7878"
+
+    networks:
+      - frontend
+
     restart: unless-stopped
+
+networks:
+  frontend:
+    external: true
+
 

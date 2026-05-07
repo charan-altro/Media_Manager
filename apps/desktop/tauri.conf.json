@@ -6,7 +6,7 @@
     "beforeDevCommand": "",
     "beforeBuildCommand": "",
     "devUrl": "http://localhost:5173",
-    "frontendDist": "../../../frontend/dist"
+    "frontendDist": "../../frontend/dist"
   },
   "app": {
     "windows": [
@@ -21,6 +21,11 @@
     }
   },
   "bundle": {
-    "active": false
+    "active": true,
+    "icon": [
+      "icons/icon.ico"
+    ],
+    "publisher": "Charan",
+    "copyright": "Copyright 2026 Media Manager"
   }
 }

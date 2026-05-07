@@ -34,6 +34,16 @@ pub async fn scan_library(
 
     tracing::info!("Starting scan for library '{}' at path '{}'", library.name, library.path);
 
+    tx.broadcast(TaskUpdate {
+        task_id: task_id.clone(),
+        status: "running".to_string(),
+        progress: 0,
+        total: 0,
+        message: format!("Initializing scan for '{}'...", library.name),
+        started_at: start_time,
+        debug_info: None,
+    });
+
     let skip_dirs: HashSet<&str> = HashSet::from([
         ".git", "node_modules", ".actors", "@eaDir", "#recycle", 
         "System Volume Information", "$RECYCLE.BIN", "Config.Msi", "$Recycle.Bin"
@@ -49,7 +59,7 @@ pub async fn scan_library(
             progress: 0,
             total: 0,
             message: msg,
-            started_at: None,
+            started_at: start_time,
             debug_info: None,
         });
         return Ok(());

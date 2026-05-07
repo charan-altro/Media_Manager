@@ -108,7 +108,7 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
               const path = formData.get('path') as string;
               const type = formData.get('type') as string;
               await api.createLibrary(name, path, type);
-              await loadData();
+              setTimeout(loadData, 500); // Small delay to ensure DB write visibility
               form.reset();
               toast.success('Library added successfully! Automatic scan has started.');
             } catch(err: any) {

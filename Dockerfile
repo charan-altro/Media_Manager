@@ -1,5 +1,5 @@
 # Stage 1: Build Rust binary
-FROM rust:1.78-slim AS builder
+FROM rust:slim AS builder
 WORKDIR /app
 # Install build dependencies
 RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*

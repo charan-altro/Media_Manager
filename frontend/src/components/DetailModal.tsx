@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { X, Star, Play, Info, Calendar, Clock, Monitor, Cpu, CheckCircle2, RefreshCw, Airplay } from 'lucide-react';
+import { X, Star, Play, Calendar, Clock, Monitor, Cpu, CheckCircle2, RefreshCw, Airplay } from 'lucide-react';
 import { getImageUrl, api, API_BASE } from '../api/adapter';
 import toast from 'react-hot-toast';
 
@@ -427,7 +427,7 @@ const DetailModal: React.FC<DetailModalProps> = ({
                     <button 
                       onClick={async () => {
                         try {
-                          const results = await api.searchSubtitles(item.id);
+                          await api.searchSubtitles(item.id);
                           toast.success('Subtitle search triggered! Check your media folder for downloaded .srt files.');
                         } catch (err: any) {
                           toast.error('Subtitle search failed: ' + err.message);

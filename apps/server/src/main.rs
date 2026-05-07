@@ -332,6 +332,9 @@ async fn bulk_scrape(State(state): State<Arc<AppState>>, Path(id): Path<i64>) ->
     // We'll use hardcoded keys or get them from env
     let clients = std::sync::Arc::new(media_core::scraper::ScraperClients::from_settings(&pool).await);
 
+    tokio::spawn(async move {
+        let start_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+
         // Fetch settings
         let settings = db::queries::get_settings(&pool).await.unwrap_or_default();
         let script_path = settings.get("post_processing_script").cloned();
@@ -818,7 +821,10 @@ async fn refresh_metadata(State(state): State<Arc<AppState>>, Path(id): Path<i64
     let pool = state.pool.clone();
     let task_manager = state.task_manager.clone();
     let task_id = uuid::Uuid::new_v4().to_string();
-    let clients = media_core::scraper::ScraperClients::from_settings(&pool).await;
+
+    tokio::spawn(async move {
+        let start_ms = now_ms();
+        let clients = media_core::scraper::ScraperClients::from_settings(&pool).await;
         
         let settings = db::queries::get_settings(&pool).await.unwrap_or_default();
         let script_path = settings.get("post_processing_script").map(|s| s.as_str());

@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom'
 import { api, API_BASE, IS_TAURI } from './api/adapter'
 import { listen } from '@tauri-apps/api/event'
-import { LoaderCircle, Star, Wand2 } from 'lucide-react'
+import { Star, Wand2 } from 'lucide-react'
 import toast from 'react-hot-toast'
 
 // Components

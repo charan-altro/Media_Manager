@@ -1,5 +1,5 @@
 import React from 'react';
-import { Play, CheckCircle2, RefreshCw, Star, Layers, ChevronDown } from 'lucide-react';
+import { Play, CheckCircle2, RefreshCw, Star, ChevronDown } from 'lucide-react';
 import { getImageUrl, api } from '../api/adapter';
 
 interface MediaGridProps {

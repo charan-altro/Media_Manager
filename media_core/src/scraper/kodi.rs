@@ -59,7 +59,7 @@ impl KodiScraper {
             let xbmc_resources = PathBuf::from("/Applications/XBMC.app/Contents/Resources/addons");
             if xbmc_resources.exists() { paths.push(xbmc_resources); }
 
-            if let Some(home) = dirs_next::home_dir() {
+            if let Some(home) = std::env::var("HOME").map(PathBuf::from).ok() {
                 for folder in &["Kodi", ".kodi", "kodi", "XBMC", ".xbmc", "xbmc"] {
                     let kodi_home = home.join(folder).join("addons");
                     if kodi_home.exists() { paths.push(kodi_home); }
@@ -77,7 +77,7 @@ impl KodiScraper {
                 if kodi_sys.exists() { paths.push(kodi_sys); }
             }
 
-            if let Some(home) = dirs_next::home_dir() {
+            if let Some(home) = std::env::var("HOME").map(PathBuf::from).ok() {
                 for folder in &["Kodi", ".kodi", "kodi", "XBMC", ".xbmc", "xbmc"] {
                     let kodi_home = home.join(folder).join("addons");
                     if kodi_home.exists() { paths.push(kodi_home); }

@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo } from 'react';
 import { Film } from 'lucide-react';
 import Hero from '../components/Hero';
 import Sidebar from '../components/Sidebar';

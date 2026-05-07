@@ -131,7 +131,7 @@ export async function request<T>(command: string, path: string, args: any = {}):
     }
     
     const text = await response.text();
-    return text ? JSON.parse(text) : null;
+    return text ? JSON.parse(text) : null as unknown as T;
   }
 }
 

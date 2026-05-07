@@ -1,7 +1,6 @@
 // core/src/scraper/kyradb.rs
-use serde::{Deserialize, Serialize};
 use reqwest::Client;
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 
 pub struct KyraDbClient {
     client: Client,

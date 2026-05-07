@@ -43,7 +43,7 @@ impl ImdbClient {
         if let Some(entries) = data.get("d") {
             if let Some(entries_array) = entries.as_array() {
                 for entry in entries_array {
-                    let q = entry.get("q").and_then(|v| v.as_str());
+                    let _q = entry.get("q").and_then(|v| v.as_str());
                     // q: "feature" for movies, "tvSeries" for shows
                     let id = entry.get("id").and_then(|v| v.as_str()).unwrap_or_default().to_string();
                     let title = entry.get("l").and_then(|v| v.as_str()).unwrap_or_default().to_string();

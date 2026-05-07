@@ -38,7 +38,6 @@ impl Watchdog {
         loop {
             // Check for new libraries every 30 seconds
             let pool_for_poll = pool_clone.clone();
-            let mut new_paths_found = false;
             
             if let Ok(libraries) = crate::db::queries::get_all_libraries(&pool_for_poll).await {
                 for lib in libraries {
@@ -48,7 +47,6 @@ impl Watchdog {
                             tracing::error!("Watchdog failed to watch {}: {}", lib.path, e);
                         } else {
                             watched_paths.insert(lib.path.clone());
-                            new_paths_found = true;
                         }
                     }
                 }

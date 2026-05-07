@@ -16,7 +16,7 @@ COPY frontend/ ./frontend/
 RUN cd frontend && npm run build
 
 # Stage 3: Minimal runtime image
-FROM debian:bookworm-slim
+FROM debian:13-slim
 RUN apt-get update && apt-get install -y libssl3 ca-certificates && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=builder /app/target/release/server /app/server

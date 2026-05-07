@@ -1,7 +1,6 @@
 // core/src/scraper/moviemeter.rs
-use serde::{Deserialize, Serialize};
 use reqwest::Client;
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct MovieMeterSearchResult {

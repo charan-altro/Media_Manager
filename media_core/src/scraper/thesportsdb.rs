@@ -1,7 +1,6 @@
 // core/src/scraper/thesportsdb.rs
-use serde::{Deserialize, Serialize};
 use reqwest::Client;
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 
 pub struct TheSportsDbClient {
     client: Client,

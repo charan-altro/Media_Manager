@@ -1,6 +1,6 @@
 // core/src/scraper/ofdb.rs
 use reqwest::Client;
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use scraper::{Html, Selector};
 
 pub struct OfdbClient {

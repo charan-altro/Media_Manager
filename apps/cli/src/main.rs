@@ -78,12 +78,12 @@ async fn main() -> Result<()> {
             if media_type == "movie" {
                 if let Ok(movies) = db::queries::get_all_movies(&pool, Some(LibraryId(library_id)), None, None).await {
                     let unmatched: Vec<_> = movies.into_iter().filter(|m| m.status == media_core::models::MediaStatus::Unmatched).collect();
-                    all_tasks.extend(unmatched.into_iter().map(|m| (m.id.into(), m.title, m.year, "movie")));
+                    all_tasks.extend(unmatched.into_iter().map(|m| (m.id.0, m.title, m.year, "movie")));
                 }
             } else {
                 if let Ok(shows) = db::queries::get_all_tv_shows(&pool, Some(LibraryId(library_id)), None, None).await {
                     let unmatched: Vec<_> = shows.into_iter().filter(|s| s.status == media_core::models::MediaStatus::Unmatched).collect();
-                    all_tasks.extend(unmatched.into_iter().map(|s| (s.id.into(), s.title, None, "tv")));
+                    all_tasks.extend(unmatched.into_iter().map(|s| (s.id.0, s.title, None, "tv")));
                 }
             }
 
@@ -93,9 +93,9 @@ async fn main() -> Result<()> {
             for (id, title, year, m_type) in all_tasks {
                 println!("Scraping: {}", title);
                 if m_type == "movie" {
-                    let _ = media_core::scraper::scrape_movie(id, &title, year, &clients, &pool_arc, script_path).await;
+                    let _ = media_core::scraper::scrape_movie(media_core::models::MovieId(id), &title, year, &clients, &pool_arc, script_path).await;
                 } else {
-                    let _ = media_core::scraper::scrape_tv_show(id, &title, &clients, &pool_arc, script_path).await;
+                    let _ = media_core::scraper::scrape_tv_show(media_core::models::TvShowId(id), &title, &clients, &pool_arc, script_path).await;
                 }
             }
             println!("Bulk scrape completed.");

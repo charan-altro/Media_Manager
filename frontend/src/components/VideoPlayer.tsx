@@ -1,6 +1,6 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import Hls from 'hls.js';
-import { X } from 'lucide-react';
+import { X, Loader2, AlertCircle } from 'lucide-react';
 
 interface VideoPlayerProps {
   url: string;
@@ -9,26 +9,36 @@ interface VideoPlayerProps {
 
 const VideoPlayer: React.FC<VideoPlayerProps> = ({ url, onClose }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const [isPreparing, setIsPreparing] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let hls: Hls;
 
-    if (videoRef.current) {
+    const initPlayer = () => {
+      if (!videoRef.current) return;
       const video = videoRef.current;
 
       if (Hls.isSupported()) {
         hls = new Hls({
           enableWorker: true,
           lowLatencyMode: true,
-          backBufferLength: 90
+          backBufferLength: 90,
+          manifestLoadingMaxRetry: 10,
+          manifestLoadingRetryDelay: 1000,
+          levelLoadingMaxRetry: 10,
         });
+
         hls.loadSource(url);
         hls.attachMedia(video);
+        
         hls.on(Hls.Events.MANIFEST_PARSED, () => {
+          setIsPreparing(false);
           video.play().catch(e => console.error("Auto-play failed:", e));
         });
         
-        hls.on(Hls.Events.ERROR, (event, data) => {
+        hls.on(Hls.Events.ERROR, (_event, data) => {
+          console.error("HLS Error:", data);
           if (data.fatal) {
             switch (data.type) {
               case Hls.ErrorTypes.NETWORK_ERROR:
@@ -40,22 +50,28 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ url, onClose }) => {
                 hls.recoverMediaError();
                 break;
               default:
-                console.error("Fatal error, cannot recover");
+                setError(`Fatal streaming error: ${data.details}`);
                 hls.destroy();
                 break;
             }
           }
         });
       } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-        // For Safari/iOS native HLS support
         video.src = url;
         video.addEventListener('loadedmetadata', () => {
+          setIsPreparing(false);
           video.play().catch(e => console.error("Auto-play failed:", e));
         });
+        video.addEventListener('error', () => {
+           setError("Native HLS playback failed");
+        });
       }
-    }
+    };
+
+    const timeout = setTimeout(initPlayer, 500);
 
     return () => {
+      clearTimeout(timeout);
       if (hls) {
         hls.destroy();
       }
@@ -72,6 +88,27 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ url, onClose }) => {
           <X className="w-8 h-8" />
         </button>
       </div>
+      
+      {isPreparing && !error && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 z-[205] bg-black/60 backdrop-blur-sm">
+          <Loader2 className="w-12 h-12 text-red-600 animate-spin" />
+          <p className="text-zinc-400 font-black uppercase tracking-[0.2em] text-xs">Preparing HLS Stream...</p>
+          <p className="text-zinc-600 text-[10px] uppercase">FFmpeg is generating segments</p>
+        </div>
+      )}
+
+      {error && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 z-[205] bg-black">
+          <AlertCircle className="w-16 h-16 text-red-600" />
+          <p className="text-white font-black uppercase tracking-widest">{error}</p>
+          <button 
+            onClick={onClose}
+            className="mt-4 px-8 py-3 bg-zinc-800 hover:bg-zinc-700 text-white rounded-xl font-bold uppercase text-xs transition"
+          >
+            Go Back
+          </button>
+        </div>
+      )}
       
       <div className="w-full h-full max-w-7xl aspect-video relative group">
         <video 

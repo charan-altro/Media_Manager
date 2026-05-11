@@ -710,7 +710,7 @@ async fn cleanup_empty_folders(id: i64, state: State<'_, AppState>) -> Result<Ve
 }
 
 #[tauri::command]
-async fn start_streaming(id: i64, media_type: String, state: State<'_, AppState>) -> Result<String, String> {
+async fn start_streaming(id: i64, media_type: String, state: State<'_, AppState>, app_handle: tauri::AppHandle) -> Result<String, String> {
     let pool = state.pool.clone();
 
     let path = if media_type == "movie" {
@@ -720,15 +720,40 @@ async fn start_streaming(id: i64, media_type: String, state: State<'_, AppState>
     }.map_err(|e| e.to_string())?;
 
     if let Some(input_path) = path {
-        let output_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")).join("transcodes").join(id.to_string());
-        if !output_dir.exists() {
-            std::fs::create_dir_all(&output_dir).map_err(|e| e.to_string())?;
+        let cache_dir = app_handle.path().app_cache_dir().unwrap_or_else(|_| std::env::current_dir().unwrap());
+        let output_dir = cache_dir.join("transcodes").join(id.to_string());
+        
+        // Clean up previous transcodes for this ID
+        if output_dir.exists() {
+            let _ = std::fs::remove_dir_all(&output_dir);
         }
+        std::fs::create_dir_all(&output_dir).map_err(|e| e.to_string())?;
 
         media_core::scanner::ffmpeg::FfmpegEngine::create_hls_stream(&input_path, &output_dir)
             .map_err(|e| e.to_string())?;
 
         let playlist = output_dir.join("playlist.m3u8");
+        
+        // Wait for playlist to be created and non-empty
+        let mut attempts = 0;
+        while attempts < 30 { // Wait up to 15 seconds
+            if playlist.exists() {
+                if let Ok(meta) = std::fs::metadata(&playlist) {
+                    if meta.len() > 0 {
+                        // Small extra delay to ensure the first segments are written
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                        break;
+                    }
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            attempts += 1;
+        }
+
+        if !playlist.exists() {
+            return Err("Streaming failed to start: playlist not created".to_string());
+        }
+
         Ok(playlist.to_string_lossy().to_string())
     } else {
         Err("Media not found".to_string())

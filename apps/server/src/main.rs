@@ -131,8 +131,8 @@ async fn main() {
         .route("/api/episodes/:id/play", post(play_episode))
         .route("/api/movies/:id/download", get(download_movie))
         .route("/api/episodes/:id/download", get(download_episode))
-        .route("/api/stream/:id/start", post(start_streaming))
-        .route("/api/stream/:id/hls/:file", get(serve_stream))
+        // .route("/api/stream/:id/start", post(start_streaming))
+        // .route("/api/stream/:id/hls/:file", get(serve_stream))
         .route("/api/playback/heartbeat", post(update_playback_progress))
         .route("/api/playback/status/:type/:id", get(get_playback_status))
         .route("/api/movies/:id/subtitles/search", get(search_subtitles))
@@ -1472,21 +1472,61 @@ async fn check_updates() -> impl IntoResponse {
     }
 }
 
+/* 
 async fn start_streaming(State(state): State<Arc<AppState>>, Path(id): Path<i64>) -> impl IntoResponse {
+    let output_dir = PathBuf::from("transcodes").join(id.to_string());
+    
+    // Clean up previous transcodes for this ID
+    if output_dir.exists() {
+        let _ = tokio::fs::remove_dir_all(&output_dir).await;
+    }
+    let _ = tokio::fs::create_dir_all(&output_dir).await;
+
     // Try as movie
     if let Ok(Some(path)) = db::queries::get_movie_full_path(&state.pool, MovieId(id)).await {
-        let output_dir = PathBuf::from("transcodes").join(id.to_string());
         match media_core::scanner::ffmpeg::FfmpegEngine::create_hls_stream(&path, &output_dir) {
-            Ok(_) => return (StatusCode::OK, Json(format!("/stream/{}/hls/playlist.m3u8", id))).into_response(),
+            Ok(playlist_path) => {
+                // Wait for playlist to be created and non-empty
+                let mut attempts = 0;
+                while attempts < 30 { // Wait up to 15 seconds
+                    if playlist_path.exists() {
+                        if let Ok(meta) = std::fs::metadata(&playlist_path) {
+                            if meta.len() > 0 {
+                                // Small extra delay to ensure the first segments are being written
+                                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                                return (StatusCode::OK, Json(format!("/stream/{}/hls/playlist.m3u8", id))).into_response();
+                            }
+                        }
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    attempts += 1;
+                }
+                return (StatusCode::INTERNAL_SERVER_ERROR, "Streaming failed to start: playlist timeout").into_response();
+            },
             Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         }
     }
     
     // Try as episode
     if let Ok(Some(path)) = db::queries::get_episode_full_path(&state.pool, EpisodeId(id)).await {
-        let output_dir = PathBuf::from("transcodes").join(id.to_string());
         match media_core::scanner::ffmpeg::FfmpegEngine::create_hls_stream(&path, &output_dir) {
-            Ok(_) => return (StatusCode::OK, Json(format!("/stream/{}/hls/playlist.m3u8", id))).into_response(),
+            Ok(playlist_path) => {
+                // Wait for playlist to be created and non-empty
+                let mut attempts = 0;
+                while attempts < 30 { // Wait up to 15 seconds
+                    if playlist_path.exists() {
+                        if let Ok(meta) = std::fs::metadata(&playlist_path) {
+                            if meta.len() > 0 {
+                                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                                return (StatusCode::OK, Json(format!("/stream/{}/hls/playlist.m3u8", id))).into_response();
+                            }
+                        }
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    attempts += 1;
+                }
+                return (StatusCode::INTERNAL_SERVER_ERROR, "Streaming failed to start: playlist timeout").into_response();
+            },
             Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         }
     }
@@ -1502,7 +1542,7 @@ async fn serve_stream(Path((id, file)): Path<(i64, String)>) -> impl IntoRespons
 
     match tokio::fs::read(&path).await {
         Ok(bytes) => {
-            let mime = if file.ends_with(".m3u8") { "application/x-mpegURL" } else { "video/MP2T" };
+            let mime = if file.ends_with(".m3u8") { "application/vnd.apple.mpegurl" } else { "video/mp2t" };
             (
                 [(header::CONTENT_TYPE, mime)],
                 bytes,
@@ -1511,6 +1551,7 @@ async fn serve_stream(Path((id, file)): Path<(i64, String)>) -> impl IntoRespons
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
+*/
 
 #[derive(serde::Deserialize)]
 struct PlaybackHeartbeat {

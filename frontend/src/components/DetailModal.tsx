@@ -277,7 +277,7 @@ const DetailModal: React.FC<DetailModalProps> = ({
                               </div>
                             </div>
                             <div className="flex items-center gap-2">
-                              <button 
+                              {/* <button 
                                 onClick={async (e) => { 
                                   e.stopPropagation(); 
                                   try {
@@ -291,7 +291,7 @@ const DetailModal: React.FC<DetailModalProps> = ({
                                 title="Stream Episode"
                               >
                                 <Airplay className="w-4 h-4" />
-                              </button>
+                              </button> */}
                               <button onClick={(e) => { e.stopPropagation(); onDownload(ep.id, 'tv'); }} className="p-2 hover:bg-zinc-800 rounded-lg text-zinc-600 hover:text-white transition">
                                 <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>
                               </button>
@@ -368,14 +368,14 @@ const DetailModal: React.FC<DetailModalProps> = ({
               ) : (
                 <>
                   {!isShow && (
-                    <div className="flex flex-col sm:flex-row gap-3">
+                    <div className="flex flex-col gap-3">
                       <button 
                         onClick={() => api.playMovie(item.id)}
-                        className="flex-1 bg-red-600 hover:bg-red-700 py-4 rounded-xl font-black uppercase tracking-widest text-xs transition active:scale-95 flex items-center justify-center gap-2 shadow-lg shadow-red-900/20"
+                        className="w-full bg-red-600 hover:bg-red-700 py-4 rounded-xl font-black uppercase tracking-widest text-xs transition active:scale-95 flex items-center justify-center gap-2 shadow-lg shadow-red-900/20"
                       >
                         <Play className="w-4 h-4 fill-current" /> Start Playback
                       </button>
-                      <button 
+                      {/* <button 
                         onClick={async () => {
                           try {
                             const url = await api.startStreaming(item.id);
@@ -387,7 +387,7 @@ const DetailModal: React.FC<DetailModalProps> = ({
                         className="flex-1 bg-zinc-800 hover:bg-zinc-700 py-4 rounded-xl font-black uppercase tracking-widest text-xs transition border border-zinc-700 flex items-center justify-center gap-2"
                       >
                         <Airplay className="w-4 h-4" /> Stream
-                      </button>
+                      </button> */}
                     </div>
                   )}
                   {isShow && (
@@ -397,7 +397,72 @@ const DetailModal: React.FC<DetailModalProps> = ({
                       Select Episode Below
                     </button>
                   )}
-                  {/* ... existing buttons ... */}
+                  <button 
+                    onClick={startEditing}
+                    className="w-full bg-zinc-800 hover:bg-zinc-700 py-4 rounded-xl font-black uppercase tracking-widest text-xs transition border border-zinc-700 flex items-center justify-center gap-2"
+                  >
+                    Edit Metadata
+                  </button>
+                  <button 
+                    onClick={() => onRefresh(item.id)}
+                    disabled={refreshingIds[item.id]}
+                    className={`w-full py-4 rounded-xl font-black uppercase tracking-widest text-xs transition border flex items-center justify-center gap-2 ${
+                      refreshingIds[item.id] 
+                        ? 'bg-zinc-900 text-zinc-600 border-zinc-800 cursor-not-allowed' 
+                        : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border-zinc-700'
+                    }`}
+                  >
+                    <RefreshCw className={`w-4 h-4 ${refreshingIds[item.id] ? 'animate-spin' : ''}`} /> 
+                    {refreshingIds[item.id] ? 'Refreshing...' : 'Refresh Metadata'}
+                  </button>
+                  {!isShow && (
+                    <button 
+                      onClick={() => onAdvanced(item.id)}
+                      disabled={refreshingIds[item.id]}
+                      className="w-full bg-zinc-800 hover:bg-zinc-700 py-4 rounded-xl font-black uppercase tracking-widest text-xs transition border border-zinc-700 flex items-center justify-center gap-2"
+                    >
+                      <Monitor className={`w-4 h-4 ${refreshingIds[item.id] ? 'animate-pulse' : ''}`} /> Advanced Analysis
+                    </button>
+                  )}
+                  {!isShow && (
+                    <button 
+                      onClick={async () => {
+                        try {
+                          await api.renameMovie(item.id);
+                          toast.success('Rename started! The file will be reorganized based on your naming template.');
+                          loadData();
+                        } catch (err: any) {
+                          toast.error('Rename failed: ' + err.message);
+                        }
+                      }}
+                      className="w-full bg-zinc-800 hover:bg-zinc-700 py-4 rounded-xl font-black uppercase tracking-widest text-xs transition border border-zinc-700 flex items-center justify-center gap-2"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg> Rename File
+                    </button>
+                  )}
+                  {!isShow && item.imdb_id && (
+                    <button 
+                      onClick={async () => {
+                        try {
+                          await api.searchSubtitles(item.id);
+                          toast.success('Subtitle search triggered! Check your media folder for downloaded .srt files.');
+                        } catch (err: any) {
+                          toast.error('Subtitle search failed: ' + err.message);
+                        }
+                      }}
+                      className="w-full bg-zinc-800 hover:bg-zinc-700 py-4 rounded-xl font-black uppercase tracking-widest text-xs transition border border-zinc-700 flex items-center justify-center gap-2"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M7 15h4m-4-4h2m6 4h2M13 7h4"/></svg> Search Subtitles
+                    </button>
+                  )}
+                  {!isShow && (
+                    <button 
+                      onClick={() => onDownload(item.id, 'movie')}
+                      className="w-full bg-zinc-800 hover:bg-zinc-700 py-4 rounded-xl font-black uppercase tracking-widest text-xs transition border border-zinc-700 flex items-center justify-center gap-2"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg> Download
+                    </button>
+                  )}
                 </>
               )}
             </div>

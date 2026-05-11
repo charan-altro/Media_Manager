@@ -121,14 +121,15 @@ impl FfmpegEngine {
             .args(&[
                 "-i", input_path.to_str().ok_or_else(|| CoreError::PathError("Invalid path".to_string()))?,
                 "-c:v", encoder,
-                "-preset", "veryfast",
+                "-preset", "ultrafast",
                 "-crf", "22",
                 "-c:a", "aac",
                 "-b:a", "128k",
                 "-ac", "2",
                 "-f", "hls",
-                "-hls_time", "6",
+                "-hls_time", "4",
                 "-hls_list_size", "0", 
+                "-hls_flags", "independent_segments",
                 "-hls_segment_filename", segment_pattern.to_str().unwrap(),
                 playlist_path.to_str().unwrap(),
             ])

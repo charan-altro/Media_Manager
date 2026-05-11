@@ -62,7 +62,29 @@ async fn get_movies(
     language: Option<String>, 
     state: State<'_, AppState>
 ) -> Result<Vec<Movie>, String> {
-    db::queries::get_all_movies(&state.pool, library_id.map(media_core::models::LibraryId), genre, language).await.map_err(|e| e.to_string())
+    let mut movies = db::queries::get_all_movies(&state.pool, library_id.map(media_core::models::LibraryId), genre, language)
+        .await.map_err(|e| e.to_string())?;
+    
+    let libraries = db::queries::get_all_libraries(&state.pool).await.unwrap_or_default();
+    
+    // Convert relative paths to absolute for Tauri
+    for movie in &mut movies {
+        if let Some(lib) = libraries.iter().find(|l| l.id == movie.library_id) {
+            let lib_root = std::path::Path::new(&lib.path);
+            if let Some(ref poster) = movie.poster_url {
+                if !poster.starts_with("http") && !poster.starts_with('/') && !poster.contains(':') {
+                    movie.poster_url = Some(lib_root.join(poster).to_string_lossy().to_string());
+                }
+            }
+            if let Some(ref backdrop) = movie.backdrop_url {
+                if !backdrop.starts_with("http") && !backdrop.starts_with('/') && !backdrop.contains(':') {
+                    movie.backdrop_url = Some(lib_root.join(backdrop).to_string_lossy().to_string());
+                }
+            }
+        }
+    }
+    
+    Ok(movies)
 }
 
 #[tauri::command]
@@ -72,7 +94,28 @@ async fn get_tv_shows(
     language: Option<String>, 
     state: State<'_, AppState>
 ) -> Result<Vec<TVShow>, String> {
-    db::queries::get_all_tv_shows(&state.pool, library_id.map(media_core::models::LibraryId), genre, language).await.map_err(|e| e.to_string())
+    let mut shows = db::queries::get_all_tv_shows(&state.pool, library_id.map(media_core::models::LibraryId), genre, language)
+        .await.map_err(|e| e.to_string())?;
+    
+    let libraries = db::queries::get_all_libraries(&state.pool).await.unwrap_or_default();
+
+    for show in &mut shows {
+        if let Some(lib) = libraries.iter().find(|l| l.id == show.library_id) {
+            let lib_root = std::path::Path::new(&lib.path);
+            if let Some(ref poster) = show.poster_url {
+                if !poster.starts_with("http") && !poster.starts_with('/') && !poster.contains(':') {
+                    show.poster_url = Some(lib_root.join(poster).to_string_lossy().to_string());
+                }
+            }
+            if let Some(ref backdrop) = show.backdrop_url {
+                if !backdrop.starts_with("http") && !backdrop.starts_with('/') && !backdrop.contains(':') {
+                    show.backdrop_url = Some(lib_root.join(backdrop).to_string_lossy().to_string());
+                }
+            }
+        }
+    }
+    
+    Ok(shows)
 }
 
 #[tauri::command]
@@ -293,10 +336,7 @@ async fn refresh_metadata(id: i64, state: State<'_, AppState>) -> Result<(), Str
 
 #[tauri::command]
 async fn play_movie(id: i64, state: State<'_, AppState>) -> Result<(), String> {
-    let pool = state.pool.clone();
-    let movie_files: Vec<(String,)> = sqlx::query_as("SELECT file_path FROM movie_files WHERE movie_id = ?")
-        .bind(id).fetch_all(&pool).await.map_err(|e| e.to_string())?;
-    if let Some((path,)) = movie_files.first() {
+    if let Ok(Some(path)) = db::queries::get_movie_full_path(&state.pool, media_core::models::MovieId(id)).await {
         opener::open(path).map_err(|e| e.to_string())?;
     }
     Ok(())
@@ -304,10 +344,7 @@ async fn play_movie(id: i64, state: State<'_, AppState>) -> Result<(), String> {
 
 #[tauri::command]
 async fn play_episode(id: i64, state: State<'_, AppState>) -> Result<(), String> {
-    let pool = state.pool.clone();
-    let episodes: Vec<(String,)> = sqlx::query_as("SELECT file_path FROM episodes WHERE id = ?")
-        .bind(id).fetch_all(&pool).await.map_err(|e| e.to_string())?;
-    if let Some((path,)) = episodes.first() {
+    if let Ok(Some(path)) = db::queries::get_episode_full_path(&state.pool, media_core::models::EpisodeId(id)).await {
         opener::open(path).map_err(|e| e.to_string())?;
     }
     Ok(())
@@ -674,23 +711,16 @@ async fn cleanup_empty_folders(id: i64, state: State<'_, AppState>) -> Result<Ve
 async fn start_streaming(id: i64, media_type: String, state: State<'_, AppState>) -> Result<String, String> {
     let pool = state.pool.clone();
     
-    let file_path = if media_type == "movie" {
-        let movie_file: Option<media_core::models::MovieFile> = sqlx::query_as("SELECT * FROM movie_files WHERE movie_id = ? LIMIT 1")
-            .bind(id).fetch_optional(&pool).await.map_err(|e| e.to_string())?;
-        movie_file.map(|f| f.file_path)
+    let path = if media_type == "movie" {
+        db::queries::get_movie_full_path(&pool, media_core::models::MovieId(id)).await
     } else {
-        let ep = db::queries::get_episode_by_id(&pool, media_core::models::EpisodeId(id)).await
-            .map_err(|e| e.to_string())?;
-        ep.map(|e| e.file_path)
-    };
+        db::queries::get_episode_full_path(&pool, media_core::models::EpisodeId(id)).await
+    }.map_err(|e| e.to_string())?;
 
-    if let Some(path_str) = file_path {
-        let input_path = std::path::PathBuf::from(&path_str);
+    if let Some(input_path) = path {
         let output_dir = std::path::PathBuf::from("transcodes").join(id.to_string());
-        
         media_core::scanner::ffmpeg::FfmpegEngine::create_hls_stream(&input_path, &output_dir)
             .map_err(|e| e.to_string())?;
-            
         Ok(format!("/api/stream/{}/hls/playlist.m3u8", id))
     } else {
         Err("Media not found".to_string())
@@ -700,20 +730,15 @@ async fn start_streaming(id: i64, media_type: String, state: State<'_, AppState>
 #[tauri::command]
 async fn download_to_local(id: i64, media_type: String, dest_path: String, state: State<'_, AppState>) -> Result<String, String> {
     let pool = state.pool.clone();
-    let file_path = if media_type == "movie" {
-        let movie_file: Option<media_core::models::MovieFile> = sqlx::query_as("SELECT * FROM movie_files WHERE movie_id = ? LIMIT 1")
-            .bind(id).fetch_optional(&pool).await.map_err(|e| e.to_string())?;
-        movie_file.map(|f| f.file_path)
+    let path = if media_type == "movie" {
+        db::queries::get_movie_full_path(&pool, media_core::models::MovieId(id)).await
     } else {
-        let ep = db::queries::get_episode_by_id(&pool, media_core::models::EpisodeId(id)).await
-            .map_err(|e| e.to_string())?;
-        ep.map(|e| e.file_path)
-    };
+        db::queries::get_episode_full_path(&pool, media_core::models::EpisodeId(id)).await
+    }.map_err(|e| e.to_string())?;
 
-    if let Some(src_str) = file_path {
-        let src = std::path::Path::new(&src_str);
+    if let Some(src) = path {
         if !src.exists() {
-            return Err(format!("Source file not found: {}", src_str));
+            return Err(format!("Source file not found: {:?}", src));
         }
 
         let mut dest = std::path::PathBuf::from(&dest_path);
@@ -732,16 +757,12 @@ async fn download_to_local(id: i64, media_type: String, dest_path: String, state
         
         let metadata = src.metadata().map_err(|e| e.to_string())?;
         let src_size = metadata.len();
-        tracing::info!("Starting copy of {} bytes from {:?} to {:?}", src_size, src, dest);
         
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
         
-        let bytes_copied = std::fs::copy(src, &dest).map_err(|e| e.to_string())?;
-        if bytes_copied != src_size {
-            return Err(format!("Copy mismatch: expected {} bytes, but only copied {} bytes", src_size, bytes_copied));
-        }
+        let bytes_copied = std::fs::copy(&src, &dest).map_err(|e| e.to_string())?;
         Ok(format!("Successfully copied {} bytes to {}", bytes_copied, dest.display()))
     } else {
         Err("Media file not found in database".to_string())

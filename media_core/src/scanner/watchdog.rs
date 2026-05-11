@@ -88,7 +88,14 @@ impl Watchdog {
             
             // Find which library this belongs to
             let libraries = crate::db::queries::get_all_libraries(&self.pool).await.unwrap_or_default();
-            if let Some(lib) = libraries.into_iter().find(|l| path.starts_with(&l.path)) {
+            
+            // Normalize path for comparison
+            let normalized_path = crate::paths::normalize_slashes(&path.to_string_lossy());
+            
+            if let Some(lib) = libraries.into_iter().find(|l| {
+                let normalized_lib = crate::paths::normalize_slashes(&l.path);
+                normalized_path.starts_with(&normalized_lib)
+            }) {
                 let task_id = format!("watchdog-{}", uuid::Uuid::new_v4());
                 let pool = self.pool.clone();
                 let task_manager = self.task_manager.clone();

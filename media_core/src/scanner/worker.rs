@@ -171,11 +171,11 @@ pub async fn scan_library(
 }
 
 async fn process_file(pool: &SqlitePool, library: &Library, item: &ParsedFile) -> Result<()> {
-    let file_path_str = item.path.to_str().unwrap_or("").to_string();
+    let library_root = Path::new(&library.path);
+    let relative_path = crate::paths::make_relative(&item.path, library_root)?;
     let filename = item.path.file_name().and_then(|s| s.to_str()).unwrap_or("");
 
     if library.media_type == MediaType::Movie {
-        // ... (existing movie logic)
         let mut title = item.parsed.title.clone();
         let mut year = item.parsed.year;
 
@@ -191,7 +191,7 @@ async fn process_file(pool: &SqlitePool, library: &Library, item: &ParsedFile) -
         tracing::info!("Processing movie: '{}' ({:?})", title, year);
 
         // Extract technical info (FFprobe)
-        let file_path_for_info = std::path::PathBuf::from(&file_path_str);
+        let file_path_for_info = item.path.clone();
         let media_info = tokio::task::spawn_blocking(move || {
             crate::scanner::mediainfo::get_media_info(&file_path_for_info).ok()
         }).await?;
@@ -202,8 +202,8 @@ async fn process_file(pool: &SqlitePool, library: &Library, item: &ParsedFile) -
         // Upsert the movie record (no duplicates on rescan)
         let movie_id = db::queries::upsert_movie(pool, library.id, &title, year).await?;
 
-        // Always track the file path
-        db::queries::upsert_movie_file(pool, movie_id, &file_path_str, filename, item.size, res, codec).await?;
+        // Always track the file path (store as relative)
+        db::queries::upsert_movie_file(pool, movie_id, &relative_path, filename, item.size, res, codec).await?;
 
         // If NFO has IDs or we have local artwork, update the movie
         let mut tmdb_id: Option<i32> = None;
@@ -240,7 +240,17 @@ async fn process_file(pool: &SqlitePool, library: &Library, item: &ParsedFile) -
         }
 
         let has_nfo_data = tmdb_id.is_some() || imdb_id.is_some() || plot.is_some();
-        let has_artwork = item.metadata.poster_path.is_some() || item.metadata.backdrop_path.is_some();
+        
+        // Relativize local artwork paths
+        let rel_poster = item.metadata.poster_path.as_ref().and_then(|p| {
+            crate::paths::make_relative(Path::new(p), library_root).ok()
+        }).or(item.metadata.poster_path.clone());
+        
+        let rel_backdrop = item.metadata.backdrop_path.as_ref().and_then(|p| {
+            crate::paths::make_relative(Path::new(p), library_root).ok()
+        }).or(item.metadata.backdrop_path.clone());
+
+        let has_artwork = rel_poster.is_some() || rel_backdrop.is_some();
 
         if has_nfo_data || has_artwork {
             let new_status = if has_nfo_data { crate::models::MediaStatus::Matched } else { crate::models::MediaStatus::Unmatched };
@@ -273,8 +283,8 @@ async fn process_file(pool: &SqlitePool, library: &Library, item: &ParsedFile) -
             .bind(&genres)
             .bind(&language)
             .bind(&cast_list)
-            .bind(&item.metadata.poster_path)
-            .bind(&item.metadata.backdrop_path)
+            .bind(&rel_poster)
+            .bind(&rel_backdrop)
             .bind(movie_id)
             .execute(pool)
             .await?;
@@ -347,7 +357,7 @@ async fn process_file(pool: &SqlitePool, library: &Library, item: &ParsedFile) -
         let ep_num = extracted_episode;
 
         // Extract technical info (FFprobe)
-        let file_path_for_info = std::path::PathBuf::from(&file_path_str);
+        let file_path_for_info = item.path.clone();
         let media_info = tokio::task::spawn_blocking(move || {
             crate::scanner::mediainfo::get_media_info(&file_path_for_info).ok()
         }).await?;
@@ -355,15 +365,14 @@ async fn process_file(pool: &SqlitePool, library: &Library, item: &ParsedFile) -
         let res = media_info.as_ref().map(|i| crate::models::Resolution::from_dimensions(i.width, i.height));
         let codec = media_info.as_ref().map(|i| i.video_codec.as_str());
 
-        db::queries::upsert_episode(pool, season_id, ep_num, &file_path_str, filename, item.size, res, codec).await?;
+        db::queries::upsert_episode(pool, season_id, ep_num, &relative_path, filename, item.size, res, codec).await?;
 
         // Update show metadata from tvshow.nfo if available
         if let Some(ref nfo) = item.metadata.tv_nfo {
             let tmdb_id = nfo.tmdb_id.as_ref().and_then(|s| s.trim().parse::<i32>().ok());
             
             // Download cast images for TV shows too
-            let path = std::path::Path::new(&file_path_str);
-            if let Some(folder) = path.parent() {
+            if let Some(folder) = item.path.parent() {
                 let actors_dir = folder.join(".actors");
                 let _ = std::fs::create_dir_all(&actors_dir);
                 
@@ -378,12 +387,13 @@ async fn process_file(pool: &SqlitePool, library: &Library, item: &ParsedFile) -
                                 if let Ok(resp) = reqwest::get(thumb_url).await {
                                     if let Ok(bytes) = resp.bytes().await {
                                         if std::fs::write(&dest, bytes).is_ok() {
-                                            member_image = Some(dest.to_string_lossy().to_string());
+                                            // Store cast image as relative to library root
+                                            member_image = crate::paths::make_relative(&dest, library_root).ok();
                                         }
                                     }
                                 }
                              } else {
-                                member_image = Some(dest.to_string_lossy().to_string());
+                                member_image = crate::paths::make_relative(&dest, library_root).ok();
                              }
                         }
                     }

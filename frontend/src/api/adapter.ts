@@ -100,12 +100,27 @@ export function getImageUrl(path: any): string {
   if (path.startsWith('http')) return path;
   
   if (IS_TAURI) {
-    return convertFileSrc(path);
+    // In Tauri, we expect absolute paths to be returned by the backend for local files
+    if (path.startsWith('/') || path.includes(':')) {
+       return convertFileSrc(path);
+    }
   }
   
+  // If it starts with / and it's short, it's likely a TMDB path (e.g. /863920.jpg)
+  if (path.startsWith('/') && path.length < 50 && !path.includes('/') && (path.endsWith('.jpg') || path.endsWith('.png'))) {
+     return `https://image.tmdb.org/t/p/original${path}`;
+  }
+
+  // If it's a relative path (local artwork)
+  if (!path.startsWith('/') && !path.startsWith('http')) {
+    return `${API_BASE}/artwork/local?path=${encodeURIComponent(path)}`;
+  }
+
+  // Fallback for absolute paths on server
   if (path.startsWith('/') || path.includes(':')) {
     return `${API_BASE}/artwork/local?path=${encodeURIComponent(path)}`;
   }
+  
   return `https://image.tmdb.org/t/p/original${path}`;
 }
 

@@ -117,6 +117,7 @@ pub async fn upsert_episode<'c, E>(
     codec: Option<&str>
 ) -> Result<EpisodeId> 
 where E: sqlx::Executor<'c, Database = sqlx::Sqlite> {
+    let normalized_path = crate::paths::normalize_slashes(file_path);
     let row: (EpisodeId,) = sqlx::query_as(
         r#"
         INSERT INTO episodes (season_id, episode_number, file_path, original_name, size_bytes, resolution, codec)
@@ -131,7 +132,7 @@ where E: sqlx::Executor<'c, Database = sqlx::Sqlite> {
     )
     .bind(season_id)
     .bind(episode_number)
-    .bind(file_path)
+    .bind(&normalized_path)
     .bind(original_name)
     .bind(size_bytes)
     .bind(resolution)
@@ -153,6 +154,7 @@ pub async fn upsert_movie_file<'c, E>(
     codec: Option<&str>
 ) -> Result<MovieFileId> 
 where E: sqlx::Executor<'c, Database = sqlx::Sqlite> {
+    let normalized_path = crate::paths::normalize_slashes(file_path);
     let row: (MovieFileId,) = sqlx::query_as(
         r#"
         INSERT INTO movie_files (movie_id, file_path, original_name, size_bytes, resolution, codec)
@@ -166,7 +168,7 @@ where E: sqlx::Executor<'c, Database = sqlx::Sqlite> {
         "#
     )
     .bind(movie_id)
-    .bind(file_path)
+    .bind(&normalized_path)
     .bind(original_name)
     .bind(size_bytes)
     .bind(resolution)
@@ -454,3 +456,48 @@ pub async fn set_setting(pool: &SqlitePool, key: &str, value: &str) -> Result<()
         .await?;
     Ok(())
 }
+
+pub async fn get_movie_full_path(pool: &SqlitePool, movie_id: MovieId) -> Result<Option<std::path::PathBuf>> {
+    let row: Option<(String, String)> = sqlx::query_as(
+        r#"
+        SELECT l.path, mf.file_path 
+        FROM movie_files mf 
+        JOIN movies m ON mf.movie_id = m.id 
+        JOIN libraries l ON m.library_id = l.id 
+        WHERE m.id = ? 
+        LIMIT 1
+        "#
+    )
+    .bind(movie_id)
+    .fetch_optional(pool)
+    .await?;
+
+    if let Some((lib_path, rel_path)) = row {
+        Ok(Some(crate::paths::make_absolute(&rel_path, std::path::Path::new(&lib_path))))
+    } else {
+        Ok(None)
+    }
+}
+
+pub async fn get_episode_full_path(pool: &SqlitePool, episode_id: EpisodeId) -> Result<Option<std::path::PathBuf>> {
+    let row: Option<(String, String)> = sqlx::query_as(
+        r#"
+        SELECT l.path, e.file_path 
+        FROM episodes e 
+        JOIN seasons s ON e.season_id = s.id 
+        JOIN tv_shows t ON s.show_id = t.id 
+        JOIN libraries l ON t.library_id = l.id 
+        WHERE e.id = ?
+        "#
+    )
+    .bind(episode_id)
+    .fetch_optional(pool)
+    .await?;
+
+    if let Some((lib_path, rel_path)) = row {
+        Ok(Some(crate::paths::make_absolute(&rel_path, std::path::Path::new(&lib_path))))
+    } else {
+        Ok(None)
+    }
+}
+

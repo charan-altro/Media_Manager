@@ -1,7 +1,7 @@
 // core/src/scraper/omdb.rs
 use serde::{Deserialize, Serialize};
 use reqwest::Client;
-use anyhow::Result;
+use crate::scraper::Result;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct OmdbRatings {

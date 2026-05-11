@@ -1,7 +1,7 @@
 // core/src/scraper/anidb.rs
 use serde::{Deserialize, Serialize};
 use reqwest::Client;
-use anyhow::Result;
+use crate::scraper::{Result, ScraperError};
 use quick_xml::de::from_str;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -70,7 +70,7 @@ impl AnidbClient {
         
         let resp = self.client.get(url).send().await?;
         if !resp.status().is_success() {
-            return Err(anyhow::anyhow!("AniDB error: {}", resp.status()));
+            return Err(ScraperError::Internal(format!("AniDB error: {}", resp.status())));
         }
         
         let xml_text = resp.text().await?;

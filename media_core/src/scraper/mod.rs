@@ -15,7 +15,9 @@ pub mod mpdb;
 pub mod tvmaze;
 pub mod imdbapi;
 
-use anyhow::Result;
+pub mod errors;
+pub use errors::{ScraperError, Result};
+
 use sqlx::sqlite::SqlitePool;
 use strsim::jaro_winkler;
 use serde::{Deserialize, Serialize};
@@ -123,8 +125,10 @@ impl ScraperClients {
     }
 }
 
+use crate::models::{MovieId, TvShowId};
+
 pub async fn scrape_movie(
-    movie_id: i64,
+    movie_id: MovieId,
     title: &str,
     year: Option<i32>,
     clients: &ScraperClients,
@@ -409,7 +413,7 @@ async fn download_to_file(url: &str, dest: &std::path::Path) -> Result<()> {
 }
 
 pub async fn scrape_tv_show(
-    show_id: i64,
+    show_id: TvShowId,
     title: &str,
     clients: &ScraperClients,
     pool: &SqlitePool,

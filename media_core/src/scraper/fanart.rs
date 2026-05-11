@@ -1,7 +1,7 @@
 // core/src/scraper/fanart.rs
 use serde::{Deserialize, Serialize};
 use reqwest::Client;
-use anyhow::Result;
+use crate::scraper::{Result, ScraperError};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FanartImages {
@@ -44,7 +44,7 @@ impl FanartClient {
             .await?;
             
         if !resp.status().is_success() {
-            return Err(anyhow::anyhow!("Fanart.tv error: {}", resp.status()));
+            return Err(ScraperError::Internal(format!("Fanart.tv error: {}", resp.status())));
         }
         
         Ok(resp.json::<FanartImages>().await?)

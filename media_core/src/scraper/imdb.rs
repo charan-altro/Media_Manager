@@ -1,7 +1,7 @@
 // core/src/scraper/imdb.rs
 use serde::{Deserialize, Serialize};
 use reqwest::Client;
-use anyhow::{Result, anyhow};
+use crate::scraper::{Result, ScraperError};
 use scraper::{Html, Selector};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -34,7 +34,7 @@ impl ImdbClient {
 
         let resp = self.client.get(&url).send().await?;
         if !resp.status().is_success() {
-            return Err(anyhow!("IMDb suggestion API error: {}", resp.status()));
+            return Err(ScraperError::Internal(format!("IMDb suggestion API error: {}", resp.status())));
         }
 
         let data: serde_json::Value = resp.json().await?;
@@ -82,6 +82,6 @@ impl ImdbClient {
             return Ok(json_data);
         }
 
-        Err(anyhow!("Could not find JSON-LD in IMDb page"))
+        Err(ScraperError::Internal("Could not find JSON-LD in IMDb page".to_string()))
     }
 }

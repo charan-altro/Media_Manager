@@ -371,9 +371,9 @@ async fn bulk_scrape(State(state): State<Arc<AppState>>, Path(id): Path<i64>) ->
             
             async move {
                 if m_type == "movie" {
-                    let _ = media_core::scraper::scrape_movie(id.into(), &title_clone, year, &clients, &pool, script_path_clone.as_deref()).await;
+                    let _ = media_core::scraper::scrape_movie(MovieId(id), &title_clone, year, &clients, &pool, script_path_clone.as_deref()).await;
                 } else {
-                    let _ = media_core::scraper::scrape_tv_show(id.into(), &title_clone, &clients, &pool, script_path_clone.as_deref()).await;
+                    let _ = media_core::scraper::scrape_tv_show(TvShowId(id), &title_clone, &clients, &pool, script_path_clone.as_deref()).await;
                 }
                 
                 task_manager.broadcast(media_core::models::TaskUpdate {
@@ -412,7 +412,7 @@ async fn scrape_single_movie(State(state): State<Arc<AppState>>, Path(id): Path<
         let script_path = settings.get("post_processing_script").map(|s| s.as_str());
 
         if let Ok(Some(movie)) = db::queries::get_movie_by_id(&pool, MovieId(id)).await {
-            let _ = media_core::scraper::scrape_movie(movie.id.0, &movie.title, movie.year, &clients, &pool, script_path).await;
+            let _ = media_core::scraper::scrape_movie(movie.id, &movie.title, movie.year, &clients, &pool, script_path).await;
         }
     });
 
@@ -430,7 +430,7 @@ async fn scrape_single_tv_show(State(state): State<Arc<AppState>>, Path(id): Pat
 
         if let Ok(shows) = db::queries::get_all_tv_shows(&pool, None, None, None).await {
             if let Some(show) = shows.into_iter().find(|s| s.id == TvShowId(id)) {
-                let _ = media_core::scraper::scrape_tv_show(show.id.0, &show.title, &clients, &pool, script_path).await;
+                let _ = media_core::scraper::scrape_tv_show(show.id, &show.title, &clients, &pool, script_path).await;
             }
         }
     });
@@ -489,9 +489,9 @@ async fn scrape_batch(State(state): State<Arc<AppState>>, Json(payload): Json<Ba
             
             async move {
                 if m_type == "movie" {
-                    let _ = media_core::scraper::scrape_movie(id.into(), &title_clone, year, &clients, &pool, script_path_clone.as_deref()).await;
+                    let _ = media_core::scraper::scrape_movie(MovieId(id), &title_clone, year, &clients, &pool, script_path_clone.as_deref()).await;
                 } else {
-                    let _ = media_core::scraper::scrape_tv_show(id.into(), &title_clone, &clients, &pool, script_path_clone.as_deref()).await;
+                    let _ = media_core::scraper::scrape_tv_show(TvShowId(id), &title_clone, &clients, &pool, script_path_clone.as_deref()).await;
                 }
                 
                 task_manager.broadcast(media_core::models::TaskUpdate {
@@ -841,7 +841,7 @@ async fn refresh_metadata(State(state): State<Arc<AppState>>, Path(id): Path<i64
                 debug_info: Some(format!("Refetching TMDB data for: {}", movie.title)),
             });
 
-            let _ = media_core::scraper::scrape_movie(movie.id.0, &movie.title, movie.year, &clients, &pool, script_path).await;
+            let _ = media_core::scraper::scrape_movie(movie.id, &movie.title, movie.year, &clients, &pool, script_path).await;
         } else {
             // Try as TV show
             let shows = db::queries::get_all_tv_shows(&pool, None, None, None).await.unwrap_or_default();
@@ -855,7 +855,7 @@ async fn refresh_metadata(State(state): State<Arc<AppState>>, Path(id): Path<i64
                     started_at: Some(start_ms),
                     debug_info: Some(format!("Refetching TMDB data for TV Show: {}", show.title)),
                 });
-                let _ = media_core::scraper::scrape_tv_show(show.id.0, &show.title, &clients, &pool, script_path).await;
+                let _ = media_core::scraper::scrape_tv_show(show.id, &show.title, &clients, &pool, script_path).await;
             }
         }
 
@@ -1254,7 +1254,7 @@ async fn process_movie_advanced(State(state): State<Arc<AppState>>, Path(id): Pa
                     let thumb = media_core::scanner::ffmpeg::FfmpegEngine::extract_thumbnail(&path, &thumb_dest, "00:05:00").ok();
 
                     // Update DB (relativize thumb path if it was created)
-                    let rel_thumb = thumb.as_ref().and_then(|p| {
+                    let rel_thumb = thumb.as_ref().and_then(|_| {
                         // We need the library root to relativize. For simplicity, let's just use the string or lookup.
                         // Actually, let's just store the relative path directly if we can.
                         // But wait, make_absolute joined it.
@@ -1322,10 +1322,9 @@ async fn process_tv_show_advanced(State(state): State<Arc<AppState>>, Path(id): 
                     
                     let ratio = media_core::scanner::ffmpeg::FfmpegEngine::detect_aspect_ratio(&path).ok();
                     let thumb = media_core::scanner::ffmpeg::FfmpegEngine::extract_thumbnail(&path, &thumb_dest, "00:05:00").ok();
-
-                    let rel_thumb = thumb.as_ref().and_then(|p| {
-                        Some(thumb_dest.file_name()?.to_string_lossy().to_string())
-                    });
+let rel_thumb = thumb.as_ref().and_then(|_| {
+    Some(thumb_dest.file_name()?.to_string_lossy().to_string())
+});
 
                     let _ = sqlx::query("UPDATE episodes SET aspect_ratio = ?, thumbnail_path = ? WHERE id = ?")
                         .bind(ratio)
@@ -1478,7 +1477,7 @@ async fn start_streaming(State(state): State<Arc<AppState>>, Path(id): Path<i64>
     if let Ok(Some(path)) = db::queries::get_movie_full_path(&state.pool, MovieId(id)).await {
         let output_dir = PathBuf::from("transcodes").join(id.to_string());
         match media_core::scanner::ffmpeg::FfmpegEngine::create_hls_stream(&path, &output_dir) {
-            Ok(_) => return (StatusCode::OK, Json(format!("/api/stream/{}/hls/playlist.m3u8", id))).into_response(),
+            Ok(_) => return (StatusCode::OK, Json(format!("/stream/{}/hls/playlist.m3u8", id))).into_response(),
             Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         }
     }
@@ -1487,7 +1486,7 @@ async fn start_streaming(State(state): State<Arc<AppState>>, Path(id): Path<i64>
     if let Ok(Some(path)) = db::queries::get_episode_full_path(&state.pool, EpisodeId(id)).await {
         let output_dir = PathBuf::from("transcodes").join(id.to_string());
         match media_core::scanner::ffmpeg::FfmpegEngine::create_hls_stream(&path, &output_dir) {
-            Ok(_) => return (StatusCode::OK, Json(format!("/api/stream/{}/hls/playlist.m3u8", id))).into_response(),
+            Ok(_) => return (StatusCode::OK, Json(format!("/stream/{}/hls/playlist.m3u8", id))).into_response(),
             Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         }
     }

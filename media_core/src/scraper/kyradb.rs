@@ -1,6 +1,6 @@
 // core/src/scraper/kyradb.rs
 use reqwest::Client;
-use anyhow::Result;
+use crate::scraper::Result;
 
 pub struct KyraDbClient {
     client: Client,

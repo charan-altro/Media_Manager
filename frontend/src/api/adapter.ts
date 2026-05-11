@@ -127,8 +127,20 @@ export function getImageUrl(path: any): string {
 export async function request<T>(command: string, path: string, args: any = {}): Promise<T> {
   if (IS_TAURI) {
     try {
-      return await invoke<T>(command, args);
+      // Map keys to camelCase for Tauri
+      const tauriArgs: any = {};
+      for (const key in args) {
+        if (key === 'method') continue; // Don't pass 'method' to Tauri commands
+        
+        // Convert snake_case to camelCase
+        const camelKey = key.replace(/_([a-z])/g, (g) => g[1].toUpperCase());
+        tauriArgs[camelKey] = args[key];
+      }
+      
+      console.log(`Invoking Tauri command: ${command}`, tauriArgs);
+      return await invoke<T>(command, tauriArgs);
     } catch (err: any) {
+      console.error(`Tauri command ${command} failed:`, err);
       // If Tauri returns a string, wrap it in a proper Error object
       throw new Error(typeof err === 'string' ? err : (err.message || 'Unknown error'));
     }
@@ -222,7 +234,7 @@ export const api = {
   updateTvShow: (id: number, data: Partial<TVShow>) => {
     const { title, plot, rating, genres } = data;
     const genres_vec = typeof genres === 'string' ? genres.split(',').map(g => g.trim()) : genres;
-    return request<void>('update_tvshow', `/tvshows/${id}`, { method: 'PUT', id, title, plot, rating, genres: genres_vec });
+    return request<void>('update_tv_show', `/tvshows/${id}`, { method: 'PUT', id, title, plot, rating, genres: genres_vec });
   },
 
   getSettings: () =>
@@ -237,8 +249,18 @@ export const api = {
   checkUpdates: () =>
     request<UpdateCheckResult>('check_updates', '/system/update-check', { method: 'GET' }),
 
-  startStreaming: (id: number, type: 'movie' | 'episode' = 'movie') =>
-    request<string>('start_streaming', `/stream/${id}/start?type=${type}`, { method: 'POST', id, media_type: type }),
+  startStreaming: async (id: number, type: 'movie' | 'episode' = 'movie') => {
+    const playlistUrl = await api.request<string>('start_streaming', `/stream/${id}/start?type=${type}`, { method: 'POST', id, media_type: type });
+    if (IS_TAURI && !playlistUrl.startsWith('http')) {
+       // If it's an absolute path (from Tauri), convert it to asset protocol
+       return convertFileSrc(playlistUrl);
+    }
+    // For server, return with API_BASE prefix if it's a relative path
+    if (!playlistUrl.startsWith('http')) {
+       return `${API_BASE}${playlistUrl}`;
+    }
+    return playlistUrl;
+  },
 
   searchSubtitles: (id: number) =>
     request<void>('search_subtitles', `/movies/${id}/subtitles/search`, { method: 'GET', id }),

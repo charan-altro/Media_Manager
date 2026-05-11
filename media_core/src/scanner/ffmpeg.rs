@@ -1,7 +1,7 @@
 // core/src/scanner/ffmpeg.rs
 use std::process::Command;
 use std::path::{Path, PathBuf};
-use anyhow::{Result, anyhow};
+use crate::errors::{Result, CoreError};
 use tracing::{info, error};
 
 pub struct FfmpegEngine;
@@ -17,9 +17,9 @@ impl FfmpegEngine {
             Ok(_) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 error!("FFmpeg was not found at {}. Please install FFmpeg to enable streaming and analysis.", ffmpeg_path);
-                Err(anyhow!("FFmpeg not found at {}: Please ensure 'ffmpeg' is installed and added to your system PATH or bundled as a sidecar.", ffmpeg_path))
+                Err(CoreError::FfmpegError(format!("FFmpeg not found at {}: Please ensure 'ffmpeg' is installed and added to your system PATH or bundled as a sidecar.", ffmpeg_path)))
             }
-            Err(e) => Err(anyhow!("Failed to check FFmpeg at {}: {}", ffmpeg_path, e)),
+            Err(e) => Err(CoreError::FfmpegError(format!("Failed to check FFmpeg at {}: {}", ffmpeg_path, e))),
         }
     }
 
@@ -30,18 +30,18 @@ impl FfmpegEngine {
         let output = Command::new(crate::config::get_ffmpeg_path())
             .args(&[
                 "-ss", time_offset,
-                "-i", input_path.to_str().ok_or_else(|| anyhow!("Invalid input path"))?,
+                "-i", input_path.to_str().ok_or_else(|| CoreError::PathError("Invalid input path".to_string()))?,
                 "-vframes", "1",
                 "-q:v", "2",
                 "-y",
-                dest_path.to_str().ok_or_else(|| anyhow!("Invalid dest path"))?,
+                dest_path.to_str().ok_or_else(|| CoreError::PathError("Invalid dest path".to_string()))?,
             ])
             .output()?;
 
         if !output.status.success() {
             let err = String::from_utf8_lossy(&output.stderr);
             error!("FFmpeg thumbnail extraction failed: {}", err);
-            return Err(anyhow!("FFmpeg failed: {}", err));
+            return Err(CoreError::FfmpegError(format!("FFmpeg failed: {}", err)));
         }
 
         Ok(dest_path.to_path_buf())
@@ -55,7 +55,7 @@ impl FfmpegEngine {
         let output = Command::new(crate::config::get_ffmpeg_path())
             .args(&[
                 "-ss", "00:05:00",
-                "-i", input_path.to_str().ok_or_else(|| anyhow!("Invalid path"))?,
+                "-i", input_path.to_str().ok_or_else(|| CoreError::PathError("Invalid path".to_string()))?,
                 "-vf", "cropdetect=24:16:0",
                 "-vframes", "20",
                 "-f", "null",
@@ -78,7 +78,7 @@ impl FfmpegEngine {
         let best_crop = crops.into_iter()
             .max_by_key(|&(_, count)| count)
             .map(|(crop, _)| crop)
-            .ok_or_else(|| anyhow!("No crop detected"))?;
+            .ok_or_else(|| CoreError::PathError("No crop detected".to_string()))?;
 
         // Extract width and height from crop=W:H:X:Y
         let parts: Vec<&str> = best_crop.trim_start_matches("crop=").split(':').collect();
@@ -95,7 +95,7 @@ impl FfmpegEngine {
             return Ok(format!("{:.2}:1", ratio));
         }
 
-        Err(anyhow!("Failed to parse crop results"))
+        Err(CoreError::FfmpegError("Failed to parse crop results".to_string()))
     }
 
     pub fn create_hls_stream(input_path: &Path, output_dir: &Path) -> Result<PathBuf> {
@@ -119,7 +119,7 @@ impl FfmpegEngine {
 
         let _ = Command::new(crate::config::get_ffmpeg_path())
             .args(&[
-                "-i", input_path.to_str().ok_or_else(|| anyhow!("Invalid path"))?,
+                "-i", input_path.to_str().ok_or_else(|| CoreError::PathError("Invalid path".to_string()))?,
                 "-c:v", encoder,
                 "-preset", "veryfast",
                 "-crf", "22",

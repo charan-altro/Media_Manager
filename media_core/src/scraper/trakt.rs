@@ -1,7 +1,7 @@
 // core/src/scraper/trakt.rs
 use serde::{Deserialize, Serialize};
 use reqwest::Client;
-use anyhow::{Result, anyhow};
+use crate::scraper::{Result, ScraperError};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TraktIds {
@@ -81,7 +81,7 @@ impl TraktClient {
 
         let resp = req.send().await?;
         if !resp.status().is_success() {
-            return Err(anyhow!("Trakt error: {}", resp.status()));
+            return Err(ScraperError::Internal(format!("Trakt error: {}", resp.status())));
         }
         Ok(resp.json::<Vec<TraktSearchResult>>().await?)
     }
@@ -93,7 +93,7 @@ impl TraktClient {
 
         let resp = req.send().await?;
         if !resp.status().is_success() {
-            return Err(anyhow!("Trakt error: {}", resp.status()));
+            return Err(ScraperError::Internal(format!("Trakt error: {}", resp.status())));
         }
         Ok(resp.json::<Vec<TraktSearchResult>>().await?)
     }
@@ -106,7 +106,7 @@ impl TraktClient {
 
         let resp = req.send().await?;
         if !resp.status().is_success() {
-            return Err(anyhow!("Trakt error: {}", resp.status()));
+            return Err(ScraperError::Internal(format!("Trakt error: {}", resp.status())));
         }
         Ok(resp.json::<Vec<TraktSearchResult>>().await?)
     }
@@ -121,7 +121,7 @@ impl TraktClient {
 
         let resp = req.send().await?;
         if !resp.status().is_success() {
-            return Err(anyhow!("Trakt collection error: {}", resp.status()));
+            return Err(ScraperError::Internal(format!("Trakt operation error: {}", resp.status())));
         }
         Ok(resp.json().await?)
     }
@@ -134,7 +134,7 @@ impl TraktClient {
 
         let resp = req.send().await?;
         if !resp.status().is_success() {
-            return Err(anyhow!("Trakt collection error: {}", resp.status()));
+            return Err(ScraperError::Internal(format!("Trakt operation error: {}", resp.status())));
         }
         Ok(resp.json().await?)
     }
@@ -147,7 +147,7 @@ impl TraktClient {
 
         let resp = req.send().await?;
         if !resp.status().is_success() {
-            return Err(anyhow!("Trakt watchlist error: {}", resp.status()));
+            return Err(ScraperError::Internal(format!("Trakt API error: {}", resp.status())));
         }
         Ok(resp.json().await?)
     }
@@ -160,7 +160,7 @@ impl TraktClient {
 
         let resp = req.send().await?;
         if !resp.status().is_success() {
-            return Err(anyhow!("Trakt watchlist error: {}", resp.status()));
+            return Err(ScraperError::Internal(format!("Trakt API error: {}", resp.status())));
         }
         Ok(resp.json().await?)
     }
@@ -174,7 +174,7 @@ impl TraktClient {
 
         let resp = req.send().await?;
         if !resp.status().is_success() {
-            return Err(anyhow!("Trakt history error: {}", resp.status()));
+            return Err(ScraperError::Internal(format!("Trakt history error: {}", resp.status())));
         }
         Ok(resp.json().await?)
     }
@@ -189,7 +189,7 @@ impl TraktClient {
 
         let resp = req.send().await?;
         if !resp.status().is_success() {
-            return Err(anyhow!("Trakt add to collection error: {}", resp.status()));
+            return Err(ScraperError::Internal(format!("Trakt collection error: {}", resp.status())));
         }
         Ok(resp.json().await?)
     }
@@ -212,7 +212,7 @@ impl TraktClient {
             .await?;
 
         if !resp.status().is_success() {
-            return Err(anyhow!("Trakt OAuth error: {}", resp.status()));
+            return Err(ScraperError::Internal(format!("Trakt OAuth error: {}", resp.status())));
         }
         Ok(resp.json().await?)
     }
@@ -233,7 +233,7 @@ impl TraktClient {
             .await?;
 
         if !resp.status().is_success() {
-            return Err(anyhow!("Trakt token refresh error: {}", resp.status()));
+            return Err(ScraperError::Internal(format!("Trakt token refresh error: {}", resp.status())));
         }
         Ok(resp.json().await?)
     }

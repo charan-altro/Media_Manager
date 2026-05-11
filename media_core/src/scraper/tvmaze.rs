@@ -1,7 +1,7 @@
 // core/src/scraper/tvmaze.rs
 use serde::{Deserialize, Serialize};
 use reqwest::Client;
-use anyhow::Result;
+use crate::scraper::{Result, ScraperError};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TvmazeShow {
@@ -55,7 +55,7 @@ impl TvmazeClient {
         let resp = self.client.get(&url).send().await?;
 
         if !resp.status().is_success() {
-            return Err(anyhow::anyhow!("TVMaze error: {}", resp.status()));
+            return Err(ScraperError::Internal(format!("TVMaze error: {}", resp.status())));
         }
 
         Ok(resp.json::<Vec<TvmazeSearchResult>>().await?)
@@ -66,7 +66,7 @@ impl TvmazeClient {
         let resp = self.client.get(&url).send().await?;
 
         if !resp.status().is_success() {
-            return Err(anyhow::anyhow!("TVMaze error: {}", resp.status()));
+            return Err(ScraperError::Internal(format!("TVMaze error: {}", resp.status())));
         }
 
         Ok(resp.json::<TvmazeShow>().await?)

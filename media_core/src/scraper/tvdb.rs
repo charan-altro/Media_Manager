@@ -1,7 +1,7 @@
 // core/src/scraper/tvdb.rs
 use serde::{Deserialize, Serialize};
 use reqwest::Client;
-use anyhow::Result;
+use crate::scraper::{Result, ScraperError};
 use tokio::sync::RwLock;
 use std::sync::Arc;
 
@@ -61,12 +61,12 @@ impl TvdbClient {
             .await?;
 
         if !resp.status().is_success() {
-            return Err(anyhow::anyhow!("TVDB login failed: {}", resp.status()));
+            return Err(ScraperError::Internal(format!("TVDB login failed: {}", resp.status())));
         }
 
         let data: TvdbResponse<serde_json::Value> = resp.json().await?;
         let token = data.data["token"].as_str()
-            .ok_or_else(|| anyhow::anyhow!("No token in TVDB response"))?
+            .ok_or_else(|| ScraperError::Internal("No token in TVDB response".to_string()))?
             .to_string();
 
         *lock = Some(token.clone());
@@ -82,7 +82,7 @@ impl TvdbClient {
             .await?;
 
         if !resp.status().is_success() {
-            return Err(anyhow::anyhow!("TVDB search failed: {}", resp.status()));
+            return Err(ScraperError::Internal(format!("TVDB search failed: {}", resp.status())));
         }
 
         let data: TvdbResponse<Vec<TvdbSeries>> = resp.json().await?;

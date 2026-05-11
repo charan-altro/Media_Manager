@@ -1,7 +1,8 @@
 // core/src/scraper/tmdb.rs
 use serde::{Deserialize, Serialize};
 use reqwest::Client;
-use anyhow::Result;
+use crate::scraper::Result;
+use crate::scraper::ScraperError;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 use once_cell::sync::Lazy;
@@ -177,7 +178,7 @@ impl crate::scraper::MediaScraper for TmdbClient {
             if !resp.status().is_success() {
                 let status = resp.status();
                 let err_text = resp.text().await?;
-                return Err(anyhow::anyhow!("TMDB get_movie_details error {}: {}", status, err_text));
+                return Err(ScraperError::Internal(format!("TMDB get_movie_details error {}: {}", status, err_text)));
             }
 
             Ok(resp.json::<TmdbMovieDetails>().await?)

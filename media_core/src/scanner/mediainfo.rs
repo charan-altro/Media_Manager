@@ -2,7 +2,7 @@
 use std::process::Command;
 use std::path::Path;
 use serde::{Deserialize, Serialize};
-use anyhow::{Result, anyhow};
+use crate::errors::{Result, CoreError};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MediaDetails {
@@ -23,9 +23,9 @@ fn check_ffprobe() -> Result<()> {
     match output {
         Ok(_) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            Err(anyhow!("ffprobe not found at {}: Please ensure FFmpeg (which includes ffprobe) is installed and in your system PATH or bundled as a sidecar.", ffprobe_path))
+            Err(CoreError::MediaInfoError(format!("ffprobe not found at {}: Please ensure FFmpeg (which includes ffprobe) is installed and in your system PATH or bundled as a sidecar.", ffprobe_path)))
         }
-        Err(e) => Err(anyhow!("Failed to check ffprobe at {}: {}", ffprobe_path, e)),
+        Err(e) => Err(CoreError::MediaInfoError(format!("Failed to check ffprobe at {}: {}", ffprobe_path, e))),
     }
 }
 
@@ -37,17 +37,17 @@ pub fn get_media_info(path: &Path) -> Result<MediaDetails> {
             "-print_format", "json",
             "-show_streams",
             "-show_format",
-            path.to_str().ok_or_else(|| anyhow!("Invalid path"))?,
+            path.to_str().ok_or_else(|| CoreError::PathError("Invalid path".to_string()))?,
         ])
         .output()?;
 
     if !output.status.success() {
-        return Err(anyhow!("ffprobe failed"));
+        return Err(CoreError::MediaInfoError("ffprobe failed".to_string()));
     }
 
     let json: serde_json::Value = serde_json::from_slice(&output.stdout)?;
     
-    let streams = json["streams"].as_array().ok_or_else(|| anyhow!("No streams found"))?;
+    let streams = json["streams"].as_array().ok_or_else(|| CoreError::PathError("No streams found".to_string()))?;
     
     let mut video_stream = None;
     let mut audio_stream = None;
@@ -60,7 +60,7 @@ pub fn get_media_info(path: &Path) -> Result<MediaDetails> {
         }
     }
 
-    let video = video_stream.ok_or_else(|| anyhow!("No video stream"))?;
+    let video = video_stream.ok_or_else(|| CoreError::PathError("No video stream".to_string()))?;
     let width = video["width"].as_i64().unwrap_or(0) as i32;
     let height = video["height"].as_i64().unwrap_or(0) as i32;
     let video_codec = video["codec_name"].as_str().unwrap_or("unknown").to_string();

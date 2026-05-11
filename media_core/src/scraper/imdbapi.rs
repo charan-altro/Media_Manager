@@ -1,7 +1,7 @@
 // core/src/scraper/imdbapi.rs
 use serde::{Deserialize, Serialize};
 use reqwest::Client;
-use anyhow::Result;
+use crate::scraper::{Result, ScraperError};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ImdbApiSearchResult {
@@ -42,14 +42,14 @@ impl ImdbApiClient {
 
     pub async fn search(&self, query: &str) -> Result<Vec<ImdbApiSearchResult>> {
         if !self.is_configured() {
-            return Err(anyhow::anyhow!("IMDbAPI requires an API key"));
+            return Err(ScraperError::MissingApiKey("IMDbAPI requires an API key".to_string()));
         }
 
         let url = format!("https://imdb-api.projects.abhisavisa.com/Search/{}/{}", self.api_key, urlencoding::encode(query));
         let resp = self.client.get(&url).send().await?;
 
         if !resp.status().is_success() {
-            return Err(anyhow::anyhow!("IMDbAPI error: {}", resp.status()));
+            return Err(ScraperError::Internal(format!("IMDbAPI error: {}", resp.status())));
         }
 
         let v: serde_json::Value = resp.json().await?;

@@ -2,7 +2,7 @@
 // Kodi XML Scraper - discovers local Kodi installations and lists their metadata scrapers.
 // Note: Only XML-based scrapers are supported; Python scrapers are NOT compatible.
 use std::path::{Path, PathBuf};
-use anyhow::Result;
+use crate::scraper::Result;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize, Serialize)]

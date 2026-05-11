@@ -1,6 +1,6 @@
 // core/src/scraper/thesportsdb.rs
 use reqwest::Client;
-use anyhow::Result;
+use crate::scraper::Result;
 
 pub struct TheSportsDbClient {
     client: Client,

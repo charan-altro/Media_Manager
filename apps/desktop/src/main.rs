@@ -9,6 +9,8 @@ use media_core::cleanup::CleanupService;
 use media_core::exporter::Exporter;
 use sqlx::SqlitePool;
 
+use tauri::path::BaseDirectory;
+
 struct AppState {
     pool: SqlitePool,
     task_manager: Arc<TaskManager>,
@@ -197,9 +199,9 @@ async fn scrape_batch(ids: Vec<i64>, media_type: String, state: State<'_, AppSta
             
             async move {
                 if m_type == "movie" {
-                    let _ = media_core::scraper::scrape_movie(id.into(), &title_clone, year, &clients, &pool, script_path_clone.as_deref()).await;
+                    let _ = media_core::scraper::scrape_movie(media_core::models::MovieId(id), &title_clone, year, &clients, &pool, script_path_clone.as_deref()).await;
                 } else {
-                    let _ = media_core::scraper::scrape_tv_show(id.into(), &title_clone, &clients, &pool, script_path_clone.as_deref()).await;
+                    let _ = media_core::scraper::scrape_tv_show(media_core::models::TvShowId(id), &title_clone, &clients, &pool, script_path_clone.as_deref()).await;
                 }
                 
                 task_manager.broadcast(TaskUpdate {
@@ -322,11 +324,11 @@ async fn refresh_metadata(id: i64, state: State<'_, AppState>) -> Result<(), Str
     let script_path = settings.get("post_processing_script").map(|s| s.as_str());
 
     if let Ok(Some(movie)) = db::queries::get_movie_by_id(&pool, media_core::models::MovieId(id)).await {
-        let _ = media_core::scraper::scrape_movie(movie.id.0, &movie.title, movie.year, &clients, &pool, script_path).await;
+        let _ = media_core::scraper::scrape_movie(movie.id, &movie.title, movie.year, &clients, &pool, script_path).await;
     } else {
         let shows = db::queries::get_all_tv_shows(&pool, None, None, None).await.unwrap_or_default();
         if let Some(show) = shows.into_iter().find(|s| s.id == media_core::models::TvShowId(id)) {
-            let _ = media_core::scraper::scrape_tv_show(show.id.0, &show.title, &clients, &pool, script_path).await;
+            let _ = media_core::scraper::scrape_tv_show(show.id, &show.title, &clients, &pool, script_path).await;
         }
     }
     task_manager.broadcast(TaskUpdate { task_id, status: "completed".to_string(), progress: 1, total: 1, message: "Metadata refresh complete".to_string(), started_at: Some(start_ms), debug_info: None });
@@ -710,7 +712,7 @@ async fn cleanup_empty_folders(id: i64, state: State<'_, AppState>) -> Result<Ve
 #[tauri::command]
 async fn start_streaming(id: i64, media_type: String, state: State<'_, AppState>) -> Result<String, String> {
     let pool = state.pool.clone();
-    
+
     let path = if media_type == "movie" {
         db::queries::get_movie_full_path(&pool, media_core::models::MovieId(id)).await
     } else {
@@ -718,18 +720,70 @@ async fn start_streaming(id: i64, media_type: String, state: State<'_, AppState>
     }.map_err(|e| e.to_string())?;
 
     if let Some(input_path) = path {
-        let output_dir = std::path::PathBuf::from("transcodes").join(id.to_string());
+        let output_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")).join("transcodes").join(id.to_string());
+        if !output_dir.exists() {
+            std::fs::create_dir_all(&output_dir).map_err(|e| e.to_string())?;
+        }
+
         media_core::scanner::ffmpeg::FfmpegEngine::create_hls_stream(&input_path, &output_dir)
             .map_err(|e| e.to_string())?;
-        Ok(format!("/api/stream/{}/hls/playlist.m3u8", id))
+
+        let playlist = output_dir.join("playlist.m3u8");
+        Ok(playlist.to_string_lossy().to_string())
     } else {
         Err("Media not found".to_string())
     }
 }
 
+async fn copy_with_progress(
+    src: &std::path::Path,
+    dest: &std::path::Path,
+    task_manager: Arc<TaskManager>,
+    task_id: String,
+    start_ms: u64
+) -> std::io::Result<()> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    
+    let mut reader = tokio::fs::File::open(src).await?;
+    let total_size = reader.metadata().await?.len();
+    let mut writer = tokio::fs::File::create(dest).await?;
+    
+    let mut buffer = vec![0u8; 1024 * 1024]; // 1MB buffer
+    let mut copied_size = 0u64;
+    let mut last_report = std::time::Instant::now();
+
+    loop {
+        let n = reader.read(&mut buffer).await?;
+        if n == 0 { break; }
+        writer.write_all(&buffer[..n]).await?;
+        copied_size += n as u64;
+        
+        // Report progress every 500ms
+        if last_report.elapsed() > std::time::Duration::from_millis(500) {
+            let progress = (copied_size as f64 / total_size as f64 * 100.0) as i32;
+            task_manager.broadcast(TaskUpdate {
+                task_id: task_id.clone(),
+                status: "running".to_string(),
+                progress,
+                total: 100,
+                message: format!("Downloading: {} ({}%)", src.file_name().unwrap_or_default().to_string_lossy(), progress),
+                started_at: Some(start_ms),
+                debug_info: None,
+            });
+            last_report = std::time::Instant::now();
+        }
+    }
+    
+    writer.flush().await?;
+    Ok(())
+}
+
 #[tauri::command]
 async fn download_to_local(id: i64, media_type: String, dest_path: String, state: State<'_, AppState>) -> Result<String, String> {
     let pool = state.pool.clone();
+    let task_manager = state.task_manager.clone();
+    let task_id = uuid::Uuid::new_v4().to_string();
+    
     let path = if media_type == "movie" {
         db::queries::get_movie_full_path(&pool, media_core::models::MovieId(id)).await
     } else {
@@ -742,28 +796,68 @@ async fn download_to_local(id: i64, media_type: String, dest_path: String, state
         }
 
         let mut dest = std::path::PathBuf::from(&dest_path);
+
+        // If dest is a directory, or ends with a slash, or has no extension, treat it as a directory
+        let is_dir = dest.is_dir() || dest_path.ends_with('\\') || dest_path.ends_with('/') || dest.extension().is_none();
         
-        // If dest is a directory, or ends with a slash, use the original filename
-        if dest.is_dir() || dest_path.ends_with('\\') || dest_path.ends_with('/') {
+        if is_dir {
+            if !dest.exists() {
+                std::fs::create_dir_all(&dest).map_err(|e| e.to_string())?;
+            }
             if let Some(filename) = src.file_name() {
                 dest.push(filename);
             }
-        } else if dest.extension().is_none() {
-            // If no extension, try to add it from source
-            if let Some(ext) = src.extension() {
-                dest.set_extension(ext);
+        } else {
+            // Ensure parent directory exists for the file path
+            if let Some(parent) = dest.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
             }
         }
+
+        let task_id_clone = task_id.clone();
+        let task_manager_clone = task_manager.clone();
+        let src_clone = src.clone();
+        let dest_clone = dest.clone();
         
-        let metadata = src.metadata().map_err(|e| e.to_string())?;
-        let src_size = metadata.len();
-        
-        if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        }
-        
-        let bytes_copied = std::fs::copy(&src, &dest).map_err(|e| e.to_string())?;
-        Ok(format!("Successfully copied {} bytes to {}", bytes_copied, dest.display()))
+        tauri::async_runtime::spawn(async move {
+            let start_ms = now_ms();
+            task_manager_clone.broadcast(TaskUpdate {
+                task_id: task_id_clone.clone(),
+                status: "running".to_string(),
+                progress: 0,
+                total: 100,
+                message: format!("Downloading: {}", src_clone.file_name().unwrap_or_default().to_string_lossy()),
+                started_at: Some(start_ms),
+                debug_info: None,
+            });
+
+            match copy_with_progress(&src_clone, &dest_clone, task_manager_clone.clone(), task_id_clone.clone(), start_ms).await {
+                Ok(_) => {
+                    task_manager_clone.broadcast(TaskUpdate {
+                        task_id: task_id_clone,
+                        status: "completed".to_string(),
+                        progress: 100,
+                        total: 100,
+                        message: format!("Download completed: {}", src_clone.file_name().unwrap_or_default().to_string_lossy()),
+                        started_at: Some(start_ms),
+                        debug_info: None,
+                    });
+                }
+                Err(e) => {
+                    task_manager_clone.broadcast(TaskUpdate {
+                        task_id: task_id_clone,
+                        status: "error".to_string(),
+                        progress: 0,
+                        total: 100,
+                        message: format!("Download failed: {}", e),
+                        started_at: Some(start_ms),
+                        debug_info: None,
+                    });
+                }
+            }
+        });
+
+        Ok(format!("Download started to: {}", dest.display()))
     } else {
         Err("Media file not found in database".to_string())
     }
@@ -771,9 +865,9 @@ async fn download_to_local(id: i64, media_type: String, dest_path: String, state
 
 #[tauri::command]
 async fn get_playback_status(id: i64, media_type: String, state: State<'_, AppState>) -> Result<serde_json::Value, String> {
-    let row: Option<(i64, i64, bool)> = sqlx::query_as("SELECT position_ms, duration_ms, is_finished FROM watch_history WHERE media_id = ? AND media_type = ?")
+    let row: Option<(i64, i64, bool)> = sqlx::query_as("SELECT position_ms, duration_ms, is_finished FROM playback_state WHERE media_id = ? AND media_type = ?")
         .bind(id).bind(media_type).fetch_optional(&state.pool).await.map_err(|e| e.to_string())?;
-    
+
     if let Some((pos, dur, fin)) = row {
         Ok(serde_json::json!({ "position_ms": pos, "duration_ms": dur, "is_finished": fin }))
     } else {
@@ -790,13 +884,13 @@ async fn update_playback_progress(
     is_finished: bool,
     state: State<'_, AppState>
 ) -> Result<(), String> {
-    sqlx::query("INSERT INTO watch_history (media_id, media_type, position_ms, duration_ms, is_finished, last_watched_at) 
-                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    sqlx::query("INSERT INTO playback_state (media_id, media_type, position_ms, duration_ms, is_finished, updated_at)
+                VALUES (?, ?, ?, ?, ?, datetime('now'))
                 ON CONFLICT(media_id, media_type) DO UPDATE SET
                 position_ms = excluded.position_ms,
                 duration_ms = excluded.duration_ms,
                 is_finished = excluded.is_finished,
-                last_watched_at = CURRENT_TIMESTAMP")
+                updated_at = datetime('now')")
         .bind(media_id).bind(media_type).bind(position_ms).bind(duration_ms).bind(is_finished)
         .execute(&state.pool).await.map_err(|e| e.to_string())?;
     Ok(())
@@ -849,14 +943,14 @@ fn main() {
             #[cfg(not(target_os = "windows"))]
             let (ffmpeg_name, ffprobe_name) = ("ffmpeg", "ffprobe");
 
-            if let Ok(ffmpeg_path) = handle.path().resolve_for_resource(format!("bin/{}", ffmpeg_name)) {
+            if let Ok(ffmpeg_path) = handle.path().resolve(format!("bin/{}", ffmpeg_name), BaseDirectory::Resource) {
                 if ffmpeg_path.exists() {
                     tracing::info!("Found bundled FFmpeg at: {:?}", ffmpeg_path);
                     media_core::config::set_ffmpeg_path(ffmpeg_path.to_string_lossy().to_string());
                 }
             }
 
-            if let Ok(ffprobe_path) = handle.path().resolve_for_resource(format!("bin/{}", ffprobe_name)) {
+            if let Ok(ffprobe_path) = handle.path().resolve(format!("bin/{}", ffprobe_name), BaseDirectory::Resource) {
                 if ffprobe_path.exists() {
                     tracing::info!("Found bundled ffprobe at: {:?}", ffprobe_path);
                     media_core::config::set_ffprobe_path(ffprobe_path.to_string_lossy().to_string());

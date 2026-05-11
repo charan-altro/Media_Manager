@@ -2,7 +2,7 @@
 // MPDb.TV - French metadata provider (private, requires abo key + username)
 use serde::{Deserialize, Serialize};
 use reqwest::Client;
-use anyhow::{Result, anyhow};
+use crate::scraper::{Result, ScraperError};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct MpdbSearchResult {
@@ -52,7 +52,7 @@ impl MpdbClient {
 
     pub async fn search(&self, query: &str) -> Result<Vec<MpdbSearchResult>> {
         if !self.is_configured() {
-            return Err(anyhow!("MPDb requires abo_key and username to be configured"));
+            return Err(ScraperError::MissingApiKey("MPDb requires abo_key and username to be configured".to_string()));
         }
 
         let url = format!(
@@ -81,7 +81,7 @@ impl MpdbClient {
 
     pub async fn get_details(&self, id: i32) -> Result<MpdbMovieDetails> {
         if !self.is_configured() {
-            return Err(anyhow!("MPDb requires abo_key and username to be configured"));
+            return Err(ScraperError::MissingApiKey("MPDb requires abo_key and username to be configured".to_string()));
         }
 
         let url = format!(
@@ -94,7 +94,7 @@ impl MpdbClient {
         let resp = self.client.get(&url).send().await?;
 
         if !resp.status().is_success() {
-            return Err(anyhow!("MPDb returned {}", resp.status()));
+            return Err(ScraperError::Internal(format!("MPDb returned {}", resp.status())));
         }
 
         let v: serde_json::Value = resp.json().await?;

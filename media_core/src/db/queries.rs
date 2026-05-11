@@ -30,6 +30,8 @@ pub async fn insert_library(pool: &SqlitePool, name: &str, path: &str, media_typ
         MediaType::Tv => "tv",
     };
     
+    let normalized_path = crate::paths::normalize_slashes(path);
+    
     sqlx::query(
         r#"
         INSERT INTO libraries (name, path, media_type)
@@ -38,13 +40,13 @@ pub async fn insert_library(pool: &SqlitePool, name: &str, path: &str, media_typ
         "#
     )
     .bind(name)
-    .bind(path)
+    .bind(&normalized_path)
     .bind(mt_str)
     .execute(pool)
     .await?;
 
     let row: (LibraryId,) = sqlx::query_as("SELECT id FROM libraries WHERE path = ?")
-        .bind(path)
+        .bind(&normalized_path)
         .fetch_one(pool)
         .await?;
     

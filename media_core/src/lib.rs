@@ -22,6 +22,7 @@ pub mod config {
 }
 
 pub mod db;
+pub mod errors;
 pub mod models;
 pub mod parser;
 pub mod scanner;

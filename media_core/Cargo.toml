@@ -29,3 +29,4 @@ scraper.workspace = true
 html-escape.workspace = true
 urlencoding.workspace = true
 rust_xlsxwriter.workspace = true
+unicode-normalization.workspace = true

@@ -32,6 +32,22 @@ const MediaGrid: React.FC<MediaGridProps> = ({
 }) => {
   const [hoveredId, setHoveredId] = useState<number | null>(null);
   const hoverTimeout = useRef<any>(null);
+  const [gridSize, setGridSize] = useState(6); // Default to 6 columns
+
+  const getGridCols = () => {
+    const mapping: Record<number, string> = {
+      2: 'grid-cols-2',
+      3: 'grid-cols-2 sm:grid-cols-3',
+      4: 'grid-cols-2 sm:grid-cols-3 md:grid-cols-4',
+      5: 'grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5',
+      6: 'grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6',
+      7: 'grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7',
+      8: 'grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-7 2xl:grid-cols-8',
+      9: 'grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-7 xl:grid-cols-8 2xl:grid-cols-9',
+      10: 'grid-cols-4 sm:grid-cols-5 md:grid-cols-7 lg:grid-cols-8 xl:grid-cols-9 2xl:grid-cols-10',
+    };
+    return mapping[gridSize] || 'grid-cols-6';
+  };
 
   return (
     <div className="px-4 md:px-12 py-12 space-y-10">
@@ -42,7 +58,20 @@ const MediaGrid: React.FC<MediaGridProps> = ({
           </h3>
           <p className="text-zinc-500 text-sm font-medium">{itemCount} total titles identified</p>
         </div>
-        <div className="flex flex-wrap gap-4">
+        <div className="flex flex-wrap items-center gap-6">
+          {/* YouTube-style Grid Slider */}
+          <div className="flex items-center gap-3 bg-zinc-900/50 px-4 py-2 rounded-full border border-zinc-800">
+            <span className="text-[10px] font-black text-zinc-500 uppercase tracking-widest">Size</span>
+            <input 
+              type="range" 
+              min="2" 
+              max="10" 
+              value={gridSize} 
+              onChange={(e) => setGridSize(parseInt(e.target.value))}
+              className="w-24 h-1 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-red-600"
+            />
+          </div>
+
           <div className="relative">
             <button 
               onClick={() => setShowFilterMenu(!showFilterMenu)}
@@ -121,7 +150,7 @@ const MediaGrid: React.FC<MediaGridProps> = ({
         </div>
       </div>
       
-      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7 gap-y-10 gap-x-4 md:gap-x-6">
+      <div className={`grid ${getGridCols()} gap-y-10 gap-x-4 md:gap-x-6`}>
         {items.map(item => (
           <div 
             key={item.id} 

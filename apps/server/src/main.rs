@@ -147,6 +147,7 @@ async fn main() {
         .route("/api/stream/movie/:id", post(start_movie_stream))
         .route("/api/stream/episode/:id", post(start_episode_stream))
         .route("/api/stream/hls/:id/:file", get(serve_stream_file))
+        .nest_service("/transcodes", tower_http::services::ServeDir::new("transcodes"))
         .route("/api/movies/:id/download", get(download_movie))
         .route("/api/episodes/:id/download", get(download_episode))
         // .route("/api/stream/:id/start", post(start_streaming))
@@ -729,7 +730,15 @@ async fn get_local_artwork(State(state): State<Arc<AppState>>, Query(query): Que
 
     use tower::ServiceExt;
     use tower_http::services::ServeFile;
-    let mime = if query.path.ends_with(".png") { "image/png" } else { "image/jpeg" };
+    let mime = if query.path.ends_with(".png") { 
+        "image/png" 
+    } else if query.path.ends_with(".mp4") {
+        "video/mp4"
+    } else if query.path.ends_with(".webm") {
+        "video/webm"
+    } else { 
+        "image/jpeg" 
+    };
     let service = ServeFile::new(path).precompressed_gzip();
     
     match service.oneshot(req).await {
@@ -1248,48 +1257,52 @@ async fn process_movie_advanced(State(state): State<Arc<AppState>>, Path(id): Pa
     tokio::spawn(async move {
         let _permit = task_manager.acquire_heavy_permit().await;
         let start_ms = now_ms();
-        if let Ok(Some(path)) = db::queries::get_movie_full_path(&pool, MovieId(id)).await {
-            let row: Option<(i64,)> = sqlx::query_as("SELECT id FROM movie_files WHERE movie_id = ? LIMIT 1").bind(id).fetch_optional(&pool).await.unwrap_or_default();
-            if let Some((file_id,)) = row {
-                task_manager.broadcast(media_core::models::TaskUpdate {
-                    task_id: task_id.clone(),
-                    status: "running".to_string(),
-                    progress: 0,
-                    total: 1,
-                    message: "Analyzing movie...".to_string(),
-                    started_at: Some(start_ms),
-                    debug_info: Some("Running FFmpeg cropdetect and thumbnail extraction...".to_string()),
-                });
-
-                if path.exists() {
-                    let folder = path.parent().unwrap();
-                    let thumb_dest = folder.join(format!("{}.thumb.jpg", path.file_stem().unwrap().to_str().unwrap()));
-                    
-                    // 1. Detect Ratio
-                    let ratio = media_core::scanner::ffmpeg::FfmpegEngine::detect_aspect_ratio(&path).ok();
-                    
-                    // 2. Extract Thumb
-                    let thumb = media_core::scanner::ffmpeg::FfmpegEngine::extract_thumbnail(&path, &thumb_dest, "00:05:00").ok();
-
-                    // 3. Generate Preview (Stash Style)
-                    let preview_dest = folder.join(format!("{}.preview.mp4", path.file_stem().unwrap().to_str().unwrap()));
-                    let preview = media_core::scanner::ffmpeg::FfmpegEngine::generate_preview(&path, &preview_dest).ok();
-
-                    // Update DB (relativize paths)
-                    let rel_thumb = thumb.as_ref().and_then(|_| {
-                        Some(thumb_dest.file_name()?.to_string_lossy().to_string())
-                    });
-                    let rel_preview = preview.as_ref().and_then(|_| {
-                        Some(preview_dest.file_name()?.to_string_lossy().to_string())
+        if let Ok(Some(movie)) = db::queries::get_movie_by_id(&pool, MovieId(id)).await {
+            let libraries = db::queries::get_all_libraries(&pool).await.unwrap_or_default();
+            if let (Some(lib), Ok(Some(path))) = (libraries.into_iter().find(|l| l.id == movie.library_id), db::queries::get_movie_full_path(&pool, movie.id).await) {
+                let row: Option<(i64,)> = sqlx::query_as("SELECT id FROM movie_files WHERE movie_id = ? LIMIT 1").bind(id).fetch_optional(&pool).await.unwrap_or_default();
+                if let Some((file_id,)) = row {
+                    task_manager.broadcast(media_core::models::TaskUpdate {
+                        task_id: task_id.clone(),
+                        status: "running".to_string(),
+                        progress: 0,
+                        total: 1,
+                        message: format!("Analyzing movie: {}...", movie.title),
+                        started_at: Some(start_ms),
+                        debug_info: Some("Running FFmpeg cropdetect and thumbnail extraction...".to_string()),
                     });
 
-                    let _ = sqlx::query("UPDATE movie_files SET aspect_ratio = ?, thumbnail_path = ?, preview_path = ? WHERE id = ?")
-                        .bind(ratio)
-                        .bind(rel_thumb)
-                        .bind(rel_preview)
-                        .bind(file_id)
-                        .execute(&pool)
-                        .await;
+                    if path.exists() {
+                        let folder = path.parent().unwrap();
+                        let thumb_dest = folder.join(format!("{}.thumb.jpg", path.file_stem().unwrap().to_str().unwrap()));
+                        let lib_root = std::path::Path::new(&lib.path);
+                        
+                        // 1. Detect Ratio
+                        let ratio = media_core::scanner::ffmpeg::FfmpegEngine::detect_aspect_ratio(&path).ok();
+                        
+                        // 2. Extract Thumb
+                        let thumb = media_core::scanner::ffmpeg::FfmpegEngine::extract_thumbnail(&path, &thumb_dest, "00:05:00").ok();
+
+                        // 3. Generate Preview (Stash Style)
+                        let preview_dest = folder.join(format!("{}.preview.mp4", path.file_stem().unwrap().to_str().unwrap()));
+                        let preview = media_core::scanner::ffmpeg::FfmpegEngine::generate_preview(&path, &preview_dest).ok();
+
+                        // Relativize paths for DB
+                        let rel_thumb = thumb.as_ref().and_then(|p| {
+                            media_core::paths::make_relative(p, lib_root).ok()
+                        });
+                        let rel_preview = preview.as_ref().and_then(|p| {
+                            media_core::paths::make_relative(p, lib_root).ok()
+                        });
+
+                        let _ = sqlx::query("UPDATE movie_files SET aspect_ratio = ?, thumbnail_path = ?, preview_path = ? WHERE id = ?")
+                            .bind(ratio)
+                            .bind(rel_thumb)
+                            .bind(rel_preview)
+                            .bind(file_id)
+                            .execute(&pool)
+                            .await;
+                    }
                 }
             }
         }
@@ -1323,36 +1336,58 @@ async fn process_tv_show_advanced(State(state): State<Arc<AppState>>, Path(id): 
         }
 
         let total = all_episodes.len() as i32;
-        for (i, ep) in all_episodes.into_iter().enumerate() {
-            let _permit = task_manager.acquire_heavy_permit().await;
-            
-            task_manager.broadcast(media_core::models::TaskUpdate {
-                task_id: task_id.clone(),
-                status: "running".to_string(),
-                progress: i as i32,
-                total,
-                message: format!("Analyzing Ep {}/{}", i+1, total),
-                started_at: Some(start_ms),
-                debug_info: Some(format!("FFmpeg deep analysis for: {}", ep.original_name)),
-            });
+        
+        // Find the library for this show to get root path
+        let show: Option<(i64,)> = sqlx::query_as("SELECT library_id FROM tv_shows WHERE id = ?").bind(id).fetch_optional(&pool).await.unwrap_or_default();
+        let mut lib_root_opt = None;
+        if let Some((lib_id,)) = show {
+            if let Ok(libraries) = db::queries::get_all_libraries(&pool).await {
+                if let Some(lib) = libraries.into_iter().find(|l| l.id == LibraryId(lib_id)) {
+                    lib_root_opt = Some(PathBuf::from(lib.path));
+                }
+            }
+        }
 
-            if let Ok(Some(path)) = db::queries::get_episode_full_path(&pool, ep.id).await {
-                if path.exists() {
-                    let folder = path.parent().unwrap();
-                    let thumb_dest = folder.join(format!("{}.thumb.jpg", path.file_stem().unwrap().to_str().unwrap()));
-                    
-                    let ratio = media_core::scanner::ffmpeg::FfmpegEngine::detect_aspect_ratio(&path).ok();
-                    let thumb = media_core::scanner::ffmpeg::FfmpegEngine::extract_thumbnail(&path, &thumb_dest, "00:05:00").ok();
-let rel_thumb = thumb.as_ref().and_then(|_| {
-    Some(thumb_dest.file_name()?.to_string_lossy().to_string())
-});
+        if let Some(lib_root) = lib_root_opt {
+            for (i, ep) in all_episodes.into_iter().enumerate() {
+                let _permit = task_manager.acquire_heavy_permit().await;
+                
+                task_manager.broadcast(media_core::models::TaskUpdate {
+                    task_id: task_id.clone(),
+                    status: "running".to_string(),
+                    progress: i as i32,
+                    total,
+                    message: format!("Analyzing Ep {}/{}", i+1, total),
+                    started_at: Some(start_ms),
+                    debug_info: Some(format!("FFmpeg deep analysis for: {}", ep.original_name)),
+                });
 
-                    let _ = sqlx::query("UPDATE episodes SET aspect_ratio = ?, thumbnail_path = ? WHERE id = ?")
-                        .bind(ratio)
-                        .bind(rel_thumb)
-                        .bind(ep.id)
-                        .execute(&pool)
-                        .await;
+                if let Ok(Some(path)) = db::queries::get_episode_full_path(&pool, ep.id).await {
+                    if path.exists() {
+                        let folder = path.parent().unwrap();
+                        let thumb_dest = folder.join(format!("{}.thumb.jpg", path.file_stem().unwrap().to_str().unwrap()));
+                        
+                        let ratio = media_core::scanner::ffmpeg::FfmpegEngine::detect_aspect_ratio(&path).ok();
+                        let thumb = media_core::scanner::ffmpeg::FfmpegEngine::extract_thumbnail(&path, &thumb_dest, "00:05:00").ok();
+                        
+                        let preview_dest = folder.join(format!("{}.preview.mp4", path.file_stem().unwrap().to_str().unwrap()));
+                        let preview = media_core::scanner::ffmpeg::FfmpegEngine::generate_preview(&path, &preview_dest).ok();
+
+                        let rel_thumb = thumb.as_ref().and_then(|p| {
+                            media_core::paths::make_relative(p, &lib_root).ok()
+                        });
+                        let rel_preview = preview.as_ref().and_then(|p| {
+                            media_core::paths::make_relative(p, &lib_root).ok()
+                        });
+
+                        let _ = sqlx::query("UPDATE episodes SET aspect_ratio = ?, thumbnail_path = ?, preview_path = ? WHERE id = ?")
+                            .bind(ratio)
+                            .bind(rel_thumb)
+                            .bind(rel_preview)
+                            .bind(ep.id)
+                            .execute(&pool)
+                            .await;
+                    }
                 }
             }
         }
@@ -1378,9 +1413,15 @@ async fn process_library_advanced(State(state): State<Arc<AppState>>, Path(id): 
 
     tokio::spawn(async move {
         let start_ms = now_ms();
+        let libraries = db::queries::get_all_libraries(&pool).await.unwrap_or_default();
+        let lib = match libraries.into_iter().find(|l| l.id == LibraryId(id)) {
+            Some(l) => l,
+            None => return,
+        };
+        let lib_root = PathBuf::from(&lib.path);
         
         // 1. Process Movies
-        if let Ok(movies) = db::queries::get_all_movies(&pool, Some(media_core::models::LibraryId(id)), None, None).await {
+        if let Ok(movies) = db::queries::get_all_movies(&pool, Some(lib.id), None, None).await {
             let total = movies.len() as i32;
             for (i, movie) in movies.into_iter().enumerate() {
                 let _permit = task_manager.acquire_heavy_permit().await;
@@ -1401,17 +1442,24 @@ async fn process_library_advanced(State(state): State<Arc<AppState>>, Path(id): 
                         debug_info: Some(format!("Analyzing: {}", movie.title)),
                     });
 
-                    let input_path = std::path::PathBuf::from(&file.file_path);
+                    let input_path = media_core::paths::make_absolute(&file.file_path, &lib_root);
                     if input_path.exists() {
                         let folder = input_path.parent().unwrap();
                         let thumb_dest = folder.join(format!("{}.thumb.jpg", input_path.file_stem().unwrap().to_str().unwrap()));
                         
                         let ratio = media_core::scanner::ffmpeg::FfmpegEngine::detect_aspect_ratio(&input_path).ok();
                         let thumb = media_core::scanner::ffmpeg::FfmpegEngine::extract_thumbnail(&input_path, &thumb_dest, "00:05:00").ok();
+                        
+                        let preview_dest = folder.join(format!("{}.preview.mp4", input_path.file_stem().unwrap().to_str().unwrap()));
+                        let preview = media_core::scanner::ffmpeg::FfmpegEngine::generate_preview(&input_path, &preview_dest).ok();
 
-                        let _ = sqlx::query("UPDATE movie_files SET aspect_ratio = ?, thumbnail_path = ? WHERE id = ?")
+                        let rel_thumb = thumb.as_ref().and_then(|p| media_core::paths::make_relative(p, &lib_root).ok());
+                        let rel_preview = preview.as_ref().and_then(|p| media_core::paths::make_relative(p, &lib_root).ok());
+
+                        let _ = sqlx::query("UPDATE movie_files SET aspect_ratio = ?, thumbnail_path = ?, preview_path = ? WHERE id = ?")
                             .bind(ratio)
-                            .bind(thumb.map(|p| p.to_string_lossy().to_string()))
+                            .bind(rel_thumb)
+                            .bind(rel_preview)
                             .bind(file.id)
                             .execute(&pool)
                             .await;
@@ -1421,7 +1469,7 @@ async fn process_library_advanced(State(state): State<Arc<AppState>>, Path(id): 
         }
 
         // 2. Process TV Shows
-        if let Ok(shows) = db::queries::get_all_tv_shows(&pool, Some(media_core::models::LibraryId(id)), None, None).await {
+        if let Ok(shows) = db::queries::get_all_tv_shows(&pool, Some(lib.id), None, None).await {
             let total_shows = shows.len();
             for (si, show) in shows.into_iter().enumerate() {
                 let seasons = db::queries::get_seasons_by_show_id(&pool, show.id).await.unwrap_or_default();
@@ -1441,7 +1489,7 @@ async fn process_library_advanced(State(state): State<Arc<AppState>>, Path(id): 
                             debug_info: Some(format!("Analyzing: {} - {}", show.title, ep.original_name)),
                         });
 
-                        let input_path = std::path::PathBuf::from(&ep.file_path);
+                        let input_path = media_core::paths::make_absolute(&ep.file_path, &lib_root);
                         if input_path.exists() {
                             let folder = input_path.parent().unwrap();
                             let thumb_dest = folder.join(format!("{}.thumb.jpg", input_path.file_stem().unwrap().to_str().unwrap()));
@@ -1452,10 +1500,13 @@ async fn process_library_advanced(State(state): State<Arc<AppState>>, Path(id): 
                             let preview_dest = folder.join(format!("{}.preview.mp4", input_path.file_stem().unwrap().to_str().unwrap()));
                             let preview = media_core::scanner::ffmpeg::FfmpegEngine::generate_preview(&input_path, &preview_dest).ok();
 
+                            let rel_thumb = thumb.as_ref().and_then(|p| media_core::paths::make_relative(p, &lib_root).ok());
+                            let rel_preview = preview.as_ref().and_then(|p| media_core::paths::make_relative(p, &lib_root).ok());
+
                             let _ = sqlx::query("UPDATE episodes SET aspect_ratio = ?, thumbnail_path = ?, preview_path = ? WHERE id = ?")
                                 .bind(ratio)
-                                .bind(thumb.map(|p| p.file_name().unwrap().to_string_lossy().to_string()))
-                                .bind(preview.map(|p| p.file_name().unwrap().to_string_lossy().to_string()))
+                                .bind(rel_thumb)
+                                .bind(rel_preview)
                                 .bind(ep.id)
                                 .execute(&pool)
                                 .await;
@@ -1626,13 +1677,22 @@ async fn get_playback_status(State(state): State<Arc<AppState>>, Path((m_type, i
 }
 
 async fn start_movie_stream(State(state): State<Arc<AppState>>, Path(id): Path<i64>) -> impl IntoResponse {
+    tracing::info!("HLS Stream requested for movie ID: {}", id);
     if let Ok(Some(path)) = db::queries::get_movie_full_path(&state.pool, MovieId(id)).await {
+        tracing::debug!("Found path for streaming: {:?}", path);
         let stream_id = format!("movie_{}", id);
         match state.stream_manager.start_hls(&stream_id, &path) {
-            Ok(_) => (StatusCode::OK, Json(format!("/api/stream/hls/{}/playlist.m3u8", stream_id))).into_response(),
-            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+            Ok(_) => {
+                tracing::info!("HLS Stream started successfully for {}", stream_id);
+                (StatusCode::OK, Json(format!("/api/stream/hls/{}/playlist.m3u8", stream_id))).into_response()
+            },
+            Err(e) => {
+                tracing::error!("HLS Stream failed to start: {}", e);
+                (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+            },
         }
     } else {
+        tracing::error!("Movie ID {} not found or has no associated file", id);
         (StatusCode::NOT_FOUND, "Movie not found").into_response()
     }
 }
@@ -1650,7 +1710,7 @@ async fn start_episode_stream(State(state): State<Arc<AppState>>, Path(id): Path
 }
 
 async fn serve_stream_file(
-    State(state): State<Arc<AppState>>,
+    State(_state): State<Arc<AppState>>,
     Path((id, file)): Path<(String, String)>
 ) -> impl IntoResponse {
     let base_dir = PathBuf::from("transcodes").join(&id);

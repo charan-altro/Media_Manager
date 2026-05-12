@@ -20,6 +20,7 @@ pub struct Movie {
     pub genres: Option<String>, // JSON string
     pub language: Option<String>,
     pub cast_list: Option<String>, // JSON string
+    pub preview_path: Option<String>,
     pub nfo_path: Option<String>,
     pub created_at: String,
     pub updated_at: String,
@@ -42,6 +43,9 @@ pub struct MovieFile {
     pub resolution: Option<crate::models::Resolution>,
     pub codec: Option<String>,
     pub hash: Option<String>,
+    pub fingerprint: Option<String>,
+    pub is_missing: bool,
+    pub last_scanned: Option<String>,
     pub preview_path: Option<String>,
     pub aspect_ratio: Option<String>,
     pub thumbnail_path: Option<String>,

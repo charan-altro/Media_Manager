@@ -117,19 +117,23 @@ pub async fn upsert_episode<'c, E>(
     size_bytes: i64,
     resolution: Option<crate::models::Resolution>,
     codec: Option<&str>,
-    hash: Option<&str>
+    hash: Option<&str>,
+    fingerprint: Option<&str>
 ) -> Result<EpisodeId> 
 where E: sqlx::Executor<'c, Database = sqlx::Sqlite> {
     let normalized_path = crate::paths::normalize_slashes(file_path);
     let row: (EpisodeId,) = sqlx::query_as(
         r#"
-        INSERT INTO episodes (season_id, episode_number, file_path, original_name, size_bytes, resolution, codec, hash)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO episodes (season_id, episode_number, file_path, original_name, size_bytes, resolution, codec, hash, fingerprint, is_missing, last_scanned)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, datetime('now'))
         ON CONFLICT(file_path) DO UPDATE SET 
             size_bytes = excluded.size_bytes,
             resolution = excluded.resolution,
             codec = excluded.codec,
             hash = excluded.hash,
+            fingerprint = excluded.fingerprint,
+            is_missing = 0,
+            last_scanned = datetime('now'),
             updated_at = datetime('now')
         RETURNING id
         "#
@@ -142,6 +146,7 @@ where E: sqlx::Executor<'c, Database = sqlx::Sqlite> {
     .bind(resolution)
     .bind(codec)
     .bind(hash)
+    .bind(fingerprint)
     .fetch_one(executor)
     .await?;
 
@@ -156,19 +161,23 @@ pub async fn upsert_movie_file<'c, E>(
     size_bytes: i64,
     resolution: Option<crate::models::Resolution>,
     codec: Option<&str>,
-    hash: Option<&str>
+    hash: Option<&str>,
+    fingerprint: Option<&str>
 ) -> Result<MovieFileId> 
 where E: sqlx::Executor<'c, Database = sqlx::Sqlite> {
     let normalized_path = crate::paths::normalize_slashes(file_path);
     let row: (MovieFileId,) = sqlx::query_as(
         r#"
-        INSERT INTO movie_files (movie_id, file_path, original_name, size_bytes, resolution, codec, hash)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO movie_files (movie_id, file_path, original_name, size_bytes, resolution, codec, hash, fingerprint, is_missing, last_scanned)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, datetime('now'))
         ON CONFLICT(file_path) DO UPDATE SET 
             size_bytes=excluded.size_bytes,
             resolution=excluded.resolution,
             codec=excluded.codec,
             hash=excluded.hash,
+            fingerprint=excluded.fingerprint,
+            is_missing=0,
+            last_scanned=datetime('now'),
             updated_at=datetime('now')
         RETURNING id
         "#
@@ -180,6 +189,7 @@ where E: sqlx::Executor<'c, Database = sqlx::Sqlite> {
     .bind(resolution)
     .bind(codec)
     .bind(hash)
+    .bind(fingerprint)
     .fetch_one(executor)
     .await?;
 
@@ -192,21 +202,21 @@ pub async fn get_all_movies(
     genre: Option<String>,
     language: Option<String>
 ) -> Result<Vec<Movie>> {
-    let mut query = String::from("SELECT * FROM movies WHERE 1=1");
+    let mut query = String::from("SELECT m.*, mf.preview_path FROM movies m LEFT JOIN movie_files mf ON m.id = mf.movie_id WHERE 1=1");
     if library_id.is_some() {
-        query.push_str(" AND library_id = ?");
+        query.push_str(" AND m.library_id = ?");
     }
     
     let genre_active = genre.as_ref().map(|s| !s.is_empty()).unwrap_or(false);
     if genre_active {
-        query.push_str(" AND genres LIKE ?");
+        query.push_str(" AND m.genres LIKE ?");
     }
     
     let language_active = language.as_ref().map(|s| !s.is_empty()).unwrap_or(false);
     if language_active {
-        query.push_str(" AND language = ?");
+        query.push_str(" AND m.language = ?");
     }
-    query.push_str(" ORDER BY title ASC");
+    query.push_str(" GROUP BY m.id ORDER BY m.title ASC");
 
     let mut q = sqlx::query_as::<_, Movie>(&query);
     if let Some(id) = library_id {
@@ -233,21 +243,25 @@ pub async fn get_all_tv_shows(
     genre: Option<String>,
     language: Option<String>
 ) -> Result<Vec<crate::models::TVShow>> {
-    let mut query = String::from("SELECT * FROM tv_shows WHERE 1=1");
+    let mut query = String::from(r#"
+        SELECT t.*, 
+        (SELECT e.preview_path FROM episodes e JOIN seasons s ON e.season_id = s.id WHERE s.show_id = t.id AND e.preview_path IS NOT NULL LIMIT 1) as preview_path
+        FROM tv_shows t WHERE 1=1
+    "#);
     if library_id.is_some() {
-        query.push_str(" AND library_id = ?");
+        query.push_str(" AND t.library_id = ?");
     }
     
     let genre_active = genre.as_ref().map(|s| !s.is_empty()).unwrap_or(false);
     if genre_active {
-        query.push_str(" AND genres LIKE ?");
+        query.push_str(" AND t.genres LIKE ?");
     }
     
     let language_active = language.as_ref().map(|s| !s.is_empty()).unwrap_or(false);
     if language_active {
-        query.push_str(" AND language = ?");
+        query.push_str(" AND t.language = ?");
     }
-    query.push_str(" ORDER BY title ASC");
+    query.push_str(" ORDER BY t.title ASC");
 
     let mut q = sqlx::query_as::<_, crate::models::TVShow>(&query);
     if let Some(id) = library_id {
@@ -304,9 +318,25 @@ pub async fn get_movie_file_by_hash(pool: &SqlitePool, hash: &str) -> Result<Opt
     Ok(file)
 }
 
+pub async fn get_movie_file_by_fingerprint(pool: &SqlitePool, fingerprint: &str) -> Result<Option<crate::models::MovieFile>> {
+    let file = sqlx::query_as::<_, crate::models::MovieFile>("SELECT * FROM movie_files WHERE fingerprint = ?")
+        .bind(fingerprint)
+        .fetch_optional(pool)
+        .await?;
+    Ok(file)
+}
+
 pub async fn get_episode_by_hash(pool: &SqlitePool, hash: &str) -> Result<Option<crate::models::Episode>> {
     let ep = sqlx::query_as::<_, crate::models::Episode>("SELECT * FROM episodes WHERE hash = ?")
         .bind(hash)
+        .fetch_optional(pool)
+        .await?;
+    Ok(ep)
+}
+
+pub async fn get_episode_by_fingerprint(pool: &SqlitePool, fingerprint: &str) -> Result<Option<crate::models::Episode>> {
+    let ep = sqlx::query_as::<_, crate::models::Episode>("SELECT * FROM episodes WHERE fingerprint = ?")
+        .bind(fingerprint)
         .fetch_optional(pool)
         .await?;
     Ok(ep)

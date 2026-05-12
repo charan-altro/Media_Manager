@@ -29,6 +29,7 @@ impl StreamManager {
     }
 
     pub fn start_hls(&self, id: &str, input_path: &Path) -> Result<PathBuf> {
+        FfmpegEngine::check_ffmpeg()?;
         let mut sessions = self.sessions.lock().unwrap();
         
         // If session already exists, just return the playlist path
@@ -46,20 +47,24 @@ impl StreamManager {
         let playlist_path = output_dir.join("playlist.m3u8");
         let segment_pattern = output_dir.join("seg_%03d.ts");
 
-        // We'll use libx264 for maximum compatibility in MVP
+        // Optimized for Stash-like "Instant Play"
         let process = std::process::Command::new(crate::config::get_ffmpeg_path())
             .args(&[
+                "-loglevel", "error",
                 "-i", input_path.to_str().unwrap(),
                 "-c:v", "libx264",
                 "-preset", "ultrafast",
-                "-crf", "22",
+                "-tune", "zerolatency",
+                "-crf", "26",
                 "-c:a", "aac",
                 "-b:a", "128k",
                 "-ac", "2",
                 "-f", "hls",
-                "-hls_time", "4",
+                "-hls_time", "2", // Smaller segments for faster start
                 "-hls_list_size", "0", 
-                "-hls_flags", "independent_segments+delete_segments",
+                "-hls_flags", "independent_segments+delete_segments+split_by_time",
+                "-hls_segment_type", "mpegts",
+                "-movflags", "+faststart",
                 "-hls_segment_filename", segment_pattern.to_str().unwrap(),
                 playlist_path.to_str().unwrap(),
             ])

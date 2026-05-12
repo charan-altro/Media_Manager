@@ -2804,6 +2804,7 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tracing",
+ "unicode-normalization",
  "urlencoding",
  "uuid",
  "walkdir",

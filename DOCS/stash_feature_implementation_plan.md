@@ -1,128 +1,152 @@
 # Stash-Inspired Implementation Plan: Media Manager
 
-This plan outlines the integration of high-value features from Stash into Media Manager, prioritizing stability, compatibility, and visual polish.
+This document serves as the technical blueprint for evolving Media_Manager into a high-performance media vault. It leverages **Rust's** performance (multithreading/safety) and **Stash's** proven UX patterns.
 
-## Phase 1: MVP - The Foundation (Digital Fingerprinting)
-**Goal:** Move from "Path-based identity" to "Content-based identity".
+---
 
-1.  **OSHash Implementation**: Port the OpenSubtitles Hash algorithm to `media_core`. It's extremely fast and provides a unique signature for video files.
-2.  **Schema Update**:
-    *   Add `hash` column to `movie_files` and `episode_files`.
-    *   Add `checksum` (MD5/SHA256) for smaller files/images.
-3.  **Smart Ingestion**:
-    *   Modify `worker.rs` to calculate hashes during scan.
-    *   Update `upsert` logic: If a file is moved, find it by hash and update the path instead of creating a new entry.
+## 1. Architectural Comparison
 
-## Phase 2: Playback & Streaming (The "Play Anywhere" Engine)
-**Goal:** 100% browser compatibility for all media.
+| Feature | Stash (Mature / Go) | Media_Manager (In Dev / Rust) | Architect's Verdict |
+| :--- | :--- | :--- | :--- |
+| **API Paradigm** | **GraphQL (GQLGen)** | REST (Axum) | **Stash Wins on Flexibility.** GraphQL handles deep relations (Movie <-> Actor <-> Studio) without "Under-fetching" or "God Endpoints." |
+| **Identity Logic** | **Fingerprint-First** (Hash) | Path-First (Relative Path) | **Stash Wins on Stability.** Using Hash as the "Anchor" makes the DB resilient to manual file moves or renames. |
+| **Streaming** | **Smart Remuxing** (HLS-Copy) | Transcode-Only (HLS x264) | **Stash Wins on Efficiency.** Native files use 0% CPU via remuxing; only non-native files trigger the transcode pipeline. |
+| **Scraping** | **Plugin-based** (YML/Python) | Hardcoded (Rust Modules) | **Stash Wins on Extensibility.** Community scrapers allow updates without needing a full binary recompile. |
 
-1.  **FFmpeg Transcoding Engine**:
-    *   Implement an HLS (HTTP Live Streaming) segmenter in Rust.
-    *   Add a `StreamManager` to handle active `ffmpeg` processes.
-2.  **On-the-Fly Logic**:
-    *   Detect if source codec is browser-native (H.264/AAC in MP4).
-    *   If not, start transcoding to a temporary HLS directory.
-3.  **Frontend Player**:
-    *   Integrate `Hls.js` or `Video.js` into the React frontend.
+---
 
-## Phase 3: Visual Polish (The Discovery Engine)
-**Goal:** High-end UX with instant previews.
+## 2. Core Logics & The "Rust Advantage"
 
-1.  **Screenshot Generator**: Auto-capture frames at 20%, 50%, and 80% of duration.
-2.  **Seek-Bar Sprites**:
-    *   Generate a sprite sheet (grid of thumbnails).
-    *   Generate a WebVTT file mapping timestamps to sprite coordinates.
-3.  **Hover Previews**:
-    *   Generate a 5-10 second low-bitrate WebP/MP4 "preview clip".
-    *   Play on hover in the library grid.
+### A. The "Fingerprint-as-Anchor" Logic (Resilient Identity)
+*   **The Logic**: The Hash (OSHash/SHA256) is the **Primary Identity**. The Path is just an attribute.
+*   **Rust Advantage**: Use **`rayon`** for multithreaded hashing. On a multi-core system (like a RPi 4), we can hash new files in parallel during the scan, significantly outperforming Go's sequential approach.
+*   **Identity Recovery**: If a file is moved, the scanner finds the hash match, updates the path, and preserves all metadata/tags/watched-status.
 
-## Phase 4: Architectural Upgrade (Optional)
-1.  **GraphQL Integration**: Transition from REST to `async-graphql` for complex data relationships.
-2.  **Plugin Scrapers**: Allow external scripts (Python/JS) to act as scrapers, mimicking Stash's community-driven model.
+### B. The "Hybrid Streaming" Engine (CPU Efficiency)
+To ensure 100% playback compatibility with 0% wasted CPU:
+1.  **Probe**: Use `ffprobe` to check if container and codecs are browser-native (H.264/AAC).
+2.  **Remux (The Sweet Spot)**: If the video is H.264 but the container is MKV, don't transcode. Use `ffmpeg -c:v copy -c:a copy`. This uses ~1% CPU.
+3.  **Transcode (Last Resort)**: If codecs are incompatible (HEVC/DTS), trigger the HLS pipeline with `-c:v libx264 -preset ultrafast`.
+4.  **HLS Advantage**: Enables instant seeking and adaptive bitrate for remote viewing.
+
+### C. The "Visual Discovery" Engine
+*   **Sprite Sheets**: Pre-generated 10x10 grids for instant seek-bar thumbnails.
+*   **Hover Clips**: 5-second silent WebP/MP4 previews to make the library feel "alive."
+*   **VTT Metadata**: Text files mapping timestamps to sprite coordinates for the frontend player.
+
+---
+
+## 3. Implementation Roadmap
+
+### MVP 1.1: Foundation & Fingerprinting (The Identity Layer) [COMPLETED]
+**Goal:** Establish the unique "Fingerprint" for every media file.
+1.  **Database Schema Update**: Add `fingerprint`, `is_missing`, and `last_scanned`.
+    ```sql
+    ALTER TABLE movie_files ADD COLUMN fingerprint TEXT UNIQUE;
+    ALTER TABLE movie_files ADD COLUMN is_missing BOOLEAN DEFAULT FALSE;
+    ALTER TABLE movie_files ADD COLUMN last_scanned TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+    CREATE INDEX idx_file_path ON movie_files(file_path);
+    ```
+2.  **Advanced Path Normalization**: Implement NFC (Normalization Form Canonical Composition) and force forward-slashes (`/`) in `paths.rs`.
+3.  **FastHash Implementation**: Integrate OSHash (File Size + First/Last 64KB) as the primary fingerprint.
+**Testing & Validation:**
+*   **Automated**: `cargo test -p media_core --test identity`. Verifies OSHash generation and link healing.
+*   **Manual**: Rename a folder containing a movie; run a scan; verify the database `file_path` updates while keeping the same metadata.
+
+### MVP 1.2: Structured Communication (The Progress Layer)
+**Goal:** Enable the UI to see "Healed" vs "New" files in real-time.
+1.  **Task Messaging Schema**:
+    *   **TaskStatus Enum**: `Scanning`, `Hashing`, `Healing`, `Scraping`, `Complete`.
+    *   **TaskProgress Struct**: Track `files_processed`, `files_healed` (moved), `files_new`, and `files_missing`.
+2.  **SSE Integration**: Update the Axum SSE stream to push these structured enums instead of generic strings.
+**Testing & Validation:**
+*   **Automated**: Unit test the `TaskUpdate::to_json()` output to ensure it matches the React frontend expectations.
+*   **Manual**: Open the "Tasks" page in the browser; trigger a scan; observe the real-time counters for "Healed" and "New" items.
+
+### MVP 1.3: The Healing Scanner (The Logic Layer)
+**Goal:** Implement the non-destructive "Reconciliation" workflow. Optimized for Raspberry Pi 4.
+1.  **The "Four-Case" Reconciliation Algorithm**:
+    *   **Case A (Match)**: Path & Hash match. Increment `files_processed`.
+    *   **Case B (Heal)**: Hash matches but Path differs. **Action**: Update DB Path. Increment `files_healed`.
+    *   **Case C (New)**: Hash not in DB. **Action**: Insert Record. Increment `files_new`.
+    *   **Case D (Missing)**: DB entry not on disk. **Action**: Set `is_missing = true`. Increment `files_missing`.
+2.  **Throttled Parallelism**: Use `rayon` for concurrent processing, but wrap IO in a `tokio::sync::Semaphore` (limit: 2) to protect Pi 4 disk/USB bus thrashing.
+
+**Testing & Validation:**
+*   **Automated**: Integration test simulating a disconnected drive (Setting `is_missing=true`) and then reconnecting it.
+*   **Manual**: Run a scan while monitoring the Pi 4's CPU/IO with `htop`; ensure the scanner doesn't lock up the system.
+
+### MVP 2: Reliable Streaming (Lifecycle & Storage)
+**Goal:** Fix "stuck" streams and protect hardware.
+1.  **Process Management**: Use `tokio::process::Command` to manage FFmpeg as a detached background child.
+2.  **The Reaper**: A background task that kills any FFmpeg process if no heartbeat is received from the player for 120s.
+3.  **RAM Disk (SD Card Protection)**: Map the HLS transcode directory to a **tmpfs (RAM Disk)**.
+    *   **Why**: Protects the Pi 4's SD card from thousands of tiny read/write operations and ensures instant delivery.
+4.  **Playlist Polling**: API must wait for `playlist.m3u8` to be ready before returning success.
+
+**Testing & Validation:**
+*   **Automated**: Test the "Reaper" by spawning a mock FFmpeg process and verifying it's killed after heartbeat timeout.
+*   **Manual**: Start a movie; close browser; verify `ffmpeg` process dies after 2 minutes.
 
 
-As a Software Architect, I have analyzed both Stash (a mature, feature-rich Go/GraphQL media vault) and Media_Manager (your emerging Rust-based
-  orchestrator).
+### MVP 3: Smart Hybrid Streaming (Hardware-Aware)
+**Goal:** 0% CPU usage for native files and optimized transcoding.
+1.  **Logic Switch**: Implement the Probe -> Remux -> Transcode decision tree in `streaming.rs`.
+2.  **Hardware-Aware Scaling**: Use modular environment variables for encoders:
+    *   **Pi 4 (Broadcom)**: Use `h264_v4l2m2m` (encoding) and `hevc_v4l2m2m` (decoding).
+    *   **Apple Silicon (M1-M4)**: Flip to `h264_videotoolbox`.
+3.  **Validation**: Verify < 5% CPU usage when streaming native files and manageable usage during Pi 4 hardware transcoding.
 
-  While Stash is highly specialized for specific content types (e.g., performers, studios), its technical core for media handling is world-class.
-  Media_Manager, being built in Rust, has the potential to outperform Stash in speed and resource efficiency.
 
-  Here is an architectural comparison and a strategic "Best Logic" blueprint to borrow from Stash.
+**Testing & Validation:**
+*   **Automated**: Unit test the "Probe" logic with sample MKV/MP4 files to ensure correct codec/container detection.
+*   **Manual**: Play an H.264 MP4; verify CPU usage < 5%. Play HEVC; verify logs show hardware encoder usage.
 
-  ---
 
-  1. Architectural Comparison
+### MVP 4: Visual Polish - Seek-Bar Previews
+**Goal:** YouTube-style previews on hover.
+1.  **VTT Generation**: Update `FfmpegEngine` to generate `.vtt` metadata alongside sprite sheets.
+2.  **Idle-Only Execution**: This task only runs if **CPU < 30%** and **Active Streams == 0**.
+3.  **Process Control**: The Rust backend must be able to `SIGSTOP` (pause) sprite generation if a user starts a stream, and `SIGCONT` (resume) when finished.
 
-  ┌──────────────┬──────────────────────────┬─────────────────────────┬─────────────────────────────────────────────────────────────────────────────────┐
-  │ Feature      │ Stash (Mature / Go)      │ Media_Manager (In Dev / │ Architect's Verdict                                                             │
-  │              │                          │ Rust)                   │                                                                                 │
-  ├──────────────┼──────────────────────────┼─────────────────────────┼─────────────────────────────────────────────────────────────────────────────────┤
-  │ API Paradigm │ GraphQL (GQLGen)         │ REST (Axum)             │ Stash Wins on Flexibility. GQL is superior for media where relationships (Actor │
-  │              │                          │                         │ <-> Movie) are deep.                                                            │
-  │ Identity     │ Hash-First               │ Path-First (Relative    │ Stash Wins on Stability. If you rename a file in Media_Manager, it loses        │
-  │ Logic        │ (OSHash/Checksum)        │ Path)                   │ metadata. In Stash, it just updates the path.                                   │
-  │ Streaming    │ HLS/DASH/MP4 Transcoding │ Direct Play / Commented │ Stash Wins on Compatibility. Stash can play any codec in a browser via          │
-  │              │                          │ HLS                     │ on-the-fly transcoding.                                                         │
-  │ UX Polish    │ Sprites, VTT, WebP       │ Posters & Backdrops     │ Stash Wins on Discovery. Hover-previews and seek-bar thumbnails make a library  │
-  │              │ Previews                 │                         │ feel "alive."                                                                   │
-  │ Scraping     │ Scraper CD (Community    │ Hardcoded (TMDB/OMDB)   │ Stash Wins on Breadth. Stash uses a plugin system for scrapers, making it       │
-  │              │ Driven)                  │                         │ resilient to site changes.                                                      │
-  └──────────────┴──────────────────────────┴─────────────────────────┴─────────────────────────────────────────────────────────────────────────────────┘
-  ---
+**Testing & Validation:**
+*   **Automated**: Verify `.vtt` file syntax and timestamp accuracy.
+*   **Manual**: Hover over the player seek bar; verify thumbnail appears at the correct timestamp.
 
-  2. "Best Logic" to Borrow from Stash
+### MVP 5: Visual Polish - Hover Previews
+**Goal:** Animate library posters on mouse hover.
+1.  **Low-Priority Generator**: Move silent clip generation to the "Idle-Only" queue.
+2.  **Lazy-Load UI**: Update React `MovieCard` to only play previews after a 500ms hover delay to save network bandwidth.
 
-  To make Media_Manager a top-tier tool, I suggest implementing these three "Core Logics" immediately:
 
-  A. The "Digital Fingerprint" Logic (Identification)
-   * The Problem: Currently, Media_Manager identifies movies by title and year. If you fix a typo in a folder name, the DB entry breaks.
-   * The Stash Logic: During the scan, calculate an OSHash (a very fast hash of the first/last 64kb) and a Checksum.
-   * Rust Implementation:
-       * Add a file_hash column to your movie_files table.
-       * When scanning, check if the hash exists. If it does, and the path changed, just update the path. Never lose your "Watched" status or manual edits
-         again.
+**Testing & Validation:**
+*   **Automated**: Verify clip file sizes and durations.
+*   **Manual**: Quickly scroll movie grid; ensure clips only play after intentional hover delay.
 
-  B. The "Lazy-Transcoding" Pipeline
-   * The Problem: High-quality 4K HEVC or MKV files often won't play in Chrome/Safari without stuttering or "Format Not Supported" errors.
-   * The Stash Logic: A dedicated Stream Manager.
-   * Rust Implementation:
-       1. When a user hits "Play", use ffprobe (via your mediainfo.rs) to check if the browser supports the codecs.
-       2. If it doesn't, spawn a background ffmpeg process to convert to HLS (h.264/AAC) on-the-fly.
-       3. Serve the .m3u8 manifest to the frontend. This allows "Instant Play" even for 50GB files.
+### MVP 6: Advanced Deduplication (Optimized)
+**Goal:** Clean up quality duplicates without heavy CPU load.
+1.  **Hash Grouping**: UI view to identify identical files (grouped by OSHash).
+2.  **Poster-Based pHash**: To save CPU, only run the `img_hash` crate on **Poster images** or a single extracted middle frame.
+**Testing & Validation:**
+*   **Automated**: Test pHash similarity on different resolutions of the same image.
+*   **Manual**: Check "Cleanup" settings; verify it correctly identifies a 1080p and 720p version of the same film.
+---
 
-  C. The "Visual Discovery" Engine (Previews)
-   * The Problem: Scrolling through static posters feels like a database, not a media center.
-   * The Stash Logic: Pre-generated Sprites and Clips.
-   * Rust Implementation:
-       * Sprites: Every 10 seconds of video, grab a tiny frame. Combine them into one large JPEG (a sprite sheet) and a .vtt file.
-       * Frontend: The React UI uses the VTT to show "Seek Previews" when the user hovers over the progress bar (exactly like YouTube).
-       * Clips: Generate a 5-second low-res WebP or MP4. Play this on the poster when the user hovers.
+## 4. The "Architectural Jump" (Long-Term)
 
-  ---
+### Transition to GraphQL (`async-graphql` + Axum)
+*   **Lookaheads**: Use GraphQL lookaheads in Rust to only perform SQL joins for requested fields, preventing the N+1 problem.
+*   **Type Safety**: End-to-end type safety between Rust structs and TypeScript frontend.
+*   **Relational Depth**: Handle the "Movie -> Actors -> Other Movies" graph naturally.
 
-  3. Strategic Recommendations for Media_Manager
+### Plugin Scrapers
+*   **External Logic**: Use `Rhai` or WASM to load scrapers as external scripts.
+*   **Stability**: Update site scrapers without needing to recompile or redeploy the main Rust binary.
 
-  1. Transition to GraphQL (async-graphql)
-  Since you are using Rust and Axum, I strongly recommend moving to GraphQL.
-   * Why? In your React frontend, you'll often want to say: "Get this movie, its actors, and other movies those actors were in."
-   * In REST, that's 3 API calls or one "fat" messy endpoint. In GraphQL, it's one clean query.
+---
 
-  2. Granular Background Tasks
-  Stash separates "Scanning" (finding files) from "Generating" (making previews/hashes).
-   * Your current TaskManager should be split into priorities:
-       * Priority 1: Scan & Scrape (Get the text data in the DB fast).
-       * Priority 2: Hashing (Identify duplicates).
-       * Priority 3: Preview Generation (Heavy CPU work, done in background).
-
-  3. Content-Based Deduplication
-  Stash uses Perceptual Hashing (pHash). This allows it to find two different files that are actually the same movie (e.g., a 1080p copy and a 720p copy).
-   * Use the img_hash crate in Rust to generate pHashes for your posters and video frames. This will help you find "Library Duplicates" even if the
-     filenames are completely different.
-
-  Final Summary for implementation:
-   1. Adopt the Hash-as-Identity model to prevent data loss on file moves.
-   2. Build a robust FFmpeg wrapper for HLS streaming to ensure 100% playback compatibility.
-   3. Invest in "Secondary Processing" (Sprites/Clips) to give your UI a premium feel.
-
-  By using Rust for these heavy-lifting tasks (FFmpeg wrapping and hashing), Media_Manager will be significantly faster and more stable than Stash while
-  offering the same "magic" user experience.
+## 5. Process Lifecycle Management
+To ensure the server remains stable, all external processes (FFmpeg, FFprobe) must be managed via:
+*   **Tokio Channels**: Use channels to send "Kill" signals to active stream tasks.
+*   **Zombie Protection**: Use `tokio::process` to ensure child processes are properly reaped and cleaned up even if the server crashes.
+*   **Heartbeat API**: The frontend must send a `POST /api/playback/heartbeat` every 30s to keep the HLS session alive.

@@ -1,11 +1,14 @@
 // media_core/src/paths.rs
 use std::path::{Path, PathBuf};
 use anyhow::{Result, anyhow};
+use unicode_normalization::UnicodeNormalization;
 
-/// Normalizes a path string to use forward slashes (/) as separators.
-/// This is used for consistent storage in the database.
+/// Normalizes a path string to use forward slashes (/) as separators
+/// and NFC normalization for cross-platform character consistency.
 pub fn normalize_slashes(path: &str) -> String {
     path.replace('\\', "/")
+        .nfc()
+        .collect::<String>()
 }
 
 /// Converts an absolute path to a relative path based on a library root.

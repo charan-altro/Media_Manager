@@ -19,6 +19,7 @@ struct ParsedFile {
     parsed: parser::ParsedMedia,
     size: i64,
     metadata: nfo::reader::NfoMetadata,
+    fingerprint: Option<String>,
 }
 
 pub async fn scan_library(
@@ -129,6 +130,7 @@ pub async fn scan_library(
                     parsed: parser::parse_filename(filename),
                     size: path.metadata().map(|m| m.len() as i64).unwrap_or(0),
                     metadata,
+                    fingerprint: crate::scanner::hash::calculate_oshash(path).ok(),
                 }
             })
             .collect()
@@ -175,20 +177,20 @@ async fn process_file(pool: &SqlitePool, library: &Library, item: &ParsedFile) -
     let relative_path = crate::paths::make_relative(&item.path, library_root)?;
     let filename = item.path.file_name().and_then(|s| s.to_str()).unwrap_or("");
 
-    // Smart tracking: check if file moved (find by hash)
-    if let Some(ref hash) = item.hash {
+    // Smart tracking: check if file moved (find by fingerprint)
+    if let Some(ref fingerprint) = item.fingerprint {
         if library.media_type == MediaType::Movie {
-            if let Ok(Some(existing)) = db::queries::get_movie_file_by_hash(pool, hash).await {
+            if let Ok(Some(existing)) = db::queries::get_movie_file_by_fingerprint(pool, fingerprint).await {
                 if existing.file_path != relative_path {
-                    tracing::info!("File moved detected (hash match): {} -> {}", existing.file_path, relative_path);
+                    tracing::info!("File moved detected (fingerprint match): {} -> {}", existing.file_path, relative_path);
                     db::queries::update_movie_file_path(pool, existing.id, &relative_path).await?;
                     return Ok(());
                 }
             }
         } else {
-            if let Ok(Some(existing)) = db::queries::get_episode_by_hash(pool, hash).await {
+            if let Ok(Some(existing)) = db::queries::get_episode_by_fingerprint(pool, fingerprint).await {
                 if existing.file_path != relative_path {
-                    tracing::info!("File moved detected (hash match): {} -> {}", existing.file_path, relative_path);
+                    tracing::info!("File moved detected (fingerprint match): {} -> {}", existing.file_path, relative_path);
                     db::queries::update_episode_path(pool, existing.id, &relative_path).await?;
                     return Ok(());
                 }
@@ -224,7 +226,7 @@ async fn process_file(pool: &SqlitePool, library: &Library, item: &ParsedFile) -
         let movie_id = db::queries::upsert_movie(pool, library.id, &title, year).await?;
 
         // Always track the file path (store as relative)
-        db::queries::upsert_movie_file(pool, movie_id, &relative_path, filename, item.size, res, codec).await?;
+        db::queries::upsert_movie_file(pool, movie_id, &relative_path, filename, item.size, res, codec, None, item.fingerprint.as_deref()).await?;
 
         // If NFO has IDs or we have local artwork, update the movie
         let mut tmdb_id: Option<i32> = None;
@@ -386,7 +388,7 @@ async fn process_file(pool: &SqlitePool, library: &Library, item: &ParsedFile) -
         let res = media_info.as_ref().map(|i| crate::models::Resolution::from_dimensions(i.width, i.height));
         let codec = media_info.as_ref().map(|i| i.video_codec.as_str());
 
-        db::queries::upsert_episode(pool, season_id, ep_num, &relative_path, filename, item.size, res, codec, item.hash.as_deref()).await?;
+        db::queries::upsert_episode(pool, season_id, ep_num, &relative_path, filename, item.size, res, codec, None, item.fingerprint.as_deref()).await?;
 
         // Update show metadata from tvshow.nfo if available
         if let Some(ref nfo) = item.metadata.tv_nfo {
@@ -484,6 +486,7 @@ pub async fn scan_single_file(
         parsed: parser::parse_filename(filename),
         size: path.metadata().map(|m| m.len() as i64).unwrap_or(0),
         metadata,
+        fingerprint: crate::scanner::hash::calculate_oshash(&path).ok(),
     };
 
     tx.broadcast(TaskUpdate {

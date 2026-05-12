@@ -7,7 +7,7 @@ use tracing::{info, error};
 pub struct FfmpegEngine;
 
 impl FfmpegEngine {
-    fn check_ffmpeg() -> Result<()> {
+    pub fn check_ffmpeg() -> Result<()> {
         let ffmpeg_path = crate::config::get_ffmpeg_path();
         let output = Command::new(&ffmpeg_path)
             .arg("-version")

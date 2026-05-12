@@ -4,18 +4,22 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use anyhow::Result;
 
-/// Calculates the OpenSubtitles hash for a video file.
-/// This algorithm is extremely fast as it only reads the first and last 64KB of the file.
+/// Calculates a fingerprint for a video file.
+/// For large files, it uses the fast OSHash (Size + First/Last 64KB).
+/// For small files (<128KB), it uses a full MD5 hash to prevent collisions.
 pub fn calculate_oshash<P: AsRef<Path>>(path: P) -> Result<String> {
-    let mut file = File::open(path)?;
+    let mut file = File::open(&path)?;
     let len = file.metadata()?.len();
     
     if len < 65536 * 2 {
-        return Ok(format!("{:016x}", len)); // Fallback for tiny files
+        // For small files, compute full MD5 hash
+        let mut buffer = Vec::new();
+        file.read_to_end(&mut buffer)?;
+        let digest = md5::compute(&buffer);
+        return Ok(format!("{:x}", digest));
     }
 
     let mut hash: u64 = len;
-
     let mut buffer = [0u8; 8];
     
     // First 64KB

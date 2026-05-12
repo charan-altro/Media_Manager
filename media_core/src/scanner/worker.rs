@@ -20,6 +20,7 @@ struct ParsedFile {
     size: i64,
     metadata: nfo::reader::NfoMetadata,
     fingerprint: Option<String>,
+    media_info: Option<crate::scanner::mediainfo::MediaDetails>,
 }
 
 pub async fn scan_library(
@@ -131,6 +132,7 @@ pub async fn scan_library(
                     size: path.metadata().map(|m| m.len() as i64).unwrap_or(0),
                     metadata,
                     fingerprint: crate::scanner::hash::calculate_oshash(path).ok(),
+                    media_info: crate::scanner::mediainfo::get_media_info(path).ok(),
                 }
             })
             .collect()
@@ -182,17 +184,31 @@ async fn process_file(pool: &SqlitePool, library: &Library, item: &ParsedFile) -
         if library.media_type == MediaType::Movie {
             if let Ok(Some(existing)) = db::queries::get_movie_file_by_fingerprint(pool, fingerprint).await {
                 if existing.file_path != relative_path {
-                    tracing::info!("File moved detected (fingerprint match): {} -> {}", existing.file_path, relative_path);
-                    db::queries::update_movie_file_path(pool, existing.id, &relative_path).await?;
-                    return Ok(());
+                    // Critical Fix: Only heal if the OLD file is actually missing.
+                    // If it still exists, this is a DUPLICATE, not a MOVE.
+                    let old_path = library_root.join(&existing.file_path);
+                    if !old_path.exists() {
+                        tracing::info!("File moved detected (healing): {} -> {}", existing.file_path, relative_path);
+                        db::queries::update_movie_file_path(pool, existing.id, &relative_path).await?;
+                        return Ok(());
+                    } else {
+                        tracing::debug!("Duplicate file ignored (same fingerprint): {}", relative_path);
+                        return Ok(());
+                    }
                 }
             }
         } else {
             if let Ok(Some(existing)) = db::queries::get_episode_by_fingerprint(pool, fingerprint).await {
                 if existing.file_path != relative_path {
-                    tracing::info!("File moved detected (fingerprint match): {} -> {}", existing.file_path, relative_path);
-                    db::queries::update_episode_path(pool, existing.id, &relative_path).await?;
-                    return Ok(());
+                    let old_path = library_root.join(&existing.file_path);
+                    if !old_path.exists() {
+                        tracing::info!("File moved detected (healing): {} -> {}", existing.file_path, relative_path);
+                        db::queries::update_episode_path(pool, existing.id, &relative_path).await?;
+                        return Ok(());
+                    } else {
+                        tracing::debug!("Duplicate episode ignored: {}", relative_path);
+                        return Ok(());
+                    }
                 }
             }
         }
@@ -213,14 +229,9 @@ async fn process_file(pool: &SqlitePool, library: &Library, item: &ParsedFile) -
 
         tracing::info!("Processing movie: '{}' ({:?})", title, year);
 
-        // Extract technical info (FFprobe)
-        let file_path_for_info = item.path.clone();
-        let media_info = tokio::task::spawn_blocking(move || {
-            crate::scanner::mediainfo::get_media_info(&file_path_for_info).ok()
-        }).await?;
-
-        let res = media_info.as_ref().map(|i| crate::models::Resolution::from_dimensions(i.width, i.height));
-        let codec = media_info.as_ref().map(|i| i.video_codec.as_str());
+        // Extract technical info (from pre-calculated item)
+        let res = item.media_info.as_ref().map(|i| crate::models::Resolution::from_dimensions(i.width, i.height));
+        let codec = item.media_info.as_ref().map(|i| i.video_codec.as_str());
 
         // Upsert the movie record (no duplicates on rescan)
         let movie_id = db::queries::upsert_movie(pool, library.id, &title, year).await?;
@@ -379,14 +390,9 @@ async fn process_file(pool: &SqlitePool, library: &Library, item: &ParsedFile) -
         
         let ep_num = extracted_episode;
 
-        // Extract technical info (FFprobe)
-        let file_path_for_info = item.path.clone();
-        let media_info = tokio::task::spawn_blocking(move || {
-            crate::scanner::mediainfo::get_media_info(&file_path_for_info).ok()
-        }).await?;
-
-        let res = media_info.as_ref().map(|i| crate::models::Resolution::from_dimensions(i.width, i.height));
-        let codec = media_info.as_ref().map(|i| i.video_codec.as_str());
+        // Extract technical info (from pre-calculated item)
+        let res = item.media_info.as_ref().map(|i| crate::models::Resolution::from_dimensions(i.width, i.height));
+        let codec = item.media_info.as_ref().map(|i| i.video_codec.as_str());
 
         db::queries::upsert_episode(pool, season_id, ep_num, &relative_path, filename, item.size, res, codec, None, item.fingerprint.as_deref()).await?;
 
@@ -487,6 +493,7 @@ pub async fn scan_single_file(
         size: path.metadata().map(|m| m.len() as i64).unwrap_or(0),
         metadata,
         fingerprint: crate::scanner::hash::calculate_oshash(&path).ok(),
+        media_info: crate::scanner::mediainfo::get_media_info(&path).ok(),
     };
 
     tx.broadcast(TaskUpdate {

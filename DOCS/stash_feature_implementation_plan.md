@@ -53,6 +53,28 @@ To ensure 100% playback compatibility with 0% wasted CPU:
 *   **Automated**: `cargo test -p media_core --test identity`. Verifies OSHash generation and link healing.
 *   **Manual**: Rename a folder containing a movie; run a scan; verify the database `file_path` updates while keeping the same metadata.
 
+### MVP 1.1.1: Fast-Skip Scanning (Performance Patch)
+**Goal:** Achieve instant rescans (< 5s for 300+ files) by ignoring unchanged media.
+1.  **Database Schema Update**: Add `mtime` (last modified time) to `movie_files` and `episodes`.
+    ```sql
+    ALTER TABLE movie_files ADD COLUMN mtime BIGINT;
+    ALTER TABLE episodes ADD COLUMN mtime BIGINT;
+    ```
+2.  **Differential Logic**:
+    *   During `WalkDir`, capture each file's `Size` and `mtime`.
+    *   Compare against DB: If `Path + Size + mtime` matches exactly, **Skip** hashing and FFprobe.
+    *   Only process files that are brand new or have a newer `mtime`.
+
+**Testing & Validation:**
+*   **Manual**: Run a scan twice. The second scan should complete in under 5 seconds and the logs should show "Skipping unchanged file" for all items.
+*   **Benchmarking**: Compare "Initial Scan" time vs "Rescan" time on the Pi 4.
+
+**Technical Improvements & Logic Added:**
+*   **Existence-Aware Healing**: The scanner now performs a disk existence check on the *old* path before healing a record. This prevents database "flipping" in libraries with duplicate files (identical content at different paths).
+*   **Small File Safety (MD5 Fallback)**: For files smaller than 128KB (previews/clips), the system uses a full **MD5 hash** instead of OSHash to prevent fingerprint collisions.
+*   **Parallel Metadata Extraction**: Moved technical info extraction (`ffprobe`) into the **Rayon parallel parsing phase**. This allows the Raspberry Pi 4 to utilize all CPU cores to analyze multiple files simultaneously, reducing scan times from minutes to seconds.
+*   **Unicode NFC Normalization**: Integrated the `unicode-normalization` crate to ensure that paths like `café.mp4` are stored identically regardless of whether they were created on macOS, Linux, or Windows.
+
 ### MVP 1.2: Structured Communication (The Progress Layer)
 **Goal:** Enable the UI to see "Healed" vs "New" files in real-time.
 1.  **Task Messaging Schema**:

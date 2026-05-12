@@ -1,8 +1,7 @@
-use media_core::{db, scanner, models, paths};
+use media_core::{db, scanner, models};
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::PathBuf;
-use sqlx::sqlite::SqlitePool;
 
 #[tokio::test]
 async fn test_identity_healing() -> anyhow::Result<()> {

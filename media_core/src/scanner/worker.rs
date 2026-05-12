@@ -18,6 +18,8 @@ struct ParsedFile {
     path: PathBuf,
     parsed: parser::ParsedMedia,
     size: i64,
+    mtime: i64,
+    is_skipped: bool,
     metadata: nfo::reader::NfoMetadata,
     fingerprint: Option<String>,
     media_info: Option<crate::scanner::mediainfo::MediaDetails>,
@@ -111,6 +113,27 @@ pub async fn scan_library(
         return Ok(());
     }
 
+    // Fetch existing files from DB to support fast-skip
+    use sqlx::Row;
+    let library_root = Path::new(&library.path);
+    let existing_files: std::collections::HashMap<String, (i64, i64)> = if library.media_type == MediaType::Movie {
+        sqlx::query("SELECT mf.file_path, mf.size_bytes, mf.mtime FROM movie_files mf JOIN movies m ON mf.movie_id = m.id WHERE m.library_id = ?")
+            .bind(library.id)
+            .fetch_all(pool)
+            .await?
+            .into_iter()
+            .map(|r| (r.get::<String, _>(0), (r.get::<i64, _>(1), r.get::<i64, _>(2))))
+            .collect()
+    } else {
+        sqlx::query("SELECT e.file_path, e.size_bytes, e.mtime FROM episodes e JOIN seasons s ON e.season_id = s.id JOIN tv_shows t ON s.show_id = t.id WHERE t.library_id = ?")
+            .bind(library.id)
+            .fetch_all(pool)
+            .await?
+            .into_iter()
+            .map(|r| (r.get::<String, _>(0), (r.get::<i64, _>(1), r.get::<i64, _>(2))))
+            .collect()
+    };
+
     // Parse all files in parallel (CPU-bound work)
     let parsed: Vec<ParsedFile> = {
         use rayon::prelude::*;
@@ -118,19 +141,47 @@ pub async fn scan_library(
             .par_iter()
             .map(|path| {
                 let filename = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
-                let metadata = nfo::reader::detect_metadata(path);
+                let metadata = path.metadata().ok();
+                let mtime = metadata.as_ref().and_then(|m| m.modified().ok())
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0);
+                let size = metadata.map(|m| m.len() as i64).unwrap_or(0);
+                
+                let relative_path = crate::paths::make_relative(path, library_root).unwrap_or_default();
+                
+                // Fast-Skip Check
+                if let Some((db_size, db_mtime)) = existing_files.get(&relative_path) {
+                    if *db_size == size && *db_mtime == mtime {
+                        tracing::debug!("Skipping unchanged file: {}", relative_path);
+                        return ParsedFile {
+                            path: path.clone(),
+                            parsed: parser::parse_filename(filename),
+                            size,
+                            mtime,
+                            is_skipped: true,
+                            metadata: nfo::reader::NfoMetadata::default(),
+                            fingerprint: None,
+                            media_info: None,
+                        };
+                    }
+                }
+
+                let nfo_metadata = nfo::reader::detect_metadata(path);
                 tracing::debug!(
                     "Parsed '{}' -> title='{}' nfo={} poster={}",
                     filename,
                     parser::parse_filename(filename).title,
-                    metadata.nfo.is_some(),
-                    metadata.poster_path.is_some()
+                    nfo_metadata.nfo.is_some(),
+                    nfo_metadata.poster_path.is_some()
                 );
                 ParsedFile {
                     path: path.clone(),
                     parsed: parser::parse_filename(filename),
-                    size: path.metadata().map(|m| m.len() as i64).unwrap_or(0),
-                    metadata,
+                    size,
+                    mtime,
+                    is_skipped: false,
+                    metadata: nfo_metadata,
                     fingerprint: crate::scanner::hash::calculate_oshash(path).ok(),
                     media_info: crate::scanner::mediainfo::get_media_info(path).ok(),
                 }
@@ -178,6 +229,22 @@ async fn process_file(pool: &SqlitePool, library: &Library, item: &ParsedFile) -
     let library_root = Path::new(&library.path);
     let relative_path = crate::paths::make_relative(&item.path, library_root)?;
     let filename = item.path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+
+    // Fast-Skip Shortcut: If we already determined this file hasn't changed, 
+    // just update its last_scanned timestamp and move on.
+    if item.is_skipped {
+        if library.media_type == MediaType::Movie {
+            if let Ok(Some(existing)) = db::queries::get_movie_file_by_path(pool, &relative_path).await {
+                db::queries::update_movie_file_last_scanned(pool, existing.id).await?;
+                return Ok(());
+            }
+        } else {
+            if let Ok(Some(existing)) = db::queries::get_episode_by_path(pool, &relative_path).await {
+                db::queries::update_episode_last_scanned(pool, existing.id).await?;
+                return Ok(());
+            }
+        }
+    }
 
     // Smart tracking: check if file moved (find by fingerprint)
     if let Some(ref fingerprint) = item.fingerprint {
@@ -237,7 +304,7 @@ async fn process_file(pool: &SqlitePool, library: &Library, item: &ParsedFile) -
         let movie_id = db::queries::upsert_movie(pool, library.id, &title, year).await?;
 
         // Always track the file path (store as relative)
-        db::queries::upsert_movie_file(pool, movie_id, &relative_path, filename, item.size, res, codec, None, item.fingerprint.as_deref()).await?;
+        db::queries::upsert_movie_file(pool, movie_id, &relative_path, filename, item.size, Some(item.mtime), res, codec, None, item.fingerprint.as_deref()).await?;
 
         // If NFO has IDs or we have local artwork, update the movie
         let mut tmdb_id: Option<i32> = None;
@@ -394,7 +461,7 @@ async fn process_file(pool: &SqlitePool, library: &Library, item: &ParsedFile) -
         let res = item.media_info.as_ref().map(|i| crate::models::Resolution::from_dimensions(i.width, i.height));
         let codec = item.media_info.as_ref().map(|i| i.video_codec.as_str());
 
-        db::queries::upsert_episode(pool, season_id, ep_num, &relative_path, filename, item.size, res, codec, None, item.fingerprint.as_deref()).await?;
+        db::queries::upsert_episode(pool, season_id, ep_num, &relative_path, filename, item.size, Some(item.mtime), res, codec, None, item.fingerprint.as_deref()).await?;
 
         // Update show metadata from tvshow.nfo if available
         if let Some(ref nfo) = item.metadata.tv_nfo {
@@ -485,13 +552,21 @@ pub async fn scan_single_file(
     }
 
     let filename = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
-    let metadata = nfo::reader::detect_metadata(&path);
+    let metadata_fs = path.metadata().ok();
+    let mtime = metadata_fs.as_ref().and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let size = metadata_fs.map(|m| m.len() as i64).unwrap_or(0);
+    let nfo_metadata = nfo::reader::detect_metadata(&path);
     
     let item = ParsedFile {
         path: path.clone(),
         parsed: parser::parse_filename(filename),
-        size: path.metadata().map(|m| m.len() as i64).unwrap_or(0),
-        metadata,
+        size,
+        mtime,
+        is_skipped: false,
+        metadata: nfo_metadata,
         fingerprint: crate::scanner::hash::calculate_oshash(&path).ok(),
         media_info: crate::scanner::mediainfo::get_media_info(&path).ok(),
     };

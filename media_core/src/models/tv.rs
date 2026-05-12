@@ -51,6 +51,7 @@ pub struct Episode {
     pub preview_path: Option<String>,
     pub aspect_ratio: Option<String>,
     pub thumbnail_path: Option<String>,
+    pub mtime: Option<i64>,
     pub created_at: String,
     pub updated_at: String,
 }

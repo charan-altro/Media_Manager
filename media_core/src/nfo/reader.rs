@@ -134,6 +134,7 @@ pub fn read_nfo_tv(path: &Path) -> Result<TvShowNfo> {
     Ok(nfo)
 }
 
+#[derive(Debug, Default)]
 pub struct NfoMetadata {
     pub nfo: Option<MovieNfo>,
     pub tv_nfo: Option<TvShowNfo>,

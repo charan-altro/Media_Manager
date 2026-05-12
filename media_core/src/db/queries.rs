@@ -115,6 +115,7 @@ pub async fn upsert_episode<'c, E>(
     file_path: &str, 
     original_name: &str, 
     size_bytes: i64,
+    mtime: Option<i64>,
     resolution: Option<crate::models::Resolution>,
     codec: Option<&str>,
     hash: Option<&str>,
@@ -124,10 +125,11 @@ where E: sqlx::Executor<'c, Database = sqlx::Sqlite> {
     let normalized_path = crate::paths::normalize_slashes(file_path);
     let row: (EpisodeId,) = sqlx::query_as(
         r#"
-        INSERT INTO episodes (season_id, episode_number, file_path, original_name, size_bytes, resolution, codec, hash, fingerprint, is_missing, last_scanned)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, datetime('now'))
+        INSERT INTO episodes (season_id, episode_number, file_path, original_name, size_bytes, mtime, resolution, codec, hash, fingerprint, is_missing, last_scanned)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, datetime('now'))
         ON CONFLICT(file_path) DO UPDATE SET 
             size_bytes = excluded.size_bytes,
+            mtime = excluded.mtime,
             resolution = excluded.resolution,
             codec = excluded.codec,
             hash = excluded.hash,
@@ -143,6 +145,7 @@ where E: sqlx::Executor<'c, Database = sqlx::Sqlite> {
     .bind(&normalized_path)
     .bind(original_name)
     .bind(size_bytes)
+    .bind(mtime)
     .bind(resolution)
     .bind(codec)
     .bind(hash)
@@ -159,6 +162,7 @@ pub async fn upsert_movie_file<'c, E>(
     file_path: &str, 
     original_name: &str, 
     size_bytes: i64,
+    mtime: Option<i64>,
     resolution: Option<crate::models::Resolution>,
     codec: Option<&str>,
     hash: Option<&str>,
@@ -168,10 +172,11 @@ where E: sqlx::Executor<'c, Database = sqlx::Sqlite> {
     let normalized_path = crate::paths::normalize_slashes(file_path);
     let row: (MovieFileId,) = sqlx::query_as(
         r#"
-        INSERT INTO movie_files (movie_id, file_path, original_name, size_bytes, resolution, codec, hash, fingerprint, is_missing, last_scanned)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, datetime('now'))
+        INSERT INTO movie_files (movie_id, file_path, original_name, size_bytes, mtime, resolution, codec, hash, fingerprint, is_missing, last_scanned)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, datetime('now'))
         ON CONFLICT(file_path) DO UPDATE SET 
             size_bytes=excluded.size_bytes,
+            mtime=excluded.mtime,
             resolution=excluded.resolution,
             codec=excluded.codec,
             hash=excluded.hash,
@@ -186,6 +191,7 @@ where E: sqlx::Executor<'c, Database = sqlx::Sqlite> {
     .bind(&normalized_path)
     .bind(original_name)
     .bind(size_bytes)
+    .bind(mtime)
     .bind(resolution)
     .bind(codec)
     .bind(hash)
@@ -310,6 +316,24 @@ pub async fn get_library_by_id(pool: &SqlitePool, id: LibraryId) -> Result<Optio
     Ok(lib)
 }
 
+pub async fn get_movie_file_by_path(pool: &SqlitePool, path: &str) -> Result<Option<crate::models::MovieFile>> {
+    let normalized = crate::paths::normalize_slashes(path);
+    let file = sqlx::query_as::<_, crate::models::MovieFile>("SELECT * FROM movie_files WHERE file_path = ?")
+        .bind(normalized)
+        .fetch_optional(pool)
+        .await?;
+    Ok(file)
+}
+
+pub async fn get_episode_by_path(pool: &SqlitePool, path: &str) -> Result<Option<crate::models::Episode>> {
+    let normalized = crate::paths::normalize_slashes(path);
+    let ep = sqlx::query_as::<_, crate::models::Episode>("SELECT * FROM episodes WHERE file_path = ?")
+        .bind(normalized)
+        .fetch_optional(pool)
+        .await?;
+    Ok(ep)
+}
+
 pub async fn get_movie_file_by_hash(pool: &SqlitePool, hash: &str) -> Result<Option<crate::models::MovieFile>> {
     let file = sqlx::query_as::<_, crate::models::MovieFile>("SELECT * FROM movie_files WHERE hash = ?")
         .bind(hash)
@@ -356,6 +380,22 @@ pub async fn update_episode_path(pool: &SqlitePool, id: EpisodeId, new_path: &st
     let normalized = crate::paths::normalize_slashes(new_path);
     sqlx::query("UPDATE episodes SET file_path = ?, updated_at = datetime('now') WHERE id = ?")
         .bind(normalized)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub async fn update_episode_last_scanned(pool: &SqlitePool, id: EpisodeId) -> Result<()> {
+    sqlx::query("UPDATE episodes SET last_scanned = datetime('now'), is_missing = 0 WHERE id = ?")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub async fn update_movie_file_last_scanned(pool: &SqlitePool, id: MovieFileId) -> Result<()> {
+    sqlx::query("UPDATE movie_files SET last_scanned = datetime('now'), is_missing = 0 WHERE id = ?")
         .bind(id)
         .execute(pool)
         .await?;

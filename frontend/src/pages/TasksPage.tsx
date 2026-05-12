@@ -30,7 +30,12 @@ const TasksPage: React.FC<TasksPageProps> = ({ tasks }) => {
           )}
           {tasks.map(task => {
             const percentage = task.total > 0 ? Math.round((task.progress / task.total) * 100) : 0;
-            const duration = task.startedAt ? Math.round((currentTime - task.startedAt) / 1000) : null;
+            
+            // Fix: Use finishedAt if task is completed/error, otherwise use currentTime
+            const endTime = (task.status === 'completed' || task.status === 'error') && task.finishedAt 
+              ? task.finishedAt 
+              : currentTime;
+            const duration = task.startedAt ? Math.round((endTime - task.startedAt) / 1000) : null;
 
             return (
               <div key={task.taskId} className="bg-[#181818] p-6 rounded-2xl border border-zinc-800 shadow-xl space-y-4">

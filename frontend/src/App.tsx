@@ -26,6 +26,7 @@ export interface TaskUpdate {
   total: number;
   message: string;
   startedAt?: number;
+  finishedAt?: number;
   debugInfo?: string;
 }
 
@@ -118,6 +119,16 @@ function App() {
   };
 
   const subscribeToTasks = () => {
+    // Fetch initial history
+    api.getTasks().then(initialTasks => {
+      const taskMap: Record<string, TaskUpdate> = {};
+      initialTasks.forEach((t: any) => {
+        const id = t.taskId || t.task_id;
+        if (id) taskMap[id] = { ...t, taskId: id };
+      });
+      setTasks(prev => ({ ...taskMap, ...prev }));
+    }).catch(err => console.error('Failed to fetch initial tasks:', err));
+
     const eventSource = new EventSource(`${API_BASE}/tasks/stream`);
     eventSource.onmessage = (event) => {
       handleTaskUpdate(JSON.parse(event.data));
@@ -204,76 +215,64 @@ function App() {
             />
           } />
           <Route path="/tasks" element={<TasksPage tasks={Object.values(tasks)} />} />
-          <Route path="/settings" element={
-            <SettingsPage 
-              appSettings={appSettings}
-              setAppSettings={setAppSettings}
-              libraries={libraries}
-              selectedLibrary={selectedLibrary}
-              setSelectedLibrary={setSelectedLibrary}
-              loadData={loadData}
-            />
-          } />
-          <Route path="*" element={<Navigate to="/" />} />
+          <Route path="/settings" element={<SettingsPage />} />
         </Routes>
-
-        {loading && movies.length === 0 && tvShows.length === 0 && (
-          <div className="flex flex-col items-center justify-center py-40 gap-6">
-            <svg className="animate-spin h-12 w-12 text-red-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-            </svg>
-            <p className="text-zinc-500 font-black uppercase tracking-widest text-xs animate-pulse">Initializing Media Library...</p>
-          </div>
-        )}
 
         {selectedItem && (
           <DetailModal 
             item={selectedItem}
             onClose={() => setSelectedItem(null)}
-            onRefresh={handleRefreshMetadata}
-            onAdvanced={handleProcessAdvanced}
-            onDownload={handleDownload}
-            refreshingIds={refreshingIds}
-            loadData={loadData}
+            onPlay={() => {
+              if (selectedItem.episodes) api.playEpisode(selectedItem.id);
+              else api.playMovie(selectedItem.id);
+            }}
+            onRefresh={() => handleRefreshMetadata(selectedItem)}
+            onProcessAdvanced={() => handleProcessAdvanced(selectedItem)}
+            isRefreshing={refreshingIds[selectedItem.id]}
+            onDownload={() => handleDownload(selectedItem.id, selectedItem.episodes ? 'tv' : 'movie')}
           />
         )}
 
         {selectionMode && selectedIds.length > 0 && (
-          <div className="fixed bottom-8 left-1/2 -translate-x-1/2 bg-zinc-900/90 backdrop-blur-xl border border-red-500/20 rounded-2xl px-8 py-5 shadow-[0_20px_50px_rgba(0,0,0,0.5)] flex items-center gap-8 z-50 animate-in slide-in-from-bottom-10">
-            <div className="flex flex-col">
-              <span className="text-white font-black uppercase italic tracking-tighter text-lg">{selectedIds.length}</span>
-              <span className="text-[10px] font-black uppercase tracking-[0.2em] text-zinc-500">Selected</span>
+          <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-50 bg-zinc-900/90 backdrop-blur-md border border-zinc-800 px-6 py-4 rounded-2xl shadow-2xl flex items-center gap-6 animate-in fade-in slide-in-from-bottom-4 duration-300">
+            <div className="flex items-center gap-3 border-r border-zinc-800 pr-6">
+              <span className="h-2 w-2 rounded-full bg-red-500 animate-pulse" />
+              <span className="text-zinc-100 font-medium">{selectedIds.length} items selected</span>
             </div>
-            <div className="w-px h-10 bg-zinc-800" />
-            <div className="flex items-center gap-6">
-              <button 
-                onClick={() => {
-                  api.scrapeBatch(selectedIds, window.location.pathname === '/tv' ? 'tv' : 'movie');
-                  setSelectionMode(false);
-                  setSelectedIds([]);
-                }}
-                className="flex items-center gap-2 text-xs font-black uppercase tracking-widest text-red-500 hover:text-red-400 transition group"
-              >
-                <Star className="w-4 h-4" /> Scrape Matches
-              </button>
+            
+            <div className="flex items-center gap-3">
               <button
                 onClick={() => {
-                  api.cleanupBatch(selectedIds, window.location.pathname === '/tv' ? 'tv' : 'movie');
-                  setSelectionMode(false);
-                  setSelectedIds([]);
+                   const mType = window.location.pathname === '/tv' ? 'tv' : 'movie';
+                   api.scrapeBatch(selectedIds, mType);
+                   setSelectionMode(false);
+                   setSelectedIds([]);
                 }}
-                className="flex items-center gap-2 text-xs font-black uppercase tracking-widest text-zinc-400 hover:text-white transition group"
+                className="flex items-center gap-2 bg-zinc-100 hover:bg-white text-zinc-950 px-4 py-2 rounded-xl text-sm font-semibold transition-all active:scale-95"
               >
-                <Wand2 className="w-4 h-4 text-red-500" /> Deep Cleanup & Rename
+                <Star className="w-4 h-4 fill-zinc-950" />
+                Enrich Data
               </button>
-              <div className="w-px h-6 bg-zinc-800" />
-              <button 
+              
+              <button
+                onClick={() => {
+                   const mType = window.location.pathname === '/tv' ? 'tv' : 'movie';
+                   api.cleanupBatch(selectedIds, mType);
+                   setSelectionMode(false);
+                   setSelectedIds([]);
+                }}
+                className="flex items-center gap-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-100 px-4 py-2 rounded-xl text-sm font-semibold transition-all active:scale-95"
+              >
+                <Wand2 className="w-4 h-4" />
+                Cleanup Folders
+              </button>
+
+              <button
                 onClick={() => {
                   setSelectionMode(false);
                   setSelectedIds([]);
                 }}
-                className="text-xs font-black uppercase tracking-widest text-zinc-600 hover:text-zinc-400 transition"
+                className="ml-2 text-xs font-bold uppercase tracking-widest text-zinc-600 hover:text-zinc-400 transition"
               >
                 Cancel
               </button>

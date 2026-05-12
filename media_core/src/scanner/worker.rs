@@ -31,6 +31,34 @@ pub async fn scan_library(
     task_id: String,
     tx: &crate::task_manager::TaskManager,
 ) -> Result<()> {
+    // 1. Concurrency Lock: Prevent multiple scans of the same library
+    if !tx.try_lock_library_scan(library.id).await {
+        tx.broadcast(TaskUpdate {
+            task_id: task_id.to_string(),
+            status: "completed".to_string(),
+            progress: 0,
+            total: 0,
+            message: format!("Scan for '{}' already in progress. Skipping duplicate request.", library.name),
+            started_at: None,
+            finished_at: None,
+            debug_info: None,
+        });
+        return Ok(());
+    }
+
+    // Use a wrapper to ensure we always unlock
+    let result = scan_library_internal(pool, library, &task_id, tx).await;
+    
+    tx.unlock_library_scan(library.id).await;
+    result
+}
+
+async fn scan_library_internal(
+    pool: &SqlitePool,
+    library: &Library,
+    task_id: &str,
+    tx: &crate::task_manager::TaskManager,
+) -> Result<()> {
     let start_time = Some(std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
@@ -39,12 +67,13 @@ pub async fn scan_library(
     tracing::info!("Starting scan for library '{}' at path '{}'", library.name, library.path);
 
     tx.broadcast(TaskUpdate {
-        task_id: task_id.clone(),
+        task_id: task_id.to_string(),
         status: "running".to_string(),
         progress: 0,
         total: 0,
         message: format!("Initializing scan for '{}'...", library.name),
         started_at: start_time,
+        finished_at: None,
         debug_info: None,
     });
 
@@ -58,58 +87,86 @@ pub async fn scan_library(
         let msg = format!("Library path does not exist: {}", library.path);
         tracing::error!("{}", msg);
         tx.broadcast(TaskUpdate {
-            task_id: task_id.clone(),
+            task_id: task_id.to_string(),
             status: "error".to_string(),
             progress: 0,
             total: 0,
             message: msg,
             started_at: start_time,
-            debug_info: None,
+            finished_at: None,
+            debug_info:
+ None,
         });
         return Ok(());
     }
 
-    let files: Vec<PathBuf> = WalkDir::new(&library.path)
+    // 2. Optimized WalkDir with progress feedback
+    let mut files = Vec::new();
+    let mut total_visited = 0;
+    let mut last_feedback = std::time::Instant::now();
+
+    for entry in WalkDir::new(&library.path)
         .follow_links(true)
         .into_iter()
         .filter_entry(|e| !skip_dirs.contains(e.file_name().to_str().unwrap_or("")))
-        .filter_map(|e| {
-            match e {
-                Ok(entry) => Some(entry),
-                Err(err) => {
-                    let path = err.path().map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|| "unknown".to_string());
-                    tracing::warn!("WalkDir error at [{}]: {}", path, err);
-                    None
+    {
+        total_visited += 1;
+        
+        // Provide feedback every 5 seconds or every 5000 items
+        if last_feedback.elapsed().as_secs() >= 5 || total_visited % 5000 == 0 {
+            tx.broadcast(TaskUpdate {
+                task_id: task_id.to_string(),
+                status: "running".to_string(),
+                progress: 0,
+                total: 0,
+                message: format!("Walking directory... visited {} items ({} videos found)", total_visited, files.len()),
+                started_at: start_time,
+                finished_at: None,
+                debug_info:
+ None,
+            });
+            last_feedback = std::time::Instant::now();
+        }
+
+        match entry {
+            Ok(e) => {
+                if e.file_type().is_file() && is_video_file(e.path()) {
+                    files.push(e.into_path());
                 }
             }
-        })
-        .filter(|e| e.file_type().is_file() && is_video_file(e.path()))
-        .map(|e| e.into_path())
-        .collect();
+            Err(err) => {
+                let path = err.path().map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|| "unknown".to_string());
+                tracing::warn!("WalkDir error at [{}]: {}", path, err);
+            }
+        }
+    }
 
     let total = files.len() as i32;
     tracing::info!("Found {} video files in '{}'", total, library.path);
 
     tx.broadcast(TaskUpdate {
-        task_id: task_id.clone(),
+        task_id: task_id.to_string(),
         status: "running".to_string(),
         progress: 0,
         total,
         message: format!("Found {} files. Analyzing metadata...", total),
         started_at: start_time,
+        finished_at: None,
         debug_info: None,
     });
 
     if total == 0 {
         tx.broadcast(TaskUpdate {
-            task_id: task_id.clone(),
+            task_id: task_id.to_string(),
             status: "completed".to_string(),
             progress: 0,
             total: 0,
-            message: "Scan complete: no video files found. Check library path.".to_string(),
+            message: "Scan complete: no video files found in the specified path.".to_string(),
             started_at: start_time,
+            finished_at: Some(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64),
             debug_info: None,
-        });
+            });
+
         return Ok(());
     }
 
@@ -199,25 +256,28 @@ pub async fn scan_library(
         let progress = (i + 1) as i32;
         if progress % 10 == 0 || progress == total {
             tx.broadcast(TaskUpdate {
-                task_id: task_id.clone(),
+                task_id: task_id.to_string(),
                 status: "running".to_string(),
                 progress,
                 total,
                 message: format!("Scanned {}/{}: {}", progress, total,
                     item.path.file_name().and_then(|s| s.to_str()).unwrap_or("")),
                 started_at: start_time,
-                debug_info: Some(format!("Analyzing: {:?}", item.path)),
+                finished_at: None,
+                debug_info:
+ Some(format!("Analyzing: {:?}", item.path)),
             });
         }
     }
 
     tx.broadcast(TaskUpdate {
-        task_id: task_id.clone(),
+        task_id: task_id.to_string(),
         status: "completed".to_string(),
         progress: total,
         total,
         message: format!("Library scan complete. {} files processed.", total),
         started_at: start_time,
+        finished_at: Some(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64),
         debug_info: None,
     });
 
@@ -572,12 +632,13 @@ pub async fn scan_single_file(
     };
 
     tx.broadcast(TaskUpdate {
-        task_id: task_id.clone(),
+        task_id: task_id.to_string(),
         status: "running".to_string(),
         progress: 0,
         total: 1,
         message: format!("Processing new file: {}", filename),
         started_at: None,
+        finished_at: None,
         debug_info: None,
     });
 
@@ -586,14 +647,16 @@ pub async fn scan_single_file(
     }
 
     tx.broadcast(TaskUpdate {
-        task_id,
+        task_id: task_id.to_string(),
         status: "completed".to_string(),
         progress: 1,
         total: 1,
         message: "File processing complete".to_string(),
         started_at: None,
+        finished_at: Some(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64),
         debug_info: None,
     });
+
 
     Ok(())
 }

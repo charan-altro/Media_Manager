@@ -167,8 +167,20 @@ export async function request<T>(command: string, path: string, args: any = {}):
   }
 }
 
+export interface TaskUpdate {
+  taskId: string;
+  status: string;
+  progress: number;
+  total: number;
+  message: string;
+  startedAt?: number;
+  finishedAt?: number;
+  debugInfo?: string;
+}
+
 export const api = {
   getLibraries: () => request<Library[]>('get_libraries', '/libraries'),
+  getTasks: () => request<TaskUpdate[]>('get_tasks', '/tasks'),
   createLibrary: (name: string, path: string, media_type: string) => 
     request<number>('create_library', '/libraries', { name, path, media_type }),
   deleteLibrary: (library_id: number) =>

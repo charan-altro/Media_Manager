@@ -141,6 +141,7 @@ async fn main() {
         .route("/api/movies/:id/process-advanced", post(process_movie_advanced))
         .route("/api/tvshows/:id/process-advanced", post(process_tv_show_advanced))
         .route("/api/libraries/:id/process-advanced", post(process_library_advanced))
+        .route("/api/tasks", get(get_tasks))
         .route("/api/movies/:id/refresh", post(refresh_metadata))
         .route("/api/movies/:id/play", post(play_movie))
         .route("/api/episodes/:id/play", post(play_episode))
@@ -209,6 +210,7 @@ async fn handle_webhook(
                 total: 1,
                 message: format!("Webhook trigger: Scanning {}", lib.name),
                 started_at: Some(now_ms()),
+                finished_at: None,
                 debug_info: Some(format!("Source: {}", source)),
             });
 
@@ -402,7 +404,9 @@ async fn bulk_scrape(State(state): State<Arc<AppState>>, Path(id): Path<i64>) ->
                     total,
                     message: format!("Processed: {}", title_clone),
                     started_at: Some(start_ms),
-                    debug_info: Some(format!("Scraping {}/{} ({}): {}", i+1, total, m_type, title_clone)),
+                    finished_at: None,
+                    debug_info:
+ Some(format!("Scraping {}/{} ({}): {}", i+1, total, m_type, title_clone)),
                 });
             }
         }).await;
@@ -414,6 +418,7 @@ async fn bulk_scrape(State(state): State<Arc<AppState>>, Path(id): Path<i64>) ->
             total,
             message: "Enrichment completed".to_string(),
             started_at: Some(start_ms),
+            finished_at: Some(now_ms()),
             debug_info: None,
         });
     });
@@ -520,7 +525,9 @@ async fn scrape_batch(State(state): State<Arc<AppState>>, Json(payload): Json<Ba
                     total,
                     message: format!("Processed: {}", title_clone),
                     started_at: Some(start_ms),
-                    debug_info: Some(format!("Batch Scraper: {} ({})", title_clone, m_type)),
+                    finished_at: None,
+                    debug_info:
+ Some(format!("Batch Scraper: {} ({})", title_clone, m_type)),
                 });
             }
         }).await;
@@ -532,6 +539,7 @@ async fn scrape_batch(State(state): State<Arc<AppState>>, Json(payload): Json<Ba
             total,
             message: "Batch scrape completed".to_string(),
             started_at: Some(start_ms),
+            finished_at: Some(media_core::models::now_ms()),
             debug_info: None,
         });
     });
@@ -642,7 +650,9 @@ async fn cleanup_batch(State(state): State<Arc<AppState>>, Json(payload): Json<B
                         total,
                         message: format!("Cleaned: {}", movie.title),
                         started_at: Some(start_ms),
-                        debug_info: Some(format!("Renaming & Cleaning folder for: {}", movie.title)),
+                        finished_at: None,
+                        debug_info:
+ Some(format!("Renaming & Cleaning folder for: {}", movie.title)),
                     });
                 }
             }
@@ -687,7 +697,9 @@ async fn cleanup_batch(State(state): State<Arc<AppState>>, Json(payload): Json<B
                     total,
                     message: format!("Cleaned TV Show ID: {}", id),
                     started_at: Some(start_ms),
-                    debug_info: Some(format!("Removing duplicate artwork for TV Show ID: {}", id)),
+                    finished_at: None,
+                    debug_info:
+ Some(format!("Removing duplicate artwork for TV Show ID: {}", id)),
                 });
             }
         }
@@ -699,6 +711,7 @@ async fn cleanup_batch(State(state): State<Arc<AppState>>, Json(payload): Json<B
             total,
             message: "Batch cleanup completed".to_string(),
             started_at: Some(start_ms),
+            finished_at: Some(media_core::models::now_ms()),
             debug_info: None,
         });
     });
@@ -865,7 +878,9 @@ async fn refresh_metadata(State(state): State<Arc<AppState>>, Path(id): Path<i64
                 total: 1,
                 message: format!("Refreshing movie: {}", movie.title),
                 started_at: Some(start_ms),
-                debug_info: Some(format!("Refetching TMDB data for: {}", movie.title)),
+                finished_at: None,
+                debug_info:
+ Some(format!("Refetching TMDB data for: {}", movie.title)),
             });
 
             let _ = media_core::scraper::scrape_movie(movie.id, &movie.title, movie.year, &clients, &pool, script_path).await;
@@ -880,7 +895,9 @@ async fn refresh_metadata(State(state): State<Arc<AppState>>, Path(id): Path<i64
                     total: 1,
                     message: format!("Refreshing TV Show: {}", show.title),
                     started_at: Some(start_ms),
-                    debug_info: Some(format!("Refetching TMDB data for TV Show: {}", show.title)),
+                    finished_at: None,
+                    debug_info:
+ Some(format!("Refetching TMDB data for TV Show: {}", show.title)),
                 });
                 let _ = media_core::scraper::scrape_tv_show(show.id, &show.title, &clients, &pool, script_path).await;
             }
@@ -893,7 +910,9 @@ async fn refresh_metadata(State(state): State<Arc<AppState>>, Path(id): Path<i64
             total: 1,
             message: "Metadata refresh complete".to_string(),
             started_at: Some(start_ms),
+            finished_at: Some(now_ms()),
             debug_info: None,
+
         });
     });
 
@@ -969,7 +988,9 @@ async fn search_subtitles(State(state): State<Arc<AppState>>, Path(id): Path<i64
                         total: 1,
                         message: format!("Searching subtitles for: {}", movie.title),
                         started_at: Some(start_ms),
-                        debug_info: Some(format!("Querying OpenSubtitles by Hash: {}", hash)),
+                        finished_at: None,
+                        debug_info:
+ Some(format!("Querying OpenSubtitles by Hash: {}", hash)),
                     });
 
                     if let Ok(hash_results) = client.search_by_hash(&hash, "en").await {
@@ -989,7 +1010,9 @@ async fn search_subtitles(State(state): State<Arc<AppState>>, Path(id): Path<i64
                             total: 1,
                             message: format!("Searching subtitles for: {}", movie.title),
                             started_at: Some(start_ms),
-                            debug_info: Some(format!("Querying OpenSubtitles for IMDB: {}", imdb_id)),
+                            finished_at: None,
+                            debug_info:
+ Some(format!("Querying OpenSubtitles for IMDB: {}", imdb_id)),
                         });
 
                         if let Ok(imdb_results) = client.search(&imdb_id, "en").await {
@@ -1013,8 +1036,10 @@ async fn search_subtitles(State(state): State<Arc<AppState>>, Path(id): Path<i64
                                             total: 1,
                                             message: format!("Subtitle saved: {}", saved_path),
                                             started_at: Some(start_ms),
+                                            finished_at: Some(media_core::models::now_ms()),
                                             debug_info: None,
-                                        });
+                                            });
+
                                         return;
                                     }
                                     Err(e) => tracing::error!("Download failed: {}", e),
@@ -1028,6 +1053,7 @@ async fn search_subtitles(State(state): State<Arc<AppState>>, Path(id): Path<i64
                             total: 1,
                             message: "No matching subtitles found".to_string(),
                             started_at: Some(start_ms),
+                            finished_at: Some(media_core::models::now_ms()),
                             debug_info: None,
                         });
                     }
@@ -1039,7 +1065,9 @@ async fn search_subtitles(State(state): State<Arc<AppState>>, Path(id): Path<i64
                             total: 1,
                             message: "Subtitle search failed or no matches found".to_string(),
                             started_at: Some(start_ms),
-                            debug_info: None,
+                            finished_at: None,
+                            debug_info:
+ None,
                         });
                     }
                 }
@@ -1051,7 +1079,9 @@ async fn search_subtitles(State(state): State<Arc<AppState>>, Path(id): Path<i64
                     total: 1,
                     message: "Movie file not found".to_string(),
                     started_at: Some(start_ms),
-                    debug_info: None,
+                    finished_at: None,
+                    debug_info:
+ None,
                 });
             }
         }
@@ -1166,6 +1196,11 @@ async fn task_stream(State(state): State<Arc<AppState>>) -> Sse<impl Stream<Item
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
+async fn get_tasks(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let tasks = state.task_manager.get_history();
+    Json(tasks).into_response()
+}
+
 #[derive(serde::Deserialize)]
 struct UpdateMovieRequest {
     title: String,
@@ -1269,7 +1304,9 @@ async fn process_movie_advanced(State(state): State<Arc<AppState>>, Path(id): Pa
                         total: 1,
                         message: format!("Analyzing movie: {}...", movie.title),
                         started_at: Some(start_ms),
-                        debug_info: Some("Running FFmpeg cropdetect and thumbnail extraction...".to_string()),
+                        finished_at: None,
+                        debug_info:
+ Some("Running FFmpeg cropdetect and thumbnail extraction...".to_string()),
                     });
 
                     if path.exists() {
@@ -1314,7 +1351,9 @@ async fn process_movie_advanced(State(state): State<Arc<AppState>>, Path(id): Pa
             total: 1,
             message: "Advanced analysis complete".to_string(),
             started_at: Some(start_ms),
-            debug_info: None,
+            finished_at: None,
+            debug_info:
+ None,
         });
     });
 
@@ -1359,7 +1398,9 @@ async fn process_tv_show_advanced(State(state): State<Arc<AppState>>, Path(id): 
                     total,
                     message: format!("Analyzing Ep {}/{}", i+1, total),
                     started_at: Some(start_ms),
-                    debug_info: Some(format!("FFmpeg deep analysis for: {}", ep.original_name)),
+                    finished_at: None,
+                    debug_info:
+ Some(format!("FFmpeg deep analysis for: {}", ep.original_name)),
                 });
 
                 if let Ok(Some(path)) = db::queries::get_episode_full_path(&pool, ep.id).await {
@@ -1399,7 +1440,9 @@ async fn process_tv_show_advanced(State(state): State<Arc<AppState>>, Path(id): 
             total,
             message: "TV Show deep analysis complete".to_string(),
             started_at: Some(start_ms),
-            debug_info: None,
+            finished_at: None,
+            debug_info:
+ None,
         });
     });
 
@@ -1439,7 +1482,9 @@ async fn process_library_advanced(State(state): State<Arc<AppState>>, Path(id): 
                         total,
                         message: format!("Movies: {}/{}", i+1, total),
                         started_at: Some(start_ms),
-                        debug_info: Some(format!("Analyzing: {}", movie.title)),
+                        finished_at: None,
+                        debug_info:
+ Some(format!("Analyzing: {}", movie.title)),
                     });
 
                     let input_path = media_core::paths::make_absolute(&file.file_path, &lib_root);
@@ -1486,7 +1531,9 @@ async fn process_library_advanced(State(state): State<Arc<AppState>>, Path(id): 
                             total: total_shows as i32,
                             message: format!("Show {}/{}, Ep {}/{}", si+1, total_shows, ei+1, ep_total),
                             started_at: Some(start_ms),
-                            debug_info: Some(format!("Analyzing: {} - {}", show.title, ep.original_name)),
+                            finished_at: None,
+                            debug_info:
+ Some(format!("Analyzing: {} - {}", show.title, ep.original_name)),
                         });
 
                         let input_path = media_core::paths::make_absolute(&ep.file_path, &lib_root);
@@ -1523,6 +1570,7 @@ async fn process_library_advanced(State(state): State<Arc<AppState>>, Path(id): 
             total: 1,
             message: "Library analysis complete".to_string(),
             started_at: Some(start_ms),
+            finished_at: Some(media_core::models::now_ms()),
             debug_info: None,
         });
     });

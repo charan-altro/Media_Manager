@@ -22,7 +22,15 @@ pub struct TaskUpdate {
     pub total: i32,
     pub message: String,
     pub started_at: Option<u64>, // Unix timestamp in ms
+    pub finished_at: Option<u64>, // Unix timestamp in ms
     pub debug_info: Option<String>,
+}
+
+pub fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
 }
 
 impl TaskUpdate {
@@ -33,10 +41,8 @@ impl TaskUpdate {
             progress,
             total,
             message,
-            started_at: Some(std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_millis() as u64),
+            started_at: Some(now_ms()),
+            finished_at: None,
             debug_info: None,
         }
     }

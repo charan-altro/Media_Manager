@@ -34,6 +34,12 @@ pub enum CoreError {
 
     #[error("SQLx error: {0}")]
     SqlxError(#[from] sqlx::Error),
+
+    #[error("Notify error: {0}")]
+    NotifyError(#[from] notify::Error),
+
+    #[error("Runtime error: {0}")]
+    RuntimeError(String),
 }
 
 pub type Result<T> = std::result::Result<T, CoreError>;

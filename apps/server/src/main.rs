@@ -54,7 +54,11 @@ async fn main() {
     let database_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite:mediavault.db?mode=rwc".to_string());
     let pool = db::init_pool(&database_url).await.expect("Failed to initialize database pool");
     let task_manager = Arc::new(TaskManager::new());
-    let stream_manager = Arc::new(StreamManager::new(std::path::PathBuf::from("transcodes")));
+    
+    // Configurable Transcode Directory
+    let transcode_dir = std::env::var("HLS_TRANSCODE_DIR").unwrap_or_else(|_| "transcodes".to_string());
+    media_core::config::set_hls_transcode_dir(transcode_dir.clone());
+    let stream_manager = Arc::new(StreamManager::new(std::path::PathBuf::from(&transcode_dir)));
 
     let app_state = Arc::new(AppState {
         pool: pool.clone(),
@@ -68,7 +72,7 @@ async fn main() {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
         loop {
             interval.tick().await;
-            sm_for_cleanup.cleanup_stale_streams();
+            sm_for_cleanup.cleanup_stale_streams().await;
         }
     });
 
@@ -1687,6 +1691,14 @@ struct PlaybackHeartbeat {
 }
 
 async fn update_playback_progress(State(state): State<Arc<AppState>>, Json(payload): Json<PlaybackHeartbeat>) -> impl IntoResponse {
+    // MVP 2: Update stream manager heartbeat to keep FFmpeg alive
+    let stream_id = if payload.media_type == "movie" {
+        format!("movie_{}", payload.media_id)
+    } else {
+        format!("episode_{}", payload.media_id)
+    };
+    state.stream_manager.update_heartbeat(&stream_id).await;
+
     match sqlx::query(
         r#"
         INSERT INTO playback_state (media_id, media_type, position_ms, duration_ms, is_finished, updated_at)
@@ -1729,7 +1741,7 @@ async fn start_movie_stream(State(state): State<Arc<AppState>>, Path(id): Path<i
     if let Ok(Some(path)) = db::queries::get_movie_full_path(&state.pool, MovieId(id)).await {
         tracing::debug!("Found path for streaming: {:?}", path);
         let stream_id = format!("movie_{}", id);
-        match state.stream_manager.start_hls(&stream_id, &path) {
+        match state.stream_manager.start_hls(&stream_id, &path).await {
             Ok(_) => {
                 tracing::info!("HLS Stream started successfully for {}", stream_id);
                 (StatusCode::OK, Json(format!("/api/stream/hls/{}/playlist.m3u8", stream_id))).into_response()
@@ -1748,7 +1760,7 @@ async fn start_movie_stream(State(state): State<Arc<AppState>>, Path(id): Path<i
 async fn start_episode_stream(State(state): State<Arc<AppState>>, Path(id): Path<i64>) -> impl IntoResponse {
     if let Ok(Some(path)) = db::queries::get_episode_full_path(&state.pool, EpisodeId(id)).await {
         let stream_id = format!("episode_{}", id);
-        match state.stream_manager.start_hls(&stream_id, &path) {
+        match state.stream_manager.start_hls(&stream_id, &path).await {
             Ok(_) => (StatusCode::OK, Json(format!("/api/stream/hls/{}/playlist.m3u8", stream_id))).into_response(),
             Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         }

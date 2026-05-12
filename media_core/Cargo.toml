@@ -30,3 +30,6 @@ html-escape.workspace = true
 urlencoding.workspace = true
 rust_xlsxwriter.workspace = true
 unicode-normalization.workspace = true
+
+[dev-dependencies]
+tempfile = "3.27.0"

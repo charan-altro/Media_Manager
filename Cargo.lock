@@ -2801,6 +2801,7 @@ dependencies = [
  "serde_json",
  "sqlx",
  "strsim",
+ "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "tracing",

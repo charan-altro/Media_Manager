@@ -47,6 +47,59 @@ impl FfmpegEngine {
         Ok(dest_path.to_path_buf())
     }
 
+    pub fn generate_preview(input_path: &Path, output_path: &Path) -> Result<PathBuf> {
+        Self::check_ffmpeg()?;
+        info!("Generating 10s preview for {:?} at {:?}", input_path, output_path);
+        
+        let output = Command::new(crate::config::get_ffmpeg_path())
+            .args(&[
+                "-ss", "00:05:00", // Start 5 minutes in
+                "-i", input_path.to_str().ok_or_else(|| CoreError::PathError("Invalid input path".to_string()))?,
+                "-t", "10", // 10 seconds duration
+                "-vf", "scale=w=480:h=-2", // Standardize preview width
+                "-c:v", "libx264",
+                "-preset", "ultrafast",
+                "-crf", "28",
+                "-an", // No audio
+                "-y", // Overwrite
+                output_path.to_str().ok_or_else(|| CoreError::PathError("Invalid dest path".to_string()))?,
+            ])
+            .output()?;
+
+        if !output.status.success() {
+            let err = String::from_utf8_lossy(&output.stderr);
+            error!("FFmpeg preview generation failed: {}", err);
+            return Err(CoreError::FfmpegError(format!("FFmpeg failed: {}", err)));
+        }
+
+        Ok(output_path.to_path_buf())
+    }
+
+    /// Generates a sprite sheet (tile grid) for seek previews.
+    /// Creates a 10x10 grid of tiny thumbnails.
+    pub fn generate_sprite_sheet(input_path: &Path, output_path: &Path, duration_secs: f64) -> Result<PathBuf> {
+        Self::check_ffmpeg()?;
+        let interval = duration_secs / 100.0; // 100 frames for 10x10 grid
+        
+        info!("Generating 10x10 sprite sheet for {:?} at interval {}s", input_path, interval);
+
+        let output = Command::new(crate::config::get_ffmpeg_path())
+            .args(&[
+                "-i", input_path.to_str().unwrap(),
+                "-vf", &format!("fps=1/{},scale=160:-1,tile=10x10", interval),
+                "-y",
+                output_path.to_str().unwrap(),
+            ])
+            .output()?;
+
+        if !output.status.success() {
+            let err = String::from_utf8_lossy(&output.stderr);
+            return Err(CoreError::FfmpegError(format!("FFmpeg sprite failed: {}", err)));
+        }
+
+        Ok(output_path.to_path_buf())
+    }
+
     pub fn detect_aspect_ratio(input_path: &Path) -> Result<String> {
         Self::check_ffmpeg()?;
         info!("Detecting aspect ratio for {:?}", input_path);

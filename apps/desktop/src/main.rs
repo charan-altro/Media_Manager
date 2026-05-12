@@ -901,6 +901,40 @@ async fn get_playback_status(id: i64, media_type: String, state: State<'_, AppSt
 }
 
 #[tauri::command]
+async fn generate_preview(
+    id: i64,
+    media_type: String,
+    state: State<'_, AppState>
+) -> Result<String, String> {
+    let path_str = if media_type == "movie" {
+        let file = sqlx::query_as::<_, media_core::models::movie::MovieFile>("SELECT * FROM movie_files WHERE movie_id = ? LIMIT 1")
+            .bind(id).fetch_optional(&state.pool).await.map_err(|e| e.to_string())?;
+        file.ok_or("Movie file not found")?.file_path
+    } else {
+        let episode = sqlx::query_as::<_, media_core::models::tv::Episode>("SELECT * FROM episodes WHERE id = ?")
+            .bind(id).fetch_optional(&state.pool).await.map_err(|e| e.to_string())?;
+        episode.ok_or("Episode not found")?.file_path
+    };
+
+    let input_path = std::path::PathBuf::from(path_str);
+    
+    let app_data = std::env::var("APPDATA").unwrap_or_else(|_| ".".to_string());
+    let previews_dir = std::path::PathBuf::from(app_data).join("MediaManager").join("previews");
+    if !previews_dir.exists() {
+        std::fs::create_dir_all(&previews_dir).map_err(|e| e.to_string())?;
+    }
+    let output_name = format!("{}_{}_preview.mp4", media_type, id);
+    let output_path = previews_dir.join(&output_name);
+
+    if !output_path.exists() {
+        media_core::scanner::ffmpeg::FfmpegEngine::generate_preview(&input_path, &output_path)
+            .map_err(|e| e.to_string())?;
+    }
+
+    Ok(output_path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
 async fn update_playback_progress(
     media_id: i64,
     media_type: String,
@@ -954,7 +988,7 @@ fn main() {
             rename_movie, search_subtitles, process_movie_advanced,
             process_tv_show_advanced, process_library_advanced, sync_trakt,
             cleanup_duplicates, cleanup_empty_folders, start_streaming,
-            download_to_local, get_playback_status, update_playback_progress
+            download_to_local, get_playback_status, generate_preview, update_playback_progress
         ])
         .setup(|app| {
             // Resolve sidecar paths

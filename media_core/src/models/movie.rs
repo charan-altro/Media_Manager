@@ -41,6 +41,8 @@ pub struct MovieFile {
     pub size_bytes: i64,
     pub resolution: Option<crate::models::Resolution>,
     pub codec: Option<String>,
+    pub hash: Option<String>,
+    pub preview_path: Option<String>,
     pub aspect_ratio: Option<String>,
     pub thumbnail_path: Option<String>,
     pub created_at: String,

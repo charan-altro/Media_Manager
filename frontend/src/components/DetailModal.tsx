@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { X, Star, Play, Calendar, Clock, Monitor, Cpu, CheckCircle2, RefreshCw, Airplay } from 'lucide-react';
+import { X, Star, Play, Calendar, Clock, Monitor, Cpu, CheckCircle2, RefreshCw } from 'lucide-react';
 import { getImageUrl, api } from '../api/adapter';
 import toast from 'react-hot-toast';
 import VideoPlayer from './VideoPlayer';
@@ -277,21 +277,23 @@ const DetailModal: React.FC<DetailModalProps> = ({
                               </div>
                             </div>
                             <div className="flex items-center gap-2">
-                              {/* <button 
+                              <button 
                                 onClick={async (e) => { 
                                   e.stopPropagation(); 
                                   try {
-                                    const url = await api.startStreaming(ep.id, 'episode');
+                                    const toastId = toast.loading('Generating preview...');
+                                    const url = await api.generatePreview(ep.id, 'episode');
+                                    toast.dismiss(toastId);
                                     setStreamingUrl(url);
                                   } catch (err: any) {
-                                    toast.error('Streaming failed: ' + err.message);
+                                    toast.error('Preview failed: ' + err.message);
                                   }
                                 }} 
                                 className="p-2 hover:bg-zinc-800 rounded-lg text-zinc-600 hover:text-white transition"
-                                title="Stream Episode"
+                                title="Preview Episode"
                               >
-                                <Airplay className="w-4 h-4" />
-                              </button> */}
+                                <Monitor className="w-4 h-4" />
+                              </button>
                               <button onClick={(e) => { e.stopPropagation(); onDownload(ep.id, 'tv'); }} className="p-2 hover:bg-zinc-800 rounded-lg text-zinc-600 hover:text-white transition">
                                 <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>
                               </button>
@@ -375,19 +377,21 @@ const DetailModal: React.FC<DetailModalProps> = ({
                       >
                         <Play className="w-4 h-4 fill-current" /> Start Playback
                       </button>
-                      {/* <button 
+                      <button 
                         onClick={async () => {
                           try {
-                            const url = await api.startStreaming(item.id);
+                            const toastId = toast.loading('Generating preview...');
+                            const url = await api.generatePreview(item.id, 'movie');
+                            toast.dismiss(toastId);
                             setStreamingUrl(url);
                           } catch (err: any) {
-                            toast.error('Streaming failed: ' + err.message);
+                            toast.error('Preview generation failed: ' + err.message);
                           }
                         }}
-                        className="flex-1 bg-zinc-800 hover:bg-zinc-700 py-4 rounded-xl font-black uppercase tracking-widest text-xs transition border border-zinc-700 flex items-center justify-center gap-2"
+                        className="w-full bg-zinc-800 hover:bg-zinc-700 py-4 rounded-xl font-black uppercase tracking-widest text-xs transition border border-zinc-700 flex items-center justify-center gap-2"
                       >
-                        <Airplay className="w-4 h-4" /> Stream
-                      </button> */}
+                        <Monitor className="w-4 h-4" /> Preview Media
+                      </button>
                     </div>
                   )}
                   {isShow && (

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useRef } from 'react';
 import { Play, CheckCircle2, RefreshCw, Star, ChevronDown } from 'lucide-react';
 import { getImageUrl, api } from '../api/adapter';
 
@@ -30,6 +30,9 @@ const MediaGrid: React.FC<MediaGridProps> = ({
   selectedLibrary, genreFilter, setGenreFilter, languageFilter, setLanguageFilter,
   allGenres, allLanguages, showFilterMenu, setShowFilterMenu
 }) => {
+  const [hoveredId, setHoveredId] = useState<number | null>(null);
+  const hoverTimeout = useRef<any>(null);
+
   return (
     <div className="px-4 md:px-12 py-12 space-y-10">
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6">
@@ -123,17 +126,38 @@ const MediaGrid: React.FC<MediaGridProps> = ({
           <div 
             key={item.id} 
             onClick={(e) => onItemClick(item, e)}
+            onMouseEnter={() => {
+              hoverTimeout.current = setTimeout(() => setHoveredId(item.id), 800);
+            }}
+            onMouseLeave={() => {
+              clearTimeout(hoverTimeout.current);
+              setHoveredId(null);
+            }}
             className="group relative cursor-pointer space-y-3"
           >
             <div className={`aspect-[2/3] rounded-lg overflow-hidden shadow-lg transition-all duration-500 group-hover:scale-[1.03] group-hover:-translate-y-2 group-hover:shadow-[0_20px_50px_rgba(0,0,0,0.5)] border ${selectedIds.includes(item.id) ? 'border-red-500 ring-2 ring-red-500/50' : 'border-zinc-900 group-hover:border-zinc-700'}`}>
-              <img 
-                src={getImageUrl(item.poster_url)} 
-                className="w-full h-full object-cover group-hover:brightness-110 transition duration-500"
-                alt={item.title}
-                loading="lazy"
-              />
-              <div className="absolute inset-0 bg-gradient-to-t from-black via-transparent to-transparent opacity-0 group-hover:opacity-100 transition duration-500" />
-              <div className="absolute bottom-0 left-0 right-0 p-4 translate-y-full group-hover:translate-y-0 transition duration-500">
+              
+              {hoveredId === item.id && item.preview_path ? (
+                <div className="absolute inset-0 z-10 bg-black animate-in fade-in duration-500">
+                  <video 
+                    src={getImageUrl(item.preview_path)}
+                    autoPlay
+                    loop
+                    muted
+                    className="w-full h-full object-cover"
+                  />
+                </div>
+              ) : (
+                <img 
+                  src={getImageUrl(item.poster_url)} 
+                  className="w-full h-full object-cover group-hover:brightness-110 transition duration-500"
+                  alt={item.title}
+                  loading="lazy"
+                />
+              )}
+
+              <div className="absolute inset-0 bg-gradient-to-t from-black via-transparent to-transparent opacity-0 group-hover:opacity-100 transition duration-500 z-20" />
+              <div className="absolute bottom-0 left-0 right-0 p-4 translate-y-full group-hover:translate-y-0 transition duration-500 z-30">
                 <div className="flex items-center justify-between">
                    <div 
                      onClick={(e) => onPlayClick(item, e)}

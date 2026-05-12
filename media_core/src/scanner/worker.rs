@@ -175,6 +175,27 @@ async fn process_file(pool: &SqlitePool, library: &Library, item: &ParsedFile) -
     let relative_path = crate::paths::make_relative(&item.path, library_root)?;
     let filename = item.path.file_name().and_then(|s| s.to_str()).unwrap_or("");
 
+    // Smart tracking: check if file moved (find by hash)
+    if let Some(ref hash) = item.hash {
+        if library.media_type == MediaType::Movie {
+            if let Ok(Some(existing)) = db::queries::get_movie_file_by_hash(pool, hash).await {
+                if existing.file_path != relative_path {
+                    tracing::info!("File moved detected (hash match): {} -> {}", existing.file_path, relative_path);
+                    db::queries::update_movie_file_path(pool, existing.id, &relative_path).await?;
+                    return Ok(());
+                }
+            }
+        } else {
+            if let Ok(Some(existing)) = db::queries::get_episode_by_hash(pool, hash).await {
+                if existing.file_path != relative_path {
+                    tracing::info!("File moved detected (hash match): {} -> {}", existing.file_path, relative_path);
+                    db::queries::update_episode_path(pool, existing.id, &relative_path).await?;
+                    return Ok(());
+                }
+            }
+        }
+    }
+
     if library.media_type == MediaType::Movie {
         let mut title = item.parsed.title.clone();
         let mut year = item.parsed.year;
@@ -365,7 +386,7 @@ async fn process_file(pool: &SqlitePool, library: &Library, item: &ParsedFile) -
         let res = media_info.as_ref().map(|i| crate::models::Resolution::from_dimensions(i.width, i.height));
         let codec = media_info.as_ref().map(|i| i.video_codec.as_str());
 
-        db::queries::upsert_episode(pool, season_id, ep_num, &relative_path, filename, item.size, res, codec).await?;
+        db::queries::upsert_episode(pool, season_id, ep_num, &relative_path, filename, item.size, res, codec, item.hash.as_deref()).await?;
 
         // Update show metadata from tvshow.nfo if available
         if let Some(ref nfo) = item.metadata.tv_nfo {

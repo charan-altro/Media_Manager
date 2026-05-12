@@ -262,6 +262,19 @@ export const api = {
     return playlistUrl;
   },
 
+  generatePreview: async (id: number, type: 'movie' | 'episode' = 'movie') => {
+    const path = type === 'movie' ? `/stream/movie/${id}` : `/stream/episode/${id}`;
+    const playlistUrl = await request<string>('start_streaming', path, { method: 'POST', id });
+    
+    if (IS_TAURI && !playlistUrl.startsWith('http')) {
+       return convertFileSrc(playlistUrl);
+    }
+    if (!playlistUrl.startsWith('http')) {
+       return `${API_BASE}${playlistUrl}`;
+    }
+    return playlistUrl;
+  },
+
   searchSubtitles: (id: number) =>
     request<void>('search_subtitles', `/movies/${id}/subtitles/search`, { method: 'GET', id }),
 

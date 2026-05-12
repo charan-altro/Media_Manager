@@ -22,9 +22,12 @@ use tower_http::cors::CorsLayer;
 use futures::stream::Stream;
 use std::convert::Infallible;
 
+use media_core::scanner::streaming::StreamManager;
+
 struct AppState {
     pool: SqlitePool,
     task_manager: Arc<TaskManager>,
+    stream_manager: Arc<StreamManager>,
 }
 
 fn now_ms() -> u64 {
@@ -51,10 +54,22 @@ async fn main() {
     let database_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite:mediavault.db?mode=rwc".to_string());
     let pool = db::init_pool(&database_url).await.expect("Failed to initialize database pool");
     let task_manager = Arc::new(TaskManager::new());
+    let stream_manager = Arc::new(StreamManager::new(std::path::PathBuf::from("transcodes")));
 
     let app_state = Arc::new(AppState {
         pool: pool.clone(),
         task_manager: task_manager.clone(),
+        stream_manager: stream_manager.clone(),
+    });
+
+    // Start background stream cleanup
+    let sm_for_cleanup = stream_manager.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+        loop {
+            interval.tick().await;
+            sm_for_cleanup.cleanup_stale_streams();
+        }
     });
 
     // Start background notification monitor
@@ -129,6 +144,9 @@ async fn main() {
         .route("/api/movies/:id/refresh", post(refresh_metadata))
         .route("/api/movies/:id/play", post(play_movie))
         .route("/api/episodes/:id/play", post(play_episode))
+        .route("/api/stream/movie/:id", post(start_movie_stream))
+        .route("/api/stream/episode/:id", post(start_episode_stream))
+        .route("/api/stream/hls/:id/:file", get(serve_stream_file))
         .route("/api/movies/:id/download", get(download_movie))
         .route("/api/episodes/:id/download", get(download_episode))
         // .route("/api/stream/:id/start", post(start_streaming))
@@ -1253,19 +1271,22 @@ async fn process_movie_advanced(State(state): State<Arc<AppState>>, Path(id): Pa
                     // 2. Extract Thumb
                     let thumb = media_core::scanner::ffmpeg::FfmpegEngine::extract_thumbnail(&path, &thumb_dest, "00:05:00").ok();
 
-                    // Update DB (relativize thumb path if it was created)
+                    // 3. Generate Preview (Stash Style)
+                    let preview_dest = folder.join(format!("{}.preview.mp4", path.file_stem().unwrap().to_str().unwrap()));
+                    let preview = media_core::scanner::ffmpeg::FfmpegEngine::generate_preview(&path, &preview_dest).ok();
+
+                    // Update DB (relativize paths)
                     let rel_thumb = thumb.as_ref().and_then(|_| {
-                        // We need the library root to relativize. For simplicity, let's just use the string or lookup.
-                        // Actually, let's just store the relative path directly if we can.
-                        // But wait, make_absolute joined it.
-                        // Better: just store the relative path we already had or find it.
-                        // Let's just store the filename for thumb if it's in the same folder.
                         Some(thumb_dest.file_name()?.to_string_lossy().to_string())
                     });
+                    let rel_preview = preview.as_ref().and_then(|_| {
+                        Some(preview_dest.file_name()?.to_string_lossy().to_string())
+                    });
 
-                    let _ = sqlx::query("UPDATE movie_files SET aspect_ratio = ?, thumbnail_path = ? WHERE id = ?")
+                    let _ = sqlx::query("UPDATE movie_files SET aspect_ratio = ?, thumbnail_path = ?, preview_path = ? WHERE id = ?")
                         .bind(ratio)
                         .bind(rel_thumb)
+                        .bind(rel_preview)
                         .bind(file_id)
                         .execute(&pool)
                         .await;
@@ -1427,10 +1448,14 @@ async fn process_library_advanced(State(state): State<Arc<AppState>>, Path(id): 
                             
                             let ratio = media_core::scanner::ffmpeg::FfmpegEngine::detect_aspect_ratio(&input_path).ok();
                             let thumb = media_core::scanner::ffmpeg::FfmpegEngine::extract_thumbnail(&input_path, &thumb_dest, "00:05:00").ok();
+                            
+                            let preview_dest = folder.join(format!("{}.preview.mp4", input_path.file_stem().unwrap().to_str().unwrap()));
+                            let preview = media_core::scanner::ffmpeg::FfmpegEngine::generate_preview(&input_path, &preview_dest).ok();
 
-                            let _ = sqlx::query("UPDATE episodes SET aspect_ratio = ?, thumbnail_path = ? WHERE id = ?")
+                            let _ = sqlx::query("UPDATE episodes SET aspect_ratio = ?, thumbnail_path = ?, preview_path = ? WHERE id = ?")
                                 .bind(ratio)
-                                .bind(thumb.map(|p| p.to_string_lossy().to_string()))
+                                .bind(thumb.map(|p| p.file_name().unwrap().to_string_lossy().to_string()))
+                                .bind(preview.map(|p| p.file_name().unwrap().to_string_lossy().to_string()))
                                 .bind(ep.id)
                                 .execute(&pool)
                                 .await;
@@ -1597,5 +1622,59 @@ async fn get_playback_status(State(state): State<Arc<AppState>>, Path((m_type, i
     match res {
         Some((pos, dur, finished)) => Json(serde_json::json!({ "position_ms": pos, "duration_ms": dur, "is_finished": finished })).into_response(),
         None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+async fn start_movie_stream(State(state): State<Arc<AppState>>, Path(id): Path<i64>) -> impl IntoResponse {
+    if let Ok(Some(path)) = db::queries::get_movie_full_path(&state.pool, MovieId(id)).await {
+        let stream_id = format!("movie_{}", id);
+        match state.stream_manager.start_hls(&stream_id, &path) {
+            Ok(_) => (StatusCode::OK, Json(format!("/api/stream/hls/{}/playlist.m3u8", stream_id))).into_response(),
+            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        }
+    } else {
+        (StatusCode::NOT_FOUND, "Movie not found").into_response()
+    }
+}
+
+async fn start_episode_stream(State(state): State<Arc<AppState>>, Path(id): Path<i64>) -> impl IntoResponse {
+    if let Ok(Some(path)) = db::queries::get_episode_full_path(&state.pool, EpisodeId(id)).await {
+        let stream_id = format!("episode_{}", id);
+        match state.stream_manager.start_hls(&stream_id, &path) {
+            Ok(_) => (StatusCode::OK, Json(format!("/api/stream/hls/{}/playlist.m3u8", stream_id))).into_response(),
+            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        }
+    } else {
+        (StatusCode::NOT_FOUND, "Episode not found").into_response()
+    }
+}
+
+async fn serve_stream_file(
+    State(state): State<Arc<AppState>>,
+    Path((id, file)): Path<(String, String)>
+) -> impl IntoResponse {
+    let base_dir = PathBuf::from("transcodes").join(&id);
+    let file_path = base_dir.join(&file);
+
+    if !file_path.exists() {
+        return (StatusCode::NOT_FOUND, "Stream file not found").into_response();
+    }
+
+    match tokio::fs::read(&file_path).await {
+        Ok(bytes) => {
+            let mime = if file.ends_with(".m3u8") {
+                "application/vnd.apple.mpegurl"
+            } else if file.ends_with(".ts") {
+                "video/mp2t"
+            } else {
+                "application/octet-stream"
+            };
+
+            (
+                [(header::CONTENT_TYPE, mime)],
+                bytes,
+            ).into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }

@@ -22,9 +22,44 @@ const DetailModal: React.FC<DetailModalProps> = ({
   const [seasons, setSeasons] = useState<any[]>([]);
   const [episodes, setEpisodes] = useState<Record<number, any[]>>({});
   const [playbackStatus, setPlaybackStatus] = useState<any>(null);
+  
   const [streamingUrl, setStreamingUrl] = useState<string | null>(null);
+  const [activeMediaId, setActiveMediaId] = useState<number | null>(null);
+  const [activeMediaType, setActiveMediaType] = useState<'movie' | 'episode' | null>(null);
+  const [resumePosition, setResumePosition] = useState(0);
+  const [showResumeDialog, setShowResumeDialog] = useState(false);
+  const [pendingUrl, setPendingUrl] = useState<string | null>(null);
 
   const isShow = 'library_id' in item && !('runtime' in item);
+
+  const handlePlayMedia = async (mediaId: number, mediaType: 'movie' | 'episode') => {
+    try {
+      const status = await api.getPlaybackStatus(mediaType, mediaId);
+      const url = await api.generatePreview(mediaId, mediaType);
+      
+      setActiveMediaId(mediaId);
+      setActiveMediaType(mediaType);
+
+      if (status && status.position_ms > 5000 && !status.is_finished) {
+        setResumePosition(status.position_ms);
+        setPendingUrl(url);
+        setShowResumeDialog(true);
+      } else {
+        setResumePosition(0);
+        setStreamingUrl(url);
+      }
+    } catch (err: any) {
+      try {
+        const url = await api.generatePreview(mediaId, mediaType);
+        setActiveMediaId(mediaId);
+        setActiveMediaType(mediaType);
+        setResumePosition(0);
+        setStreamingUrl(url);
+      } catch (innerErr: any) {
+        toast.error('Playback failed: ' + innerErr.message);
+      }
+    }
+  };
 
   const genres = React.useMemo(() => {
     try {
@@ -43,14 +78,6 @@ const DetailModal: React.FC<DetailModalProps> = ({
       return [];
     }
   }, [item.cast_list]);
-
-  useEffect(() => {
-    if (isShow) {
-      loadSeasons(item.id);
-    }
-    const type = isShow ? 'tv' : 'movie';
-    api.getPlaybackStatus(type, item.id).then(setPlaybackStatus).catch(() => setPlaybackStatus(null));
-  }, [item]);
 
   const loadSeasons = async (showId: number) => {
     try {
@@ -72,6 +99,14 @@ const DetailModal: React.FC<DetailModalProps> = ({
       console.error('Failed to load episodes', err);
     }
   };
+
+  useEffect(() => {
+    if (isShow) {
+      loadSeasons(item.id);
+    }
+    const type = isShow ? 'tv' : 'movie';
+    api.getPlaybackStatus(type, item.id).then(setPlaybackStatus).catch(() => setPlaybackStatus(null));
+  }, [item, isShow]);
 
   const startEditing = () => {
     setEditForm({
@@ -262,7 +297,7 @@ const DetailModal: React.FC<DetailModalProps> = ({
                       </div>
                       <div className="grid gap-2">
                         {episodes[season.id]?.map(ep => (
-                          <div key={ep.id} onClick={() => api.playEpisode(ep.id)} className="flex items-center justify-between p-4 bg-zinc-900/30 rounded-xl border border-zinc-800/50 hover:bg-zinc-800/50 transition group cursor-pointer">
+                          <div key={ep.id} onClick={() => handlePlayMedia(ep.id, 'episode')} className="flex items-center justify-between p-4 bg-zinc-900/30 rounded-xl border border-zinc-800/50 hover:bg-zinc-800/50 transition group cursor-pointer">
                             <div className="flex items-center gap-6">
                               <div className="text-2xl font-black text-zinc-700 italic group-hover:text-red-600 transition">
                                 {ep.episode_number.toString().padStart(2, '0')}
@@ -278,23 +313,9 @@ const DetailModal: React.FC<DetailModalProps> = ({
                             </div>
                             <div className="flex items-center gap-2">
                               <button 
-                                onClick={async (e) => { 
-                                  e.stopPropagation(); 
-                                  try {
-                                    const toastId = toast.loading('Generating preview...');
-                                    const url = await api.generatePreview(ep.id, 'episode');
-                                    toast.dismiss(toastId);
-                                    setStreamingUrl(url);
-                                  } catch (err: any) {
-                                    toast.error('Preview failed: ' + err.message);
-                                  }
-                                }} 
+                                onClick={(e) => { e.stopPropagation(); onDownload(ep.id, 'tv'); }} 
                                 className="p-2 hover:bg-zinc-800 rounded-lg text-zinc-600 hover:text-white transition"
-                                title="Preview Episode"
                               >
-                                <Monitor className="w-4 h-4" />
-                              </button>
-                              <button onClick={(e) => { e.stopPropagation(); onDownload(ep.id, 'tv'); }} className="p-2 hover:bg-zinc-800 rounded-lg text-zinc-600 hover:text-white transition">
                                 <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>
                               </button>
                               <Play className="w-5 h-5 text-zinc-600 group-hover:text-white transition" />
@@ -372,25 +393,10 @@ const DetailModal: React.FC<DetailModalProps> = ({
                   {!isShow && (
                     <div className="flex flex-col gap-3">
                       <button 
-                        onClick={() => api.playMovie(item.id)}
+                        onClick={() => handlePlayMedia(item.id, 'movie')}
                         className="w-full bg-red-600 hover:bg-red-700 py-4 rounded-xl font-black uppercase tracking-widest text-xs transition active:scale-95 flex items-center justify-center gap-2 shadow-lg shadow-red-900/20"
                       >
                         <Play className="w-4 h-4 fill-current" /> Start Playback
-                      </button>
-                      <button 
-                        onClick={async () => {
-                          try {
-                            const toastId = toast.loading('Generating preview...');
-                            const url = await api.generatePreview(item.id, 'movie');
-                            toast.dismiss(toastId);
-                            setStreamingUrl(url);
-                          } catch (err: any) {
-                            toast.error('Preview generation failed: ' + err.message);
-                          }
-                        }}
-                        className="w-full bg-zinc-800 hover:bg-zinc-700 py-4 rounded-xl font-black uppercase tracking-widest text-xs transition border border-zinc-700 flex items-center justify-center gap-2"
-                      >
-                        <Monitor className="w-4 h-4" /> Preview Media
                       </button>
                     </div>
                   )}
@@ -433,7 +439,7 @@ const DetailModal: React.FC<DetailModalProps> = ({
                       onClick={async () => {
                         try {
                           await api.renameMovie(item.id);
-                          toast.success('Rename started! The file will be reorganized based on your naming template.');
+                          toast.success('Rename started!');
                           loadData();
                         } catch (err: any) {
                           toast.error('Rename failed: ' + err.message);
@@ -442,21 +448,6 @@ const DetailModal: React.FC<DetailModalProps> = ({
                       className="w-full bg-zinc-800 hover:bg-zinc-700 py-4 rounded-xl font-black uppercase tracking-widest text-xs transition border border-zinc-700 flex items-center justify-center gap-2"
                     >
                       <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg> Rename File
-                    </button>
-                  )}
-                  {!isShow && item.imdb_id && (
-                    <button 
-                      onClick={async () => {
-                        try {
-                          await api.searchSubtitles(item.id);
-                          toast.success('Subtitle search triggered! Check your media folder for downloaded .srt files.');
-                        } catch (err: any) {
-                          toast.error('Subtitle search failed: ' + err.message);
-                        }
-                      }}
-                      className="w-full bg-zinc-800 hover:bg-zinc-700 py-4 rounded-xl font-black uppercase tracking-widest text-xs transition border border-zinc-700 flex items-center justify-center gap-2"
-                    >
-                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M7 15h4m-4-4h2m6 4h2M13 7h4"/></svg> Search Subtitles
                     </button>
                   )}
                   {!isShow && (
@@ -481,10 +472,57 @@ const DetailModal: React.FC<DetailModalProps> = ({
         </div>
       </div>
 
+      {showResumeDialog && (
+        <div className="fixed inset-0 z-[150] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setShowResumeDialog(false)} />
+          <div className="relative bg-[#181818] border border-zinc-800 p-8 rounded-2xl max-w-sm w-full shadow-2xl space-y-6">
+            <div className="space-y-2 text-center">
+              <h4 className="text-xl font-black text-white uppercase italic">Resume Playback?</h4>
+              <p className="text-zinc-500 text-sm font-medium">You have a saved position at {Math.floor(resumePosition / 60000)} minutes.</p>
+            </div>
+            <div className="flex flex-col gap-2">
+              <button 
+                onClick={() => {
+                  setStreamingUrl(pendingUrl);
+                  setShowResumeDialog(false);
+                }}
+                className="w-full bg-red-600 hover:bg-red-700 py-3 rounded-xl font-black uppercase text-xs tracking-widest text-white transition"
+              >
+                Resume from Last Spot
+              </button>
+              <button 
+                onClick={() => {
+                  setResumePosition(0);
+                  setStreamingUrl(pendingUrl);
+                  setShowResumeDialog(false);
+                }}
+                className="w-full bg-zinc-800 hover:bg-zinc-700 py-3 rounded-xl font-black uppercase text-xs tracking-widest text-white transition border border-zinc-700"
+              >
+                Start from Beginning
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {streamingUrl && (
         <VideoPlayer 
           url={streamingUrl} 
-          onClose={() => setStreamingUrl(null)} 
+          mediaId={activeMediaId!}
+          mediaType={activeMediaType!}
+          initialPosition={resumePosition}
+          onClose={async () => {
+            setStreamingUrl(null);
+            // Refresh playback status for this item
+            const type = isShow ? 'tv' : 'movie';
+            try {
+              const status = await api.getPlaybackStatus(type, item.id);
+              setPlaybackStatus(status);
+            } catch (e) {
+              console.error("Failed to refresh playback status", e);
+            }
+            loadData();
+          }} 
         />
       )}
     </div>

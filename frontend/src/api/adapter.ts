@@ -176,6 +176,9 @@ export interface TaskUpdate {
   startedAt?: number;
   finishedAt?: number;
   debugInfo?: string;
+  filesNew?: number;      // Added
+  filesHealed?: number;   // Added
+  filesMissing?: number;  // Added
 }
 
 export const api = {

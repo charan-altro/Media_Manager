@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
-import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom'
-import { api, API_BASE, IS_TAURI } from './api/adapter'
+import { BrowserRouter as Router, Routes, Route } from 'react-router-dom'
+import { api, API_BASE, IS_TAURI, type TaskUpdate } from './api/adapter'
 import { listen } from '@tauri-apps/api/event'
 import { Star, Wand2 } from 'lucide-react'
 import toast from 'react-hot-toast'
@@ -19,23 +19,11 @@ import TvShowsPage from './pages/TvShowsPage'
 import TasksPage from './pages/TasksPage'
 import SettingsPage from './pages/SettingsPage'
 
-export interface TaskUpdate {
-  taskId: string;
-  status: string;
-  progress: number;
-  total: number;
-  message: string;
-  startedAt?: number;
-  finishedAt?: number;
-  debugInfo?: string;
-}
-
 function App() {
   const {
     libraries,
     movies,
     tvShows,
-    loading,
     selectedLibrary,
     setSelectedLibrary,
     genreFilter,
@@ -64,6 +52,61 @@ function App() {
   const [showFilterMenu, setShowFilterMenu] = useState(false);
   const [appSettings, setAppSettings] = useState<Record<string, string>>({});
 
+  const loadSettings = async () => {
+    try {
+      const data = await api.getSettings();
+      setAppSettings(data);
+    } catch (err) {
+      console.error('Failed to load settings', err);
+    }
+  };
+
+  const handleTaskUpdate = (update: any) => {
+    // Normalize fields if they come in as snake_case (standard Rust serde default)
+    const normalizedUpdate: TaskUpdate = {
+      ...update,
+      taskId: update.taskId || update.task_id,
+      startedAt: update.startedAt || update.started_at,
+      finishedAt: update.finishedAt || update.finished_at,
+      debugInfo: update.debugInfo || update.debug_info,
+      filesNew: update.filesNew || update.files_new || 0,
+      filesHealed: update.filesHealed || update.files_healed || 0,
+      filesMissing: update.filesMissing || update.files_missing || 0,
+    };
+
+    console.log('Frontend received task update:', normalizedUpdate);
+    setTasks(prev => {
+      const oldStatus = prev[normalizedUpdate.taskId]?.status;
+
+      if (normalizedUpdate.status === 'error' && oldStatus !== 'error') {
+        toast.error(`Task Failed: ${normalizedUpdate.message}`, { duration: 5000 });
+      } else if (normalizedUpdate.status === 'completed' && oldStatus !== 'completed') {
+        toast.success(`Task Completed: ${normalizedUpdate.message}`, { duration: 5000 });
+      }
+
+      return { ...prev, [normalizedUpdate.taskId]: normalizedUpdate };
+    });
+    if (normalizedUpdate.status === 'completed') {
+      setRefreshingIds({}); 
+      setTimeout(loadData, 1000);
+    }
+  };
+
+  const subscribeToTasks = () => {
+    // Fetch initial history
+    api.getTasks().then(initialTasks => {
+      initialTasks.forEach((t: any) => {
+        handleTaskUpdate(t);
+      });
+    }).catch(err => console.error('Failed to fetch initial tasks:', err));
+
+    const eventSource = new EventSource(`${API_BASE}/tasks/stream`);
+    eventSource.onmessage = (event) => {
+      handleTaskUpdate(JSON.parse(event.data));
+    };
+    return () => eventSource.close();
+  }
+
   useEffect(() => {
     loadSettings()
   }, [])
@@ -88,53 +131,6 @@ function App() {
       window.removeEventListener('scroll', handleScroll);
     };
   }, [])
-
-
-  const handleTaskUpdate = (update: TaskUpdate) => {
-    console.log('Frontend received task update:', update);
-    setTasks(prev => {
-      const oldStatus = prev[update.taskId]?.status;
-
-      if (update.status === 'error' && oldStatus !== 'error') {
-        toast.error(`Task Failed: ${update.message}`, { duration: 5000 });
-      } else if (update.status === 'completed' && oldStatus !== 'completed') {
-        toast.success(`Task Completed: ${update.message}`, { duration: 5000 });
-      }
-
-      return { ...prev, [update.taskId]: update };
-    });
-    if (update.status === 'completed') {
-      setRefreshingIds({}); 
-      setTimeout(loadData, 1000);
-    }
-  };
-
-  const loadSettings = async () => {
-    try {
-      const data = await api.getSettings();
-      setAppSettings(data);
-    } catch (err) {
-      console.error('Failed to load settings', err);
-    }
-  };
-
-  const subscribeToTasks = () => {
-    // Fetch initial history
-    api.getTasks().then(initialTasks => {
-      const taskMap: Record<string, TaskUpdate> = {};
-      initialTasks.forEach((t: any) => {
-        const id = t.taskId || t.task_id;
-        if (id) taskMap[id] = { ...t, taskId: id };
-      });
-      setTasks(prev => ({ ...taskMap, ...prev }));
-    }).catch(err => console.error('Failed to fetch initial tasks:', err));
-
-    const eventSource = new EventSource(`${API_BASE}/tasks/stream`);
-    eventSource.onmessage = (event) => {
-      handleTaskUpdate(JSON.parse(event.data));
-    };
-    return () => eventSource.close();
-  }
 
   const handleDownload = async (id: number, type: 'movie' | 'tv') => {
     if (IS_TAURI) {
@@ -175,7 +171,7 @@ function App() {
               tvShowsCount={tvShows.length}
               searchQuery={searchQuery}
               onItemClick={(item) => setSelectedItem(item)}
-              onPlayClick={(item, e) => { e.stopPropagation(); api.playMovie(item.id); }}
+              onPlayClick={(item, e) => { e.stopPropagation(); setSelectedItem(item); }}
               selectedIds={selectedIds}
               selectionMode={selectionMode}
               setSelectionMode={setSelectionMode}
@@ -215,21 +211,27 @@ function App() {
             />
           } />
           <Route path="/tasks" element={<TasksPage tasks={Object.values(tasks)} />} />
-          <Route path="/settings" element={<SettingsPage />} />
+          <Route path="/settings" element={
+            <SettingsPage 
+              appSettings={appSettings}
+              setAppSettings={setAppSettings}
+              libraries={libraries}
+              selectedLibrary={selectedLibrary}
+              setSelectedLibrary={setSelectedLibrary}
+              loadData={loadData}
+            />
+          } />
         </Routes>
 
         {selectedItem && (
           <DetailModal 
             item={selectedItem}
             onClose={() => setSelectedItem(null)}
-            onPlay={() => {
-              if (selectedItem.episodes) api.playEpisode(selectedItem.id);
-              else api.playMovie(selectedItem.id);
-            }}
             onRefresh={() => handleRefreshMetadata(selectedItem)}
-            onProcessAdvanced={() => handleProcessAdvanced(selectedItem)}
-            isRefreshing={refreshingIds[selectedItem.id]}
-            onDownload={() => handleDownload(selectedItem.id, selectedItem.episodes ? 'tv' : 'movie')}
+            onAdvanced={() => handleProcessAdvanced(selectedItem)}
+            onDownload={(id, type) => handleDownload(id, type)}
+            refreshingIds={refreshingIds}
+            loadData={loadData}
           />
         )}
 

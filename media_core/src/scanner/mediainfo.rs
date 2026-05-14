@@ -12,6 +12,7 @@ pub struct MediaDetails {
     pub audio_codec: String,
     pub audio_channels: i32,
     pub size_bytes: i64,
+    pub duration_secs: i32,
 }
 
 fn check_ffprobe() -> Result<()> {
@@ -69,6 +70,7 @@ pub fn get_media_info(path: &Path) -> Result<MediaDetails> {
     let audio_channels = audio_stream.map(|s| s["channels"].as_i64().unwrap_or(0) as i32).unwrap_or(0);
     
     let size_bytes = json["format"]["size"].as_str().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let duration_secs = json["format"]["duration"].as_str().and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0) as i32;
 
     Ok(MediaDetails {
         width,
@@ -77,5 +79,6 @@ pub fn get_media_info(path: &Path) -> Result<MediaDetails> {
         audio_codec,
         audio_channels,
         size_bytes,
+        duration_secs,
     })
 }

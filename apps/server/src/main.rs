@@ -37,6 +37,32 @@ fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
+fn generate_hls_manifest(_stream_id: &str, duration_secs: f64) -> String {
+    let mut manifest = String::from("#EXTM3U\n");
+    manifest.push_str("#EXT-X-VERSION:3\n");
+    manifest.push_str("#EXT-X-TARGETDURATION:10\n");
+    manifest.push_str("#EXT-X-MEDIA-SEQUENCE:0\n");
+    manifest.push_str("#EXT-X-PLAYLIST-TYPE:VOD\n");
+
+    let segment_duration = 10.0;
+    let num_segments = (duration_secs / segment_duration).ceil() as usize;
+
+    for i in 0..num_segments {
+        let remaining = duration_secs - (i as f64 * segment_duration);
+        let current_seg_dur = if remaining < segment_duration {
+            remaining
+        } else {
+            segment_duration
+        };
+
+        manifest.push_str(&format!("#EXTINF:{:.1},\n", current_seg_dur));
+        manifest.push_str(&format!("seg_{:03}.ts\n", i));
+    }
+
+    manifest.push_str("#EXT-X-ENDLIST\n");
+    manifest
+}
+
 #[tokio::main]
 async fn main() {
     dotenvy::dotenv().ok();
@@ -216,6 +242,9 @@ async fn handle_webhook(
                 started_at: Some(now_ms()),
                 finished_at: None,
                 debug_info: Some(format!("Source: {}", source)),
+                files_new: None,
+                files_healed: None,
+                files_missing: None,
             });
 
             let _ = media_core::scanner::worker::scan_library(&pool, &lib, task_id.clone(), &task_manager).await;
@@ -411,6 +440,9 @@ async fn bulk_scrape(State(state): State<Arc<AppState>>, Path(id): Path<i64>) ->
                     finished_at: None,
                     debug_info:
  Some(format!("Scraping {}/{} ({}): {}", i+1, total, m_type, title_clone)),
+                    files_new: None,
+                    files_healed: None,
+                    files_missing: None,
                 });
             }
         }).await;
@@ -424,6 +456,9 @@ async fn bulk_scrape(State(state): State<Arc<AppState>>, Path(id): Path<i64>) ->
             started_at: Some(start_ms),
             finished_at: Some(now_ms()),
             debug_info: None,
+            files_new: None,
+            files_healed: None,
+            files_missing: None,
         });
     });
 
@@ -530,8 +565,10 @@ async fn scrape_batch(State(state): State<Arc<AppState>>, Json(payload): Json<Ba
                     message: format!("Processed: {}", title_clone),
                     started_at: Some(start_ms),
                     finished_at: None,
-                    debug_info:
- Some(format!("Batch Scraper: {} ({})", title_clone, m_type)),
+                    debug_info: Some(format!("Batch Scraper: {} ({})", title_clone, m_type)),
+                    files_new: None,
+                    files_healed: None,
+                    files_missing: None,
                 });
             }
         }).await;
@@ -545,6 +582,9 @@ async fn scrape_batch(State(state): State<Arc<AppState>>, Json(payload): Json<Ba
             started_at: Some(start_ms),
             finished_at: Some(media_core::models::now_ms()),
             debug_info: None,
+            files_new: None,
+            files_healed: None,
+            files_missing: None,
         });
     });
 
@@ -657,6 +697,9 @@ async fn cleanup_batch(State(state): State<Arc<AppState>>, Json(payload): Json<B
                         finished_at: None,
                         debug_info:
  Some(format!("Renaming & Cleaning folder for: {}", movie.title)),
+                        files_new: None,
+                        files_healed: None,
+                        files_missing: None,
                     });
                 }
             }
@@ -704,6 +747,9 @@ async fn cleanup_batch(State(state): State<Arc<AppState>>, Json(payload): Json<B
                     finished_at: None,
                     debug_info:
  Some(format!("Removing duplicate artwork for TV Show ID: {}", id)),
+                    files_new: None,
+                    files_healed: None,
+                    files_missing: None,
                 });
             }
         }
@@ -717,6 +763,9 @@ async fn cleanup_batch(State(state): State<Arc<AppState>>, Json(payload): Json<B
             started_at: Some(start_ms),
             finished_at: Some(media_core::models::now_ms()),
             debug_info: None,
+            files_new: None,
+            files_healed: None,
+            files_missing: None,
         });
     });
 
@@ -883,8 +932,10 @@ async fn refresh_metadata(State(state): State<Arc<AppState>>, Path(id): Path<i64
                 message: format!("Refreshing movie: {}", movie.title),
                 started_at: Some(start_ms),
                 finished_at: None,
-                debug_info:
- Some(format!("Refetching TMDB data for: {}", movie.title)),
+                debug_info: Some(format!("Refetching TMDB data for: {}", movie.title)),
+                files_new: None,
+                files_healed: None,
+                files_missing: None,
             });
 
             let _ = media_core::scraper::scrape_movie(movie.id, &movie.title, movie.year, &clients, &pool, script_path).await;
@@ -900,8 +951,10 @@ async fn refresh_metadata(State(state): State<Arc<AppState>>, Path(id): Path<i64
                     message: format!("Refreshing TV Show: {}", show.title),
                     started_at: Some(start_ms),
                     finished_at: None,
-                    debug_info:
- Some(format!("Refetching TMDB data for TV Show: {}", show.title)),
+                    debug_info: Some(format!("Refetching TMDB data for TV Show: {}", show.title)),
+                    files_new: None,
+                    files_healed: None,
+                    files_missing: None,
                 });
                 let _ = media_core::scraper::scrape_tv_show(show.id, &show.title, &clients, &pool, script_path).await;
             }
@@ -916,7 +969,9 @@ async fn refresh_metadata(State(state): State<Arc<AppState>>, Path(id): Path<i64
             started_at: Some(start_ms),
             finished_at: Some(now_ms()),
             debug_info: None,
-
+            files_new: None,
+            files_healed: None,
+            files_missing: None,
         });
     });
 
@@ -995,6 +1050,9 @@ async fn search_subtitles(State(state): State<Arc<AppState>>, Path(id): Path<i64
                         finished_at: None,
                         debug_info:
  Some(format!("Querying OpenSubtitles by Hash: {}", hash)),
+                        files_new: None,
+                        files_healed: None,
+                        files_missing: None,
                     });
 
                     if let Ok(hash_results) = client.search_by_hash(&hash, "en").await {
@@ -1017,6 +1075,9 @@ async fn search_subtitles(State(state): State<Arc<AppState>>, Path(id): Path<i64
                             finished_at: None,
                             debug_info:
  Some(format!("Querying OpenSubtitles for IMDB: {}", imdb_id)),
+                            files_new: None,
+                            files_healed: None,
+                            files_missing: None,
                         });
 
                         if let Ok(imdb_results) = client.search(&imdb_id, "en").await {
@@ -1042,6 +1103,9 @@ async fn search_subtitles(State(state): State<Arc<AppState>>, Path(id): Path<i64
                                             started_at: Some(start_ms),
                                             finished_at: Some(media_core::models::now_ms()),
                                             debug_info: None,
+                                            files_new: None,
+                                            files_healed: None,
+                                            files_missing: None,
                                             });
 
                                         return;
@@ -1059,6 +1123,9 @@ async fn search_subtitles(State(state): State<Arc<AppState>>, Path(id): Path<i64
                             started_at: Some(start_ms),
                             finished_at: Some(media_core::models::now_ms()),
                             debug_info: None,
+                            files_new: None,
+                            files_healed: None,
+                            files_missing: None,
                         });
                     }
                     None => {
@@ -1072,6 +1139,9 @@ async fn search_subtitles(State(state): State<Arc<AppState>>, Path(id): Path<i64
                             finished_at: None,
                             debug_info:
  None,
+                            files_new: None,
+                            files_healed: None,
+                            files_missing: None,
                         });
                     }
                 }
@@ -1086,6 +1156,9 @@ async fn search_subtitles(State(state): State<Arc<AppState>>, Path(id): Path<i64
                     finished_at: None,
                     debug_info:
  None,
+                    files_new: None,
+                    files_healed: None,
+                    files_missing: None,
                 });
             }
         }
@@ -1311,6 +1384,9 @@ async fn process_movie_advanced(State(state): State<Arc<AppState>>, Path(id): Pa
                         finished_at: None,
                         debug_info:
  Some("Running FFmpeg cropdetect and thumbnail extraction...".to_string()),
+                        files_new: None,
+                        files_healed: None,
+                        files_missing: None,
                     });
 
                     if path.exists() {
@@ -1358,6 +1434,9 @@ async fn process_movie_advanced(State(state): State<Arc<AppState>>, Path(id): Pa
             finished_at: None,
             debug_info:
  None,
+            files_new: None,
+            files_healed: None,
+            files_missing: None,
         });
     });
 
@@ -1405,6 +1484,9 @@ async fn process_tv_show_advanced(State(state): State<Arc<AppState>>, Path(id): 
                     finished_at: None,
                     debug_info:
  Some(format!("FFmpeg deep analysis for: {}", ep.original_name)),
+                    files_new: None,
+                    files_healed: None,
+                    files_missing: None,
                 });
 
                 if let Ok(Some(path)) = db::queries::get_episode_full_path(&pool, ep.id).await {
@@ -1447,6 +1529,9 @@ async fn process_tv_show_advanced(State(state): State<Arc<AppState>>, Path(id): 
             finished_at: None,
             debug_info:
  None,
+            files_new: None,
+            files_healed: None,
+            files_missing: None,
         });
     });
 
@@ -1489,6 +1574,9 @@ async fn process_library_advanced(State(state): State<Arc<AppState>>, Path(id): 
                         finished_at: None,
                         debug_info:
  Some(format!("Analyzing: {}", movie.title)),
+                        files_new: None,
+                        files_healed: None,
+                        files_missing: None,
                     });
 
                     let input_path = media_core::paths::make_absolute(&file.file_path, &lib_root);
@@ -1538,6 +1626,9 @@ async fn process_library_advanced(State(state): State<Arc<AppState>>, Path(id): 
                             finished_at: None,
                             debug_info:
  Some(format!("Analyzing: {} - {}", show.title, ep.original_name)),
+                            files_new: None,
+                            files_healed: None,
+                            files_missing: None,
                         });
 
                         let input_path = media_core::paths::make_absolute(&ep.file_path, &lib_root);
@@ -1576,6 +1667,9 @@ async fn process_library_advanced(State(state): State<Arc<AppState>>, Path(id): 
             started_at: Some(start_ms),
             finished_at: Some(media_core::models::now_ms()),
             debug_info: None,
+            files_new: None,
+            files_healed: None,
+            files_missing: None,
         });
     });
 
@@ -1729,18 +1823,18 @@ async fn get_playback_status(State(state): State<Arc<AppState>>, Path((m_type, i
         .fetch_optional(&state.pool)
         .await
         .unwrap_or_default();
-    
+
     match res {
         Some((pos, dur, finished)) => Json(serde_json::json!({ "position_ms": pos, "duration_ms": dur, "is_finished": finished })).into_response(),
-        None => StatusCode::NOT_FOUND.into_response(),
+        None => Json(serde_json::json!({ "position_ms": 0, "duration_ms": 0, "is_finished": false })).into_response(),
     }
 }
-
 async fn start_movie_stream(State(state): State<Arc<AppState>>, Path(id): Path<i64>) -> impl IntoResponse {
     tracing::info!("HLS Stream requested for movie ID: {}", id);
     if let Ok(Some(path)) = db::queries::get_movie_full_path(&state.pool, MovieId(id)).await {
         tracing::debug!("Found path for streaming: {:?}", path);
         let stream_id = format!("movie_{}", id);
+
         match state.stream_manager.start_hls(&stream_id, &path).await {
             Ok(_) => {
                 tracing::info!("HLS Stream started successfully for {}", stream_id);
@@ -1760,8 +1854,11 @@ async fn start_movie_stream(State(state): State<Arc<AppState>>, Path(id): Path<i
 async fn start_episode_stream(State(state): State<Arc<AppState>>, Path(id): Path<i64>) -> impl IntoResponse {
     if let Ok(Some(path)) = db::queries::get_episode_full_path(&state.pool, EpisodeId(id)).await {
         let stream_id = format!("episode_{}", id);
+
         match state.stream_manager.start_hls(&stream_id, &path).await {
-            Ok(_) => (StatusCode::OK, Json(format!("/api/stream/hls/{}/playlist.m3u8", stream_id))).into_response(),
+            Ok(_) => {
+                (StatusCode::OK, Json(format!("/api/stream/hls/{}/playlist.m3u8", stream_id))).into_response()
+            },
             Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         }
     } else {
@@ -1770,11 +1867,128 @@ async fn start_episode_stream(State(state): State<Arc<AppState>>, Path(id): Path
 }
 
 async fn serve_stream_file(
-    State(_state): State<Arc<AppState>>,
+    State(state): State<Arc<AppState>>,
     Path((id, file)): Path<(String, String)>
 ) -> impl IntoResponse {
-    let base_dir = PathBuf::from("transcodes").join(&id);
+    tracing::info!("Stream file requested: {}/{}", id, file);
+
+    if file == "playlist.m3u8" {
+        let (m_type, m_id) = if id.starts_with("movie_") {
+            ("movie", id.strip_prefix("movie_").unwrap().parse::<i64>().unwrap_or(0))
+        } else if id.starts_with("episode_") {
+            ("episode", id.strip_prefix("episode_").unwrap().parse::<i64>().unwrap_or(0))
+        } else {
+            ("", 0)
+        };
+
+        if m_id > 0 {
+            let mut duration: Option<i32> = if m_type == "movie" {
+                sqlx::query_scalar("SELECT duration_secs FROM movie_files WHERE movie_id = ?")
+                    .bind(m_id)
+                    .fetch_optional(&state.pool)
+                    .await
+                    .unwrap_or(None)
+            } else {
+                sqlx::query_scalar("SELECT duration_secs FROM episodes WHERE id = ?")
+                    .bind(m_id)
+                    .fetch_optional(&state.pool)
+                    .await
+                    .unwrap_or(None)
+            };
+
+            // Fallback to ffprobe if duration missing or zero in DB
+            if duration.unwrap_or(0) <= 0 {
+                tracing::info!("Duration for {} is {} in DB, attempting ffprobe fallback...", id, duration.unwrap_or(0));
+                let path = if m_type == "movie" {
+                    db::queries::get_movie_full_path(&state.pool, MovieId(m_id)).await.ok().flatten()
+                } else {
+                    db::queries::get_episode_full_path(&state.pool, EpisodeId(m_id)).await.ok().flatten()
+                };
+
+                if let Some(p) = path {
+                    tracing::info!("FFprobe fallback: checking file {:?}", p);
+                    match media_core::scanner::mediainfo::get_media_info(&p) {
+                        Ok(info) => {
+                            let found_dur = info.duration_secs as i32;
+                            tracing::info!("FFprobe found duration: {}s for {:?}", found_dur, p);
+                            if found_dur > 0 {
+                                duration = Some(found_dur);
+                                // Update DB so we don't have to ffprobe every time
+                                let pool = state.pool.clone();
+                                let m_type_clone = m_type.to_string();
+                                tokio::spawn(async move {
+                                    if m_type_clone == "movie" {
+                                        let _ = sqlx::query("UPDATE movie_files SET duration_secs = ? WHERE movie_id = ?")
+                                            .bind(found_dur)
+                                            .bind(m_id)
+                                            .execute(&pool)
+                                            .await;
+                                    } else {
+                                        let _ = sqlx::query("UPDATE episodes SET duration_secs = ? WHERE id = ?")
+                                            .bind(found_dur)
+                                            .bind(m_id)
+                                            .execute(&pool)
+                                            .await;
+                                    }
+                                });
+                            }
+                        },
+                        Err(e) => {
+                            tracing::error!("FFprobe fallback failed for {:?}: {}", p, e);
+                        }
+                    }
+                } else {
+                    tracing::error!("FFprobe fallback failed: could not resolve path for {} ID {}", m_type, m_id);
+                }
+            }
+
+            if let Some(dur) = duration {
+                tracing::info!("Generating in-memory manifest for {} ({}s)", id, dur);
+                let manifest = generate_hls_manifest(&id, dur as f64);
+                return (
+                    [(header::CONTENT_TYPE, "application/vnd.apple.mpegurl")],
+                    manifest,
+                ).into_response();
+            } else {
+                tracing::warn!("Could not determine duration for {}, manifest generation failed", id);
+            }
+        }
+    }
+
+    // Use configured transcode directory
+    let transcode_dir = media_core::config::get_hls_transcode_dir();
+    let base_dir = PathBuf::from(&transcode_dir).join(&id);
     let file_path = base_dir.join(&file);
+
+    if file.ends_with(".ts") {
+        // Extract segment index
+        let segment_index = file
+            .strip_prefix("seg_")
+            .and_then(|s| s.strip_suffix(".ts"))
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(0);
+
+        let m_path = if id.starts_with("movie_") {
+            let m_id = id.strip_prefix("movie_").unwrap().parse::<i64>().unwrap_or(0);
+            db::queries::get_movie_full_path(&state.pool, MovieId(m_id)).await.ok().flatten()
+        } else if id.starts_with("episode_") {
+            let e_id = id.strip_prefix("episode_").unwrap().parse::<i64>().unwrap_or(0);
+            db::queries::get_episode_full_path(&state.pool, EpisodeId(e_id)).await.ok().flatten()
+        } else {
+            None
+        };
+
+        if let Some(path) = m_path {
+            let _ = state.stream_manager.request_segment(&id, &path, segment_index).await;
+        }
+
+        // Long Polling
+        let mut attempts = 0;
+        while !file_path.exists() && attempts < 40 {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            attempts += 1;
+        }
+    }
 
     if !file_path.exists() {
         return (StatusCode::NOT_FOUND, "Stream file not found").into_response();

@@ -211,7 +211,12 @@ async fn scrape_batch(ids: Vec<i64>, media_type: String, state: State<'_, AppSta
                     total,
                     message: format!("Processed: {}", title_clone),
                     started_at: Some(start_ms),
-                    debug_info: None, finished_at: None });
+                    debug_info: None,
+                    finished_at: None,
+                    files_new: None,
+                    files_healed: None,
+                    files_missing: None,
+                });
             }
         }).await;
 
@@ -224,6 +229,7 @@ async fn scrape_batch(ids: Vec<i64>, media_type: String, state: State<'_, AppSta
             started_at: Some(start_ms),
             debug_info: None,
             finished_at: Some(now_ms()),
+            ..Default::default()
         });
     });
 
@@ -277,11 +283,24 @@ async fn cleanup_batch(ids: Vec<i64>, media_type: String, state: State<'_, AppSt
                         total,
                         message: format!("Cleaned: {}", movie.title),
                         started_at: Some(start_ms),
-                        debug_info: None, finished_at: None });
+                        debug_info: None, 
+                        finished_at: None,
+                        ..Default::default()
+                    });
                 }
             }
         }
-        task_manager.broadcast(TaskUpdate { task_id, status: "completed".to_string(), progress: total, total, message: "Batch cleanup completed".to_string(), started_at: Some(start_ms), debug_info: None, finished_at: None });
+        task_manager.broadcast(TaskUpdate { 
+            task_id, 
+            status: "completed".to_string(), 
+            progress: total, 
+            total, 
+            message: "Batch cleanup completed".to_string(), 
+            started_at: Some(start_ms), 
+            debug_info: None, 
+            finished_at: None,
+            ..Default::default()
+        });
     });
 
     Ok("Batch cleanup started".to_string())
@@ -330,7 +349,17 @@ async fn refresh_metadata(id: i64, state: State<'_, AppState>) -> Result<(), Str
             let _ = media_core::scraper::scrape_tv_show(show.id, &show.title, &clients, &pool, script_path).await;
         }
     }
-    task_manager.broadcast(TaskUpdate { task_id, status: "completed".to_string(), progress: 1, total: 1, message: "Metadata refresh complete".to_string(), started_at: Some(start_ms), debug_info: None, finished_at: None });
+    task_manager.broadcast(TaskUpdate { 
+        task_id, 
+        status: "completed".to_string(), 
+        progress: 1, 
+        total: 1, 
+        message: "Metadata refresh complete".to_string(), 
+        started_at: Some(start_ms), 
+        debug_info: None, 
+        finished_at: None,
+        ..Default::default()
+    });
 
     Ok(())
 }
@@ -460,6 +489,7 @@ async fn bulk_scrape(id: i64, state: State<'_, AppState>) -> Result<String, Stri
                         started_at: Some(start_ms),
                         debug_info: None,
                         finished_at: None,
+                        ..Default::default()
                     });
                 }
             }).await;
@@ -471,7 +501,10 @@ async fn bulk_scrape(id: i64, state: State<'_, AppState>) -> Result<String, Stri
                 total,
                 message: "Bulk scrape completed".to_string(),
                 started_at: Some(start_ms),
-                debug_info: None, finished_at: None });
+                debug_info: None, 
+                finished_at: None,
+                ..Default::default()
+            });
         });
         Ok("Bulk scrape started".to_string())
     } else {
@@ -567,7 +600,17 @@ async fn search_subtitles(id: i64, state: State<'_, AppState>) -> Result<(), Str
                 }
             }
         }
-        let _ = task_manager.broadcast(TaskUpdate { task_id, status: "completed".to_string(), progress: 1, total: 1, message: "Subtitle search finished".to_string(), started_at: Some(start_ms), debug_info: None, finished_at: None });
+        let _ = task_manager.broadcast(TaskUpdate { 
+            task_id, 
+            status: "completed".to_string(), 
+            progress: 1, 
+            total: 1, 
+            message: "Subtitle search finished".to_string(), 
+            started_at: Some(start_ms), 
+            debug_info: None, 
+            finished_at: None,
+            ..Default::default()
+        });
     });
     Ok(())
 }
@@ -590,7 +633,7 @@ async fn process_movie_advanced(id: i64, state: State<'_, AppState>) -> Result<(
                     total: 1,
                     message: format!("Analyzing: {}", movie.title),
                     started_at: Some(start_ms),
-                    debug_info: None, finished_at: None });
+                    debug_info: None, finished_at: None, ..Default::default() });
                 let input_path = std::path::PathBuf::from(&file.file_path);
                 if input_path.exists() {
                     let folder = input_path.parent().unwrap();
@@ -602,7 +645,7 @@ async fn process_movie_advanced(id: i64, state: State<'_, AppState>) -> Result<(
                 }
             }
         }
-        let _ = task_manager.broadcast(TaskUpdate { task_id, status: "completed".to_string(), progress: 1, total: 1, message: "Advanced analysis complete".to_string(), started_at: Some(start_ms), debug_info: None, finished_at: None });
+        let _ = task_manager.broadcast(TaskUpdate { task_id, status: "completed".to_string(), progress: 1, total: 1, message: "Advanced analysis complete".to_string(), started_at: Some(start_ms), debug_info: None, finished_at: None, ..Default::default() });
     });
     Ok(())
 }
@@ -631,7 +674,7 @@ async fn process_tv_show_advanced(id: i64, state: State<'_, AppState>) -> Result
                 }
             }
         }
-        let _ = task_manager.broadcast(TaskUpdate { task_id, status: "completed".to_string(), progress: 1, total: 1, message: "TV analysis complete".to_string(), started_at: Some(start_ms), debug_info: None, finished_at: None });
+        let _ = task_manager.broadcast(TaskUpdate { task_id, status: "completed".to_string(), progress: 1, total: 1, message: "TV analysis complete".to_string(), started_at: Some(start_ms), debug_info: None, finished_at: None, ..Default::default() });
     });
     Ok(())
 }
@@ -660,7 +703,7 @@ async fn process_library_advanced(id: i64, state: State<'_, AppState>) -> Result
                 }
             }
         }
-        let _ = task_manager.broadcast(TaskUpdate { task_id, status: "completed".to_string(), progress: 1, total: 1, message: "Library analysis complete".to_string(), started_at: Some(start_ms), debug_info: None, finished_at: None });
+        let _ = task_manager.broadcast(TaskUpdate { task_id, status: "completed".to_string(), progress: 1, total: 1, message: "Library analysis complete".to_string(), started_at: Some(start_ms), debug_info: None, finished_at: None, ..Default::default() });
     });
     Ok(())
 }
@@ -791,7 +834,7 @@ async fn copy_with_progress(
                 total: 100,
                 message: format!("Downloading: {} ({}%)", src.file_name().unwrap_or_default().to_string_lossy(), progress),
                 started_at: Some(start_ms),
-                debug_info: None, finished_at: None });
+                debug_info: None, finished_at: None, ..Default::default() });
             last_report = std::time::Instant::now();
         }
     }
@@ -850,7 +893,7 @@ async fn download_to_local(id: i64, media_type: String, dest_path: String, state
                 total: 100,
                 message: format!("Downloading: {}", src_clone.file_name().unwrap_or_default().to_string_lossy()),
                 started_at: Some(start_ms),
-                debug_info: None, finished_at: None });
+                debug_info: None, finished_at: None, ..Default::default() });
 
             match copy_with_progress(&src_clone, &dest_clone, task_manager_clone.clone(), task_id_clone.clone(), start_ms).await {
                 Ok(_) => {
@@ -861,7 +904,7 @@ async fn download_to_local(id: i64, media_type: String, dest_path: String, state
                         total: 100,
                         message: format!("Download completed: {}", src_clone.file_name().unwrap_or_default().to_string_lossy()),
                         started_at: Some(start_ms),
-                        debug_info: None, finished_at: None });
+                        debug_info: None, finished_at: None, ..Default::default() });
                 }
                 Err(e) => {
                     task_manager_clone.broadcast(TaskUpdate {
@@ -871,7 +914,7 @@ async fn download_to_local(id: i64, media_type: String, dest_path: String, state
                         total: 100,
                         message: format!("Download failed: {}", e),
                         started_at: Some(start_ms),
-                        debug_info: None, finished_at: None });
+                        debug_info: None, finished_at: None, ..Default::default() });
                 }
             }
         });

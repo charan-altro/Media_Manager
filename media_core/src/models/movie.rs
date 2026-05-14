@@ -48,6 +48,7 @@ pub struct MovieFile {
     pub last_scanned: Option<String>,
     pub preview_path: Option<String>,
     pub aspect_ratio: Option<String>,
+    pub duration_secs: Option<i32>,
     pub thumbnail_path: Option<String>,
     pub mtime: Option<i64>,
     pub created_at: String,

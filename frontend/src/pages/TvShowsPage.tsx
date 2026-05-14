@@ -84,4 +84,4 @@ const TvShowsPage: React.FC<TvShowsPageProps> = (props) => {
   );
 };
 
-export default TvShowsPage;
+export default React.memo(TvShowsPage);

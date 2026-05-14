@@ -118,6 +118,7 @@ pub async fn upsert_episode<'c, E>(
     mtime: Option<i64>,
     resolution: Option<crate::models::Resolution>,
     codec: Option<&str>,
+    duration_secs: Option<i32>,
     hash: Option<&str>,
     fingerprint: Option<&str>
 ) -> Result<EpisodeId> 
@@ -125,13 +126,14 @@ where E: sqlx::Executor<'c, Database = sqlx::Sqlite> {
     let normalized_path = crate::paths::normalize_slashes(file_path);
     let row: (EpisodeId,) = sqlx::query_as(
         r#"
-        INSERT INTO episodes (season_id, episode_number, file_path, original_name, size_bytes, mtime, resolution, codec, hash, fingerprint, is_missing, last_scanned)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, datetime('now'))
+        INSERT INTO episodes (season_id, episode_number, file_path, original_name, size_bytes, mtime, resolution, codec, duration_secs, hash, fingerprint, is_missing, last_scanned)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, datetime('now'))
         ON CONFLICT(file_path) DO UPDATE SET 
             size_bytes = excluded.size_bytes,
             mtime = excluded.mtime,
             resolution = excluded.resolution,
             codec = excluded.codec,
+            duration_secs = excluded.duration_secs,
             hash = excluded.hash,
             fingerprint = excluded.fingerprint,
             is_missing = 0,
@@ -148,6 +150,7 @@ where E: sqlx::Executor<'c, Database = sqlx::Sqlite> {
     .bind(mtime)
     .bind(resolution)
     .bind(codec)
+    .bind(duration_secs)
     .bind(hash)
     .bind(fingerprint)
     .fetch_one(executor)
@@ -165,6 +168,7 @@ pub async fn upsert_movie_file<'c, E>(
     mtime: Option<i64>,
     resolution: Option<crate::models::Resolution>,
     codec: Option<&str>,
+    duration_secs: Option<i32>,
     hash: Option<&str>,
     fingerprint: Option<&str>
 ) -> Result<MovieFileId> 
@@ -172,13 +176,14 @@ where E: sqlx::Executor<'c, Database = sqlx::Sqlite> {
     let normalized_path = crate::paths::normalize_slashes(file_path);
     let row: (MovieFileId,) = sqlx::query_as(
         r#"
-        INSERT INTO movie_files (movie_id, file_path, original_name, size_bytes, mtime, resolution, codec, hash, fingerprint, is_missing, last_scanned)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, datetime('now'))
+        INSERT INTO movie_files (movie_id, file_path, original_name, size_bytes, mtime, resolution, codec, duration_secs, hash, fingerprint, is_missing, last_scanned)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, datetime('now'))
         ON CONFLICT(file_path) DO UPDATE SET 
             size_bytes=excluded.size_bytes,
             mtime=excluded.mtime,
             resolution=excluded.resolution,
             codec=excluded.codec,
+            duration_secs=excluded.duration_secs,
             hash=excluded.hash,
             fingerprint=excluded.fingerprint,
             is_missing=0,
@@ -194,6 +199,7 @@ where E: sqlx::Executor<'c, Database = sqlx::Sqlite> {
     .bind(mtime)
     .bind(resolution)
     .bind(codec)
+    .bind(duration_secs)
     .bind(hash)
     .bind(fingerprint)
     .fetch_one(executor)

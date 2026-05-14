@@ -25,6 +25,13 @@ struct ParsedFile {
     media_info: Option<crate::scanner::mediainfo::MediaDetails>,
 }
 
+enum ProcessAction {
+    Added,
+    Healed,
+    Updated,
+    Skipped,
+}
+
 pub async fn scan_library(
     pool: &SqlitePool,
     library: &Library,
@@ -42,13 +49,16 @@ pub async fn scan_library(
             started_at: None,
             finished_at: None,
             debug_info: None,
+            files_new: Some(0),
+            files_healed: Some(0),
+            files_missing: Some(0),
         });
         return Ok(());
     }
 
     // Use a wrapper to ensure we always unlock
     let result = scan_library_internal(pool, library, &task_id, tx).await;
-    
+
     tx.unlock_library_scan(library.id).await;
     result
 }
@@ -66,6 +76,10 @@ async fn scan_library_internal(
 
     tracing::info!("Starting scan for library '{}' at path '{}'", library.name, library.path);
 
+    let mut files_new = 0;
+    let mut files_healed = 0;
+    let mut files_missing = 0;
+
     tx.broadcast(TaskUpdate {
         task_id: task_id.to_string(),
         status: "running".to_string(),
@@ -75,8 +89,10 @@ async fn scan_library_internal(
         started_at: start_time,
         finished_at: None,
         debug_info: None,
+        files_new: Some(files_new),
+        files_healed: Some(files_healed),
+        files_missing: Some(files_missing),
     });
-
     let skip_dirs: HashSet<&str> = HashSet::from([
         ".git", "node_modules", ".actors", "@eaDir", "#recycle", 
         "System Volume Information", "$RECYCLE.BIN", "Config.Msi", "$Recycle.Bin"
@@ -94,8 +110,10 @@ async fn scan_library_internal(
             message: msg,
             started_at: start_time,
             finished_at: None,
-            debug_info:
- None,
+            debug_info: None,
+            files_new: Some(0),
+            files_healed: Some(0),
+            files_missing: Some(0),
         });
         return Ok(());
     }
@@ -111,7 +129,7 @@ async fn scan_library_internal(
         .filter_entry(|e| !skip_dirs.contains(e.file_name().to_str().unwrap_or("")))
     {
         total_visited += 1;
-        
+
         // Provide feedback every 5 seconds or every 5000 items
         if last_feedback.elapsed().as_secs() >= 5 || total_visited % 5000 == 0 {
             tx.broadcast(TaskUpdate {
@@ -122,8 +140,10 @@ async fn scan_library_internal(
                 message: format!("Walking directory... visited {} items ({} videos found)", total_visited, files.len()),
                 started_at: start_time,
                 finished_at: None,
-                debug_info:
- None,
+                debug_info: None,
+                files_new: Some(files_new),
+                files_healed: Some(files_healed),
+                files_missing: Some(files_missing),
             });
             last_feedback = std::time::Instant::now();
         }
@@ -153,6 +173,9 @@ async fn scan_library_internal(
         started_at: start_time,
         finished_at: None,
         debug_info: None,
+        files_new: Some(files_new),
+        files_healed: Some(files_healed),
+        files_missing: Some(files_missing),
     });
 
     if total == 0 {
@@ -165,6 +188,9 @@ async fn scan_library_internal(
             started_at: start_time,
             finished_at: Some(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64),
             debug_info: None,
+            files_new: Some(0),
+            files_healed: Some(0),
+            files_missing: Some(0),
             });
 
         return Ok(());
@@ -204,9 +230,9 @@ async fn scan_library_internal(
                     .map(|d| d.as_secs() as i64)
                     .unwrap_or(0);
                 let size = metadata.map(|m| m.len() as i64).unwrap_or(0);
-                
+
                 let relative_path = crate::paths::make_relative(path, library_root).unwrap_or_default();
-                
+
                 // Fast-Skip Check
                 if let Some((db_size, db_mtime)) = existing_files.get(&relative_path) {
                     if *db_size == size && *db_mtime == mtime {
@@ -248,9 +274,21 @@ async fn scan_library_internal(
 
     // Write to DB sequentially (async IO)
     for (i, item) in parsed.iter().enumerate() {
-        let result = process_file(pool, library, &item).await;
-        if let Err(e) = result {
-            tracing::error!("Failed to process file {:?}: {}", item.path, e);
+        // Pass existing_files to determine if it's new
+        let library_root = Path::new(&library.path);
+        let relative_path = crate::paths::make_relative(&item.path, library_root).unwrap_or_default();
+        let is_known = existing_files.contains_key(&relative_path);
+
+        let result = process_file(pool, library, &item, is_known).await;
+        match result {
+            Ok(action) => match action {
+                ProcessAction::Added => files_new += 1,
+                ProcessAction::Healed => files_healed += 1,
+                _ => {}
+            },
+            Err(e) => {
+                tracing::error!("Failed to process file {:?}: {}", item.path, e);
+            }
         }
 
         let progress = (i + 1) as i32;
@@ -264,10 +302,59 @@ async fn scan_library_internal(
                     item.path.file_name().and_then(|s| s.to_str()).unwrap_or("")),
                 started_at: start_time,
                 finished_at: None,
-                debug_info:
- Some(format!("Analyzing: {:?}", item.path)),
+                debug_info: Some(format!("Analyzing: {:?}", item.path)),
+                files_new: Some(files_new),
+                files_healed: Some(files_healed),
+                files_missing: Some(files_missing),
             });
         }
+    }
+
+    // 3. Missing File Pass
+    tracing::info!("Starting missing file pass for library '{}'", library.name);
+    tx.broadcast(TaskUpdate {
+        task_id: task_id.to_string(),
+        status: "running".to_string(),
+        progress: total,
+        total,
+        message: "Identifying missing files...".to_string(),
+        started_at: start_time,
+        finished_at: None,
+        debug_info: None,
+        files_new: Some(files_new),
+        files_healed: Some(files_healed),
+        files_missing: Some(files_missing),
+    });
+
+    if library.media_type == MediaType::Movie {
+        // Mark files as missing if they weren't scanned this time
+        let rows = sqlx::query(
+            r#"
+            UPDATE movie_files
+            SET is_missing = 1
+            WHERE movie_id IN (SELECT id FROM movies WHERE library_id = ?)
+            AND last_scanned < datetime('now', '-1 minute')
+            RETURNING id
+            "#
+        )
+        .bind(library.id)
+        .fetch_all(pool)
+        .await?;
+        files_missing = rows.len() as i32;
+    } else {
+        let rows = sqlx::query(
+            r#"
+            UPDATE episodes
+            SET is_missing = 1
+            WHERE season_id IN (SELECT s.id FROM seasons s JOIN tv_shows t ON s.show_id = t.id WHERE t.library_id = ?)
+            AND last_scanned < datetime('now', '-1 minute')
+            RETURNING id
+            "#
+        )
+        .bind(library.id)
+        .fetch_all(pool)
+        .await?;
+        files_missing = rows.len() as i32;
     }
 
     tx.broadcast(TaskUpdate {
@@ -275,17 +362,21 @@ async fn scan_library_internal(
         status: "completed".to_string(),
         progress: total,
         total,
-        message: format!("Library scan complete. {} files processed.", total),
+        message: format!("Library scan complete. {} new, {} healed, {} missing.", files_new, files_healed, files_missing),
         started_at: start_time,
         finished_at: Some(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64),
         debug_info: None,
+        files_new: Some(files_new),
+        files_healed: Some(files_healed),
+        files_missing: Some(files_missing),
     });
 
-    tracing::info!("Scan complete for library '{}'", library.name);
+    tracing::info!("Scan complete for library '{}': {} new, {} healed, {} missing", 
+        library.name, files_new, files_healed, files_missing);
     Ok(())
 }
 
-async fn process_file(pool: &SqlitePool, library: &Library, item: &ParsedFile) -> Result<()> {
+async fn process_file(pool: &SqlitePool, library: &Library, item: &ParsedFile, is_known: bool) -> Result<ProcessAction> {
     let library_root = Path::new(&library.path);
     let relative_path = crate::paths::make_relative(&item.path, library_root)?;
     let filename = item.path.file_name().and_then(|s| s.to_str()).unwrap_or("");
@@ -296,12 +387,12 @@ async fn process_file(pool: &SqlitePool, library: &Library, item: &ParsedFile) -
         if library.media_type == MediaType::Movie {
             if let Ok(Some(existing)) = db::queries::get_movie_file_by_path(pool, &relative_path).await {
                 db::queries::update_movie_file_last_scanned(pool, existing.id).await?;
-                return Ok(());
+                return Ok(ProcessAction::Skipped);
             }
         } else {
             if let Ok(Some(existing)) = db::queries::get_episode_by_path(pool, &relative_path).await {
                 db::queries::update_episode_last_scanned(pool, existing.id).await?;
-                return Ok(());
+                return Ok(ProcessAction::Skipped);
             }
         }
     }
@@ -317,10 +408,10 @@ async fn process_file(pool: &SqlitePool, library: &Library, item: &ParsedFile) -
                     if !old_path.exists() {
                         tracing::info!("File moved detected (healing): {} -> {}", existing.file_path, relative_path);
                         db::queries::update_movie_file_path(pool, existing.id, &relative_path).await?;
-                        return Ok(());
+                        return Ok(ProcessAction::Healed);
                     } else {
                         tracing::debug!("Duplicate file ignored (same fingerprint): {}", relative_path);
-                        return Ok(());
+                        return Ok(ProcessAction::Skipped);
                     }
                 }
             }
@@ -331,15 +422,16 @@ async fn process_file(pool: &SqlitePool, library: &Library, item: &ParsedFile) -
                     if !old_path.exists() {
                         tracing::info!("File moved detected (healing): {} -> {}", existing.file_path, relative_path);
                         db::queries::update_episode_path(pool, existing.id, &relative_path).await?;
-                        return Ok(());
+                        return Ok(ProcessAction::Healed);
                     } else {
                         tracing::debug!("Duplicate episode ignored: {}", relative_path);
-                        return Ok(());
+                        return Ok(ProcessAction::Skipped);
                     }
                 }
             }
         }
     }
+
 
     if library.media_type == MediaType::Movie {
         let mut title = item.parsed.title.clone();
@@ -359,12 +451,13 @@ async fn process_file(pool: &SqlitePool, library: &Library, item: &ParsedFile) -
         // Extract technical info (from pre-calculated item)
         let res = item.media_info.as_ref().map(|i| crate::models::Resolution::from_dimensions(i.width, i.height));
         let codec = item.media_info.as_ref().map(|i| i.video_codec.as_str());
+        let duration = item.media_info.as_ref().map(|i| i.duration_secs);
 
         // Upsert the movie record (no duplicates on rescan)
         let movie_id = db::queries::upsert_movie(pool, library.id, &title, year).await?;
 
         // Always track the file path (store as relative)
-        db::queries::upsert_movie_file(pool, movie_id, &relative_path, filename, item.size, Some(item.mtime), res, codec, None, item.fingerprint.as_deref()).await?;
+        db::queries::upsert_movie_file(pool, movie_id, &relative_path, filename, item.size, Some(item.mtime), res, codec, duration, None, item.fingerprint.as_deref()).await?;
 
         // If NFO has IDs or we have local artwork, update the movie
         let mut tmdb_id: Option<i32> = None;
@@ -520,8 +613,9 @@ async fn process_file(pool: &SqlitePool, library: &Library, item: &ParsedFile) -
         // Extract technical info (from pre-calculated item)
         let res = item.media_info.as_ref().map(|i| crate::models::Resolution::from_dimensions(i.width, i.height));
         let codec = item.media_info.as_ref().map(|i| i.video_codec.as_str());
+        let duration = item.media_info.as_ref().map(|i| i.duration_secs);
 
-        db::queries::upsert_episode(pool, season_id, ep_num, &relative_path, filename, item.size, Some(item.mtime), res, codec, None, item.fingerprint.as_deref()).await?;
+        db::queries::upsert_episode(pool, season_id, ep_num, &relative_path, filename, item.size, Some(item.mtime), res, codec, duration, None, item.fingerprint.as_deref()).await?;
 
         // Update show metadata from tvshow.nfo if available
         if let Some(ref nfo) = item.metadata.tv_nfo {
@@ -588,7 +682,11 @@ async fn process_file(pool: &SqlitePool, library: &Library, item: &ParsedFile) -
         }
     }
 
-    Ok(())
+    if is_known {
+        Ok(ProcessAction::Updated)
+    } else {
+        Ok(ProcessAction::Added)
+    }
 }
 
 fn is_video_file(path: &Path) -> bool {
@@ -640,9 +738,21 @@ pub async fn scan_single_file(
         started_at: None,
         finished_at: None,
         debug_info: None,
+        files_new: Some(0),
+        files_healed: Some(0),
+        files_missing: Some(0),
     });
 
-    if let Err(e) = process_file(pool, library, &item).await {
+    let library_root = Path::new(&library.path);
+    let relative_path = crate::paths::make_relative(&item.path, library_root).unwrap_or_default();
+    
+    let is_known = if library.media_type == MediaType::Movie {
+        db::queries::get_movie_file_by_path(pool, &relative_path).await?.is_some()
+    } else {
+        db::queries::get_episode_by_path(pool, &relative_path).await?.is_some()
+    };
+
+    if let Err(e) = process_file(pool, library, &item, is_known).await {
         tracing::error!("Failed to process single file {:?}: {}", item.path, e);
     }
 
@@ -655,6 +765,9 @@ pub async fn scan_single_file(
         started_at: None,
         finished_at: Some(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64),
         debug_info: None,
+        files_new: Some(if is_known { 0 } else { 1 }),
+        files_healed: Some(0),
+        files_missing: Some(0),
     });
 
 

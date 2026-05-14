@@ -85,4 +85,4 @@ const MoviesPage: React.FC<MoviesPageProps> = (props) => {
   );
 };
 
-export default MoviesPage;
+export default React.memo(MoviesPage);

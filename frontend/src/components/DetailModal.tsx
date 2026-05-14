@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { X, Star, Play, Calendar, Clock, Monitor, Cpu, CheckCircle2, RefreshCw } from 'lucide-react';
+import { X, Star, Play, Calendar, Clock, Monitor, Cpu, CheckCircle2, RefreshCw, Loader2 } from 'lucide-react';
 import { getImageUrl, api } from '../api/adapter';
 import toast from 'react-hot-toast';
 import VideoPlayer from './VideoPlayer';
@@ -23,6 +23,7 @@ const DetailModal: React.FC<DetailModalProps> = ({
   const [episodes, setEpisodes] = useState<Record<number, any[]>>({});
   const [playbackStatus, setPlaybackStatus] = useState<any>(null);
   
+  const [isStartingStream, setIsStartingStream] = useState(false);
   const [streamingUrl, setStreamingUrl] = useState<string | null>(null);
   const [activeMediaId, setActiveMediaId] = useState<number | null>(null);
   const [activeMediaType, setActiveMediaType] = useState<'movie' | 'episode' | null>(null);
@@ -33,13 +34,14 @@ const DetailModal: React.FC<DetailModalProps> = ({
   const isShow = 'library_id' in item && !('runtime' in item);
 
   const handlePlayMedia = async (mediaId: number, mediaType: 'movie' | 'episode') => {
+    if (isStartingStream) return;
+    setIsStartingStream(true);
     try {
       const status = await api.getPlaybackStatus(mediaType, mediaId);
-      const url = await api.generatePreview(mediaId, mediaType);
-      
+      const url = await api.startStreaming(mediaId, mediaType);
+
       setActiveMediaId(mediaId);
       setActiveMediaType(mediaType);
-
       if (status && status.position_ms > 5000 && !status.is_finished) {
         setResumePosition(status.position_ms);
         setPendingUrl(url);
@@ -49,6 +51,7 @@ const DetailModal: React.FC<DetailModalProps> = ({
         setStreamingUrl(url);
       }
     } catch (err: any) {
+      console.warn("Streaming start failed, attempting preview fallback:", err);
       try {
         const url = await api.generatePreview(mediaId, mediaType);
         setActiveMediaId(mediaId);
@@ -56,8 +59,11 @@ const DetailModal: React.FC<DetailModalProps> = ({
         setResumePosition(0);
         setStreamingUrl(url);
       } catch (innerErr: any) {
-        toast.error('Playback failed: ' + innerErr.message);
+        toast.error('Playback failed. Forcing UI refresh...');
+        setTimeout(() => window.location.reload(), 2000);
       }
+    } finally {
+      setIsStartingStream(false);
     }
   };
 
@@ -313,12 +319,27 @@ const DetailModal: React.FC<DetailModalProps> = ({
                             </div>
                             <div className="flex items-center gap-2">
                               <button 
+                                onClick={(e) => { 
+                                  e.stopPropagation(); 
+                                  api.playEpisode(ep.id); 
+                                  toast.success("Opening in local player...");
+                                }} 
+                                className="p-2 hover:bg-zinc-800 rounded-lg text-zinc-600 hover:text-white transition"
+                                title="Play Locally"
+                              >
+                                <Monitor className="w-4 h-4" />
+                              </button>
+                              <button 
                                 onClick={(e) => { e.stopPropagation(); onDownload(ep.id, 'tv'); }} 
                                 className="p-2 hover:bg-zinc-800 rounded-lg text-zinc-600 hover:text-white transition"
                               >
                                 <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>
                               </button>
-                              <Play className="w-5 h-5 text-zinc-600 group-hover:text-white transition" />
+                              {isStartingStream ? (
+                                <Loader2 className="w-5 h-5 animate-spin text-red-600" />
+                              ) : (
+                                <Play className="w-5 h-5 text-zinc-600 group-hover:text-white transition" />
+                              )}
                             </div>
                           </div>
                         ))}
@@ -390,16 +411,39 @@ const DetailModal: React.FC<DetailModalProps> = ({
                 </>
               ) : (
                 <>
-                  {!isShow && (
-                    <div className="flex flex-col gap-3">
+                  <div className="flex flex-col gap-3">
+                    {!isShow && (
                       <button 
                         onClick={() => handlePlayMedia(item.id, 'movie')}
-                        className="w-full bg-red-600 hover:bg-red-700 py-4 rounded-xl font-black uppercase tracking-widest text-xs transition active:scale-95 flex items-center justify-center gap-2 shadow-lg shadow-red-900/20"
+                        disabled={isStartingStream}
+                        className={`w-full py-4 rounded-xl font-black uppercase tracking-widest text-xs transition active:scale-95 flex items-center justify-center gap-2 shadow-lg ${
+                          isStartingStream 
+                            ? 'bg-zinc-800 text-zinc-500 border-zinc-700 cursor-wait' 
+                            : 'bg-red-600 hover:bg-red-700 text-white shadow-red-900/20'
+                        }`}
                       >
-                        <Play className="w-4 h-4 fill-current" /> Start Playback
+                        {isStartingStream ? (
+                          <Loader2 className="w-4 h-4 animate-spin text-red-600" />
+                        ) : (
+                          <Play className="w-4 h-4 fill-current" />
+                        )}
+                        {isStartingStream ? 'Starting Engine...' : 'Stream (Browser)'}
                       </button>
-                    </div>
-                  )}
+                    )}
+                    <button 
+                      onClick={() => {
+                        if (isShow) {
+                          toast.error("Please select an episode below to play locally");
+                        } else {
+                          api.playMovie(item.id);
+                          toast.success("Opening in local player...");
+                        }
+                      }}
+                      className="w-full bg-zinc-800 hover:bg-zinc-700 py-4 rounded-xl font-black uppercase tracking-widest text-xs transition border border-zinc-700 flex items-center justify-center gap-2"
+                    >
+                      <Monitor className="w-4 h-4" /> Play Locally (VLC)
+                    </button>
+                  </div>
                   {isShow && (
                     <button 
                       className="w-full bg-red-600/20 text-red-500 border border-red-900/30 py-4 rounded-xl font-black uppercase tracking-widest text-xs cursor-default flex items-center justify-center gap-2"
@@ -529,4 +573,4 @@ const DetailModal: React.FC<DetailModalProps> = ({
   );
 };
 
-export default DetailModal;
+export default React.memo(DetailModal);

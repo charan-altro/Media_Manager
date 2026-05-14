@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { Activity, Clock, Cpu } from 'lucide-react';
+import { useTasks } from '../context/TaskContext';
 
-interface TasksPageProps {
-  tasks: any[];
-}
+interface TasksPageProps {}
 
-const TasksPage: React.FC<TasksPageProps> = ({ tasks }) => {
+const TasksPage: React.FC<TasksPageProps> = () => {
+  const { tasks: tasksMap } = useTasks();
+  const tasks = Object.values(tasksMap);
   const [currentTime, setCurrentTime] = useState(Date.now());
 
   useEffect(() => {
@@ -63,6 +64,26 @@ const TasksPage: React.FC<TasksPageProps> = ({ tasks }) => {
                     <div className="text-xs font-black font-mono text-zinc-400 bg-zinc-900 px-3 py-1 rounded-full border border-zinc-800">
                       {task.progress} / {task.total} ({percentage}%)
                     </div>
+                    {/* Reconciliation Counters */}
+                    {((task.filesNew || 0) > 0 || (task.filesHealed || 0) > 0 || (task.filesMissing || 0) > 0) && (
+                      <div className="flex gap-2 mt-1">
+                        {(task.filesNew || 0) > 0 && (
+                          <span className="bg-blue-500/10 text-blue-500 text-[10px] font-black uppercase px-2 py-0.5 rounded border border-blue-500/20">
+                            +{(task.filesNew || 0)} New
+                          </span>
+                        )}
+                        {(task.filesHealed || 0) > 0 && (
+                          <span className="bg-green-500/10 text-green-500 text-[10px] font-black uppercase px-2 py-0.5 rounded border border-green-500/20">
+                            {(task.filesHealed || 0)} Healed
+                          </span>
+                        )}
+                        {(task.filesMissing || 0) > 0 && (
+                          <span className="bg-red-500/10 text-red-500 text-[10px] font-black uppercase px-2 py-0.5 rounded border border-red-500/20">
+                            {(task.filesMissing || 0)} Missing
+                          </span>
+                        )}
+                      </div>
+                    )}
                   </div>
                 </div>
 

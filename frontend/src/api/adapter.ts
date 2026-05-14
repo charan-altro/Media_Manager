@@ -265,16 +265,32 @@ export const api = {
     request<UpdateCheckResult>('check_updates', '/system/update-check', { method: 'GET' }),
 
   startStreaming: async (id: number, type: 'movie' | 'episode' = 'movie') => {
-    const playlistUrl = await api.request<string>('start_streaming', `/stream/${id}/start?type=${type}`, { method: 'POST', id, media_type: type });
+    const path = type === 'movie' ? `/stream/movie/${id}` : `/stream/episode/${id}`;
+    const playlistUrl = await api.request<string>('start_streaming', path, { method: 'POST', id, media_type: type });
+    
+    // Add cache buster to prevent stale manifest loading
+    const buster = `?t=${Date.now()}`;
+    const urlWithBuster = playlistUrl + buster;
+
     if (IS_TAURI && !playlistUrl.startsWith('http')) {
        // If it's an absolute path (from Tauri), convert it to asset protocol
-       return convertFileSrc(playlistUrl);
+       return convertFileSrc(playlistUrl) + buster;
     }
     // For server, return with API_BASE prefix if it's a relative path
     if (!playlistUrl.startsWith('http')) {
-       return `${API_BASE}${playlistUrl}`;
+       // Safely join API_BASE and playlistUrl to prevent double '/api'
+       const base = API_BASE.endsWith('/') ? API_BASE.slice(0, -1) : API_BASE;
+       // If playlistUrl already includes /api prefix from the backend response, don't duplicate the /api path.
+       // We'll strip the path from the base if it's there.
+       let finalBase = base;
+       if (playlistUrl.startsWith('/api') && base.endsWith('/api')) {
+          finalBase = base.slice(0, -4);
+       }
+       
+       const url = playlistUrl.startsWith('/') ? playlistUrl : `/${playlistUrl}`;
+       return `${finalBase}${url}${buster}`;
     }
-    return playlistUrl;
+    return urlWithBuster;
   },
 
   generatePreview: async (id: number, type: 'movie' | 'episode' = 'movie') => {
@@ -285,7 +301,13 @@ export const api = {
        return convertFileSrc(playlistUrl);
     }
     if (!playlistUrl.startsWith('http')) {
-       return `${API_BASE}${playlistUrl}`;
+       const base = API_BASE.endsWith('/') ? API_BASE.slice(0, -1) : API_BASE;
+       let finalBase = base;
+       if (playlistUrl.startsWith('/api') && base.endsWith('/api')) {
+          finalBase = base.slice(0, -4);
+       }
+       const url = playlistUrl.startsWith('/') ? playlistUrl : `/${playlistUrl}`;
+       return `${finalBase}${url}`;
     }
     return playlistUrl;
   },

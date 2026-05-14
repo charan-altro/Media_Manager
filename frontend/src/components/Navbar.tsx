@@ -1,22 +1,21 @@
 import React from 'react';
 import { Film, Bell, User, Search, Activity } from 'lucide-react';
 import { Link, useLocation } from 'react-router-dom';
+import { useTasks } from '../context/TaskContext';
 
 interface NavbarProps {
   isScrolled: boolean;
   searchQuery: string;
   setSearchQuery: (query: string) => void;
-  hasRunningTasks: boolean;
-  latestTask: any;
 }
 
 const Navbar: React.FC<NavbarProps> = ({ 
   isScrolled, 
   searchQuery, 
   setSearchQuery, 
-  hasRunningTasks, 
-  latestTask 
 }) => {
+  const { runningTasks, latestTask } = useTasks();
+  const hasRunningTasks = runningTasks.length > 0;
   const location = useLocation();
   const currentPath = location.pathname;
 

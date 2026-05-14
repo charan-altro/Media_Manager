@@ -1,82 +1,120 @@
 import React, { useEffect, useRef, useState } from 'react';
-import Hls from 'hls.js';
+import videojs from 'video.js';
+import type Player from 'video.js/dist/types/player';
+import 'video.js/dist/video-js.css';
 import { X, Loader2, AlertCircle } from 'lucide-react';
+import { api } from '../api/adapter';
 
 interface VideoPlayerProps {
   url: string;
+  mediaId: number;
+  mediaType: 'movie' | 'episode';
+  initialPosition?: number; // in ms
   onClose: () => void;
 }
 
-const VideoPlayer: React.FC<VideoPlayerProps> = ({ url, onClose }) => {
-  const videoRef = useRef<HTMLVideoElement>(null);
+const VideoPlayer: React.FC<VideoPlayerProps> = ({ url, mediaId, mediaType, initialPosition = 0, onClose }) => {
+  const videoRef = useRef<HTMLDivElement>(null);
+  const playerRef = useRef<Player | null>(null);
   const [isPreparing, setIsPreparing] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const heartbeatInterval = useRef<any>(null);
+
+  const sendHeartbeat = () => {
+    const player = playerRef.current;
+    if (!player) return;
+    
+    const currentTime = player.currentTime() || 0;
+    const duration = player.duration() || 0;
+    const isFinished = player.ended() || (duration > 0 && currentTime / duration > 0.95);
+
+    api.updatePlaybackProgress({
+      media_id: mediaId,
+      media_type: mediaType,
+      position_ms: Math.round(currentTime * 1000),
+      duration_ms: Math.round(duration * 1000) || 0,
+      is_finished: isFinished
+    }).catch(err => console.error("Heartbeat failed:", err));
+  };
 
   useEffect(() => {
-    let hls: Hls;
+    // Make sure Video.js player is only initialized once
+    if (!playerRef.current && videoRef.current) {
+      const videoElement = document.createElement("video-js");
 
-    const initPlayer = () => {
-      if (!videoRef.current) return;
-      const video = videoRef.current;
+      videoElement.classList.add('vjs-big-play-centered');
+      videoElement.classList.add('vjs-fluid');
+      videoRef.current.appendChild(videoElement);
 
-      if (Hls.isSupported()) {
-        hls = new Hls({
-          enableWorker: true,
-          lowLatencyMode: true,
-          backBufferLength: 90,
-          manifestLoadingMaxRetry: 10,
-          manifestLoadingRetryDelay: 1000,
-          levelLoadingMaxRetry: 10,
-        });
-
-        hls.loadSource(url);
-        hls.attachMedia(video);
-        
-        hls.on(Hls.Events.MANIFEST_PARSED, () => {
-          setIsPreparing(false);
-          video.play().catch(e => console.error("Auto-play failed:", e));
-        });
-        
-        hls.on(Hls.Events.ERROR, (_event, data) => {
-          console.error("HLS Error:", data);
-          if (data.fatal) {
-            switch (data.type) {
-              case Hls.ErrorTypes.NETWORK_ERROR:
-                console.error("Fatal network error encountered, try to recover");
-                hls.startLoad();
-                break;
-              case Hls.ErrorTypes.MEDIA_ERROR:
-                console.error("Fatal media error encountered, try to recover");
-                hls.recoverMediaError();
-                break;
-              default:
-                setError(`Fatal streaming error: ${data.details}`);
-                hls.destroy();
-                break;
-            }
+      console.log('Initializing Video.js with URL:', url);
+      const player = playerRef.current = videojs(videoElement, {
+        autoplay: true,
+        controls: true,
+        responsive: true,
+        fluid: true,
+        preload: 'auto',
+        liveui: true,
+        html5: {
+          vhs: {
+            overrideNative: true,
+            enableLowInitialPlaylist: true,
+            enableWorker: true,
+            smoothQualityChange: true,
+            fastQualityChange: true
           }
-        });
-      } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-        video.src = url;
-        video.addEventListener('loadedmetadata', () => {
-          setIsPreparing(false);
-          video.play().catch(e => console.error("Auto-play failed:", e));
-        });
-        video.addEventListener('error', () => {
-           setError("Native HLS playback failed");
-        });
-      }
-    };
+        },
+        sources: [{
+          src: url,
+          type: 'application/x-mpegURL'
+        }]
+      }, () => {
+        console.log('Video.js player is ready');
+        
+        if (initialPosition > 0) {
+          player.currentTime(initialPosition / 1000);
+        }
 
-    const timeout = setTimeout(initPlayer, 500);
+        // Start heartbeat
+        if (heartbeatInterval.current) clearInterval(heartbeatInterval.current);
+        heartbeatInterval.current = setInterval(sendHeartbeat, 30000);
+      });
+
+      player.on('loadstart', () => console.log('Video.js: loadstart'));
+      player.on('loadedmetadata', () => console.log('Video.js: loadedmetadata'));
+      player.on('canplay', () => console.log('Video.js: canplay'));
+
+      player.on('playing', () => {
+        console.log('Video.js: playing');
+        setIsPreparing(false);
+      });
+
+      player.on('error', () => {
+        const playerError = player.error();
+        console.error('Video.js Error:', playerError);
+        setError(`Streaming error: ${playerError?.message || 'Unknown error'}`);
+      });
+
+      player.on('waiting', () => {
+        console.log('Video.js: waiting (buffering)');
+      });
+    }
+  }, [videoRef]);
+
+  // Dispose the player on unmount
+  useEffect(() => {
+    const player = playerRef.current;
 
     return () => {
-      clearTimeout(timeout);
-      if (hls) {
-        hls.destroy();
+      if (heartbeatInterval.current) clearInterval(heartbeatInterval.current);
+      // Send one final heartbeat before closing
+      sendHeartbeat();
+
+      if (player && !player.isDisposed()) {
+        player.dispose();
+        playerRef.current = null;
       }
     };
-  }, [url]);
+  }, [playerRef]);
 
   return (
     <div className="fixed inset-0 z-[200] bg-black flex flex-col items-center justify-center animate-in fade-in duration-500">
@@ -92,8 +130,8 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ url, onClose }) => {
       {isPreparing && !error && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 z-[205] bg-black/60 backdrop-blur-sm">
           <Loader2 className="w-12 h-12 text-red-600 animate-spin" />
-          <p className="text-zinc-400 font-black uppercase tracking-[0.2em] text-xs">Preparing HLS Stream...</p>
-          <p className="text-zinc-600 text-[10px] uppercase">FFmpeg is generating segments</p>
+          <p className="text-zinc-400 font-black uppercase tracking-[0.2em] text-xs">Preparing Stream...</p>
+          <p className="text-zinc-600 text-[10px] uppercase">Optimized Video.js Engine</p>
         </div>
       )}
 
@@ -110,17 +148,10 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ url, onClose }) => {
         </div>
       )}
       
-      <div className="w-full h-full max-w-7xl aspect-video relative group">
-        <video 
-          ref={videoRef}
-          className="w-full h-full object-contain"
-          controls
-          autoPlay
-          playsInline
-        />
-        <div className="absolute top-4 left-4 pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity">
+      <div className="w-full h-full max-w-7xl aspect-video relative group overflow-hidden" ref={videoRef}>
+        <div className="absolute top-4 left-4 pointer-events-none z-10 opacity-0 group-hover:opacity-100 transition-opacity">
            <div className="bg-black/60 backdrop-blur-md px-4 py-2 rounded-lg border border-white/10">
-              <span className="text-red-500 font-black italic uppercase text-xs tracking-tighter">HLS Live Stream</span>
+              <span className="text-red-500 font-black italic uppercase text-xs tracking-tighter">HLS Player (vjs)</span>
            </div>
         </div>
       </div>
@@ -128,4 +159,4 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ url, onClose }) => {
   );
 };
 
-export default VideoPlayer;
+export default React.memo(VideoPlayer);

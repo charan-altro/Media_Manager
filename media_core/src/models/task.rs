@@ -13,7 +13,7 @@ pub struct Task {
     pub updated_at: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskUpdate {
     pub task_id: String,
@@ -24,6 +24,9 @@ pub struct TaskUpdate {
     pub started_at: Option<u64>, // Unix timestamp in ms
     pub finished_at: Option<u64>, // Unix timestamp in ms
     pub debug_info: Option<String>,
+    pub files_new: Option<i32>,
+    pub files_healed: Option<i32>,
+    pub files_missing: Option<i32>,
 }
 
 pub fn now_ms() -> u64 {
@@ -44,6 +47,9 @@ impl TaskUpdate {
             started_at: Some(now_ms()),
             finished_at: None,
             debug_info: None,
+            files_new: None,
+            files_healed: None,
+            files_missing: None,
         }
     }
 }

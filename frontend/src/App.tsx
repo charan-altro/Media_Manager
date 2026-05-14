@@ -1,9 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom'
-import { api, API_BASE, IS_TAURI, type TaskUpdate } from './api/adapter'
-import { listen } from '@tauri-apps/api/event'
+import { api, IS_TAURI, API_BASE } from './api/adapter'
 import { Star, Wand2 } from 'lucide-react'
 import toast from 'react-hot-toast'
+import { TaskProvider } from './context/TaskContext'
 
 // Hooks
 import { useLibraryData } from './hooks/useLibraryData'
@@ -42,7 +42,6 @@ function App() {
     handleProcessAdvanced
   } = useMediaActions();
 
-  const [tasks, setTasks] = useState<Record<string, TaskUpdate>>({})
   const [isScrolled, setIsScrolled] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   
@@ -52,87 +51,29 @@ function App() {
   const [showFilterMenu, setShowFilterMenu] = useState(false);
   const [appSettings, setAppSettings] = useState<Record<string, string>>({});
 
-  const loadSettings = async () => {
+  const loadSettings = useCallback(async () => {
     try {
       const data = await api.getSettings();
       setAppSettings(data);
     } catch (err) {
       console.error('Failed to load settings', err);
     }
-  };
-
-  const handleTaskUpdate = (update: any) => {
-    // Normalize fields if they come in as snake_case (standard Rust serde default)
-    const normalizedUpdate: TaskUpdate = {
-      ...update,
-      taskId: update.taskId || update.task_id,
-      startedAt: update.startedAt || update.started_at,
-      finishedAt: update.finishedAt || update.finished_at,
-      debugInfo: update.debugInfo || update.debug_info,
-      filesNew: update.filesNew || update.files_new || 0,
-      filesHealed: update.filesHealed || update.files_healed || 0,
-      filesMissing: update.filesMissing || update.files_missing || 0,
-    };
-
-    console.log('Frontend received task update:', normalizedUpdate);
-    setTasks(prev => {
-      const oldStatus = prev[normalizedUpdate.taskId]?.status;
-
-      if (normalizedUpdate.status === 'error' && oldStatus !== 'error') {
-        toast.error(`Task Failed: ${normalizedUpdate.message}`, { duration: 5000 });
-      } else if (normalizedUpdate.status === 'completed' && oldStatus !== 'completed') {
-        toast.success(`Task Completed: ${normalizedUpdate.message}`, { duration: 5000 });
-      }
-
-      return { ...prev, [normalizedUpdate.taskId]: normalizedUpdate };
-    });
-    if (normalizedUpdate.status === 'completed') {
-      setRefreshingIds({}); 
-      setTimeout(loadData, 1000);
-    }
-  };
-
-  const subscribeToTasks = () => {
-    // Fetch initial history
-    api.getTasks().then(initialTasks => {
-      initialTasks.forEach((t: any) => {
-        handleTaskUpdate(t);
-      });
-    }).catch(err => console.error('Failed to fetch initial tasks:', err));
-
-    const eventSource = new EventSource(`${API_BASE}/tasks/stream`);
-    eventSource.onmessage = (event) => {
-      handleTaskUpdate(JSON.parse(event.data));
-    };
-    return () => eventSource.close();
-  }
+  }, []);
 
   useEffect(() => {
     loadSettings()
-  }, [])
+  }, [loadSettings])
 
   useEffect(() => {
-    let cleanupTasks: () => void = () => {};
-
-    if (IS_TAURI) {
-      const unlistenPromise = listen<TaskUpdate>('task-update', (event) => {
-        handleTaskUpdate(event.payload);
-      });
-      cleanupTasks = () => { unlistenPromise.then(unlisten => unlisten()); };
-    } else {
-      cleanupTasks = subscribeToTasks();
-    }
-
     const handleScroll = () => setIsScrolled(window.scrollY > 0);
     window.addEventListener('scroll', handleScroll);
 
     return () => {
-      cleanupTasks();
       window.removeEventListener('scroll', handleScroll);
     };
   }, [])
 
-  const handleDownload = async (id: number, type: 'movie' | 'tv') => {
+  const handleDownload = useCallback(async (id: number, type: 'movie' | 'tv') => {
     if (IS_TAURI) {
       try {
         const dest = window.prompt("Enter destination directory path:");
@@ -145,143 +86,146 @@ function App() {
     } else {
       window.open(`${API_BASE}/${type === 'movie' ? 'movies' : 'episodes'}/${id}/download`);
     }
-  }
+  }, []);
 
-  const runningTasks = Object.values(tasks).filter(t => t.status === 'running');
-  const latestTask = runningTasks[runningTasks.length - 1];
+  const handleItemClick = useCallback((item: any) => setSelectedItem(item), []);
+  const handlePlayClick = useCallback((item: any, e: React.MouseEvent) => { 
+    e.stopPropagation(); 
+    setSelectedItem(item); 
+  }, []);
 
   return (
     <Router>
-      <div className="min-h-screen bg-zinc-950 font-sans selection:bg-red-600/30 selection:text-red-500">
-        <Navbar 
-          isScrolled={isScrolled}
-          searchQuery={searchQuery}
-          setSearchQuery={setSearchQuery}
-          hasRunningTasks={runningTasks.length > 0}
-          latestTask={latestTask}
-        />
-        
-        <Routes>
-          <Route path="/" element={
-            <MoviesPage 
-              movies={movies}
-              libraries={libraries}
-              selectedLibrary={selectedLibrary}
-              setSelectedLibrary={setSelectedLibrary}
-              tvShowsCount={tvShows.length}
-              searchQuery={searchQuery}
-              onItemClick={(item) => setSelectedItem(item)}
-              onPlayClick={(item, e) => { e.stopPropagation(); setSelectedItem(item); }}
-              selectedIds={selectedIds}
-              selectionMode={selectionMode}
-              setSelectionMode={setSelectionMode}
-              setSelectedIds={setSelectedIds}
-              genreFilter={genreFilter}
-              setGenreFilter={setGenreFilter}
-              languageFilter={languageFilter}
-              setLanguageFilter={setLanguageFilter}
-              allGenres={allGenres}
-              allLanguages={allLanguages}
-              showFilterMenu={showFilterMenu}
-              setShowFilterMenu={setShowFilterMenu}
-            />
-          } />
-          <Route path="/tv" element={
-            <TvShowsPage 
-              tvShows={tvShows}
-              libraries={libraries}
-              selectedLibrary={selectedLibrary}
-              setSelectedLibrary={setSelectedLibrary}
-              moviesCount={movies.length}
-              searchQuery={searchQuery}
-              onItemClick={(item) => setSelectedItem(item)}
-              onPlayClick={(item, e) => { e.stopPropagation(); setSelectedItem(item); }}
-              selectedIds={selectedIds}
-              selectionMode={selectionMode}
-              setSelectionMode={setSelectionMode}
-              setSelectedIds={setSelectedIds}
-              genreFilter={genreFilter}
-              setGenreFilter={setGenreFilter}
-              languageFilter={languageFilter}
-              setLanguageFilter={setLanguageFilter}
-              allGenres={allGenres}
-              allLanguages={allLanguages}
-              showFilterMenu={showFilterMenu}
-              setShowFilterMenu={setShowFilterMenu}
-            />
-          } />
-          <Route path="/tasks" element={<TasksPage tasks={Object.values(tasks)} />} />
-          <Route path="/settings" element={
-            <SettingsPage 
-              appSettings={appSettings}
-              setAppSettings={setAppSettings}
-              libraries={libraries}
-              selectedLibrary={selectedLibrary}
-              setSelectedLibrary={setSelectedLibrary}
+      <TaskProvider loadData={loadData} setRefreshingIds={setRefreshingIds}>
+        <div className="min-h-screen bg-zinc-950 font-sans selection:bg-red-600/30 selection:text-red-500">
+          <Navbar 
+            isScrolled={isScrolled}
+            searchQuery={searchQuery}
+            setSearchQuery={setSearchQuery}
+          />
+          
+          <Routes>
+            <Route path="/" element={
+              <MoviesPage 
+                movies={movies}
+                libraries={libraries}
+                selectedLibrary={selectedLibrary}
+                setSelectedLibrary={setSelectedLibrary}
+                tvShowsCount={tvShows.length}
+                searchQuery={searchQuery}
+                onItemClick={handleItemClick}
+                onPlayClick={handlePlayClick}
+                selectedIds={selectedIds}
+                selectionMode={selectionMode}
+                setSelectionMode={setSelectionMode}
+                setSelectedIds={setSelectedIds}
+                genreFilter={genreFilter}
+                setGenreFilter={setGenreFilter}
+                languageFilter={languageFilter}
+                setLanguageFilter={setLanguageFilter}
+                allGenres={allGenres}
+                allLanguages={allLanguages}
+                showFilterMenu={showFilterMenu}
+                setShowFilterMenu={setShowFilterMenu}
+              />
+            } />
+            <Route path="/tv" element={
+              <TvShowsPage 
+                tvShows={tvShows}
+                libraries={libraries}
+                selectedLibrary={selectedLibrary}
+                setSelectedLibrary={setSelectedLibrary}
+                moviesCount={movies.length}
+                searchQuery={searchQuery}
+                onItemClick={handleItemClick}
+                onPlayClick={handlePlayClick}
+                selectedIds={selectedIds}
+                selectionMode={selectionMode}
+                setSelectionMode={setSelectionMode}
+                setSelectedIds={setSelectedIds}
+                genreFilter={genreFilter}
+                setGenreFilter={setGenreFilter}
+                languageFilter={languageFilter}
+                setLanguageFilter={setLanguageFilter}
+                allGenres={allGenres}
+                allLanguages={allLanguages}
+                showFilterMenu={showFilterMenu}
+                setShowFilterMenu={setShowFilterMenu}
+              />
+            } />
+            <Route path="/tasks" element={<TasksPage />} />
+            <Route path="/settings" element={
+              <SettingsPage 
+                appSettings={appSettings}
+                setAppSettings={setAppSettings}
+                libraries={libraries}
+                selectedLibrary={selectedLibrary}
+                setSelectedLibrary={setSelectedLibrary}
+                loadData={loadData}
+              />
+            } />
+          </Routes>
+
+          {selectedItem && (
+            <DetailModal 
+              item={selectedItem}
+              onClose={() => setSelectedItem(null)}
+              onRefresh={() => handleRefreshMetadata(selectedItem.id)}
+              onAdvanced={() => handleProcessAdvanced(selectedItem.id)}
+              onDownload={handleDownload}
+              refreshingIds={refreshingIds}
               loadData={loadData}
             />
-          } />
-        </Routes>
+          )}
 
-        {selectedItem && (
-          <DetailModal 
-            item={selectedItem}
-            onClose={() => setSelectedItem(null)}
-            onRefresh={() => handleRefreshMetadata(selectedItem)}
-            onAdvanced={() => handleProcessAdvanced(selectedItem)}
-            onDownload={(id, type) => handleDownload(id, type)}
-            refreshingIds={refreshingIds}
-            loadData={loadData}
-          />
-        )}
-
-        {selectionMode && selectedIds.length > 0 && (
-          <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-50 bg-zinc-900/90 backdrop-blur-md border border-zinc-800 px-6 py-4 rounded-2xl shadow-2xl flex items-center gap-6 animate-in fade-in slide-in-from-bottom-4 duration-300">
-            <div className="flex items-center gap-3 border-r border-zinc-800 pr-6">
-              <span className="h-2 w-2 rounded-full bg-red-500 animate-pulse" />
-              <span className="text-zinc-100 font-medium">{selectedIds.length} items selected</span>
-            </div>
-            
-            <div className="flex items-center gap-3">
-              <button
-                onClick={() => {
-                   const mType = window.location.pathname === '/tv' ? 'tv' : 'movie';
-                   api.scrapeBatch(selectedIds, mType);
-                   setSelectionMode(false);
-                   setSelectedIds([]);
-                }}
-                className="flex items-center gap-2 bg-zinc-100 hover:bg-white text-zinc-950 px-4 py-2 rounded-xl text-sm font-semibold transition-all active:scale-95"
-              >
-                <Star className="w-4 h-4 fill-zinc-950" />
-                Enrich Data
-              </button>
+          {selectionMode && selectedIds.length > 0 && (
+            <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-50 bg-zinc-900/90 backdrop-blur-md border border-zinc-800 px-6 py-4 rounded-2xl shadow-2xl flex items-center gap-6 animate-in fade-in slide-in-from-bottom-4 duration-300">
+              <div className="flex items-center gap-3 border-r border-zinc-800 pr-6">
+                <span className="h-2 w-2 rounded-full bg-red-500 animate-pulse" />
+                <span className="text-zinc-100 font-medium">{selectedIds.length} items selected</span>
+              </div>
               
-              <button
-                onClick={() => {
-                   const mType = window.location.pathname === '/tv' ? 'tv' : 'movie';
-                   api.cleanupBatch(selectedIds, mType);
-                   setSelectionMode(false);
-                   setSelectedIds([]);
-                }}
-                className="flex items-center gap-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-100 px-4 py-2 rounded-xl text-sm font-semibold transition-all active:scale-95"
-              >
-                <Wand2 className="w-4 h-4" />
-                Cleanup Folders
-              </button>
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => {
+                     const mType = window.location.pathname === '/tv' ? 'tv' : 'movie';
+                     api.scrapeBatch(selectedIds, mType);
+                     setSelectionMode(false);
+                     setSelectedIds([]);
+                  }}
+                  className="flex items-center gap-2 bg-zinc-100 hover:bg-white text-zinc-950 px-4 py-2 rounded-xl text-sm font-semibold transition-all active:scale-95"
+                >
+                  <Star className="w-4 h-4 fill-zinc-950" />
+                  Enrich Data
+                </button>
+                
+                <button
+                  onClick={() => {
+                     const mType = window.location.pathname === '/tv' ? 'tv' : 'movie';
+                     api.cleanupBatch(selectedIds, mType);
+                     setSelectionMode(false);
+                     setSelectedIds([]);
+                  }}
+                  className="flex items-center gap-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-100 px-4 py-2 rounded-xl text-sm font-semibold transition-all active:scale-95"
+                >
+                  <Wand2 className="w-4 h-4" />
+                  Cleanup Folders
+                </button>
 
-              <button
-                onClick={() => {
-                  setSelectionMode(false);
-                  setSelectedIds([]);
-                }}
-                className="ml-2 text-xs font-bold uppercase tracking-widest text-zinc-600 hover:text-zinc-400 transition"
-              >
-                Cancel
-              </button>
+                <button
+                  onClick={() => {
+                    setSelectionMode(false);
+                    setSelectedIds([]);
+                  }}
+                  className="ml-2 text-xs font-bold uppercase tracking-widest text-zinc-600 hover:text-zinc-400 transition"
+                >
+                  Cancel
+                </button>
+              </div>
             </div>
-          </div>
-        )}
-      </div>
+          )}
+        </div>
+      </TaskProvider>
     </Router>
   )
 }

@@ -186,6 +186,8 @@ async fn main() {
         .route("/api/stream/direct/movie/:id", get(serve_direct_movie))
         .route("/api/stream/direct/episode/:id", get(serve_direct_episode))
         .route("/api/stream/hls/:id/:file", get(serve_stream_file))
+        .route("/api/stream/dash/:id/manifest.mpd", get(serve_dash_manifest))
+        .route("/api/stream/dash/:id/:file", get(serve_stream_file))
         .nest_service("/transcodes", tower_http::services::ServeDir::new("transcodes"))
         .route("/api/movies/:id/download", get(download_movie))
         .route("/api/episodes/:id/download", get(download_episode))
@@ -1837,7 +1839,16 @@ async fn get_playback_status(State(state): State<Arc<AppState>>, Path((m_type, i
         None => Json(serde_json::json!({ "position_ms": 0, "duration_ms": 0, "is_finished": false })).into_response(),
     }
 }
-async fn start_movie_stream(State(state): State<Arc<AppState>>, Path(id): Path<i64>) -> impl IntoResponse {
+#[derive(serde::Deserialize)]
+struct StreamQuery {
+    protocol: Option<String>,
+}
+
+async fn start_movie_stream(
+    State(state): State<Arc<AppState>>, 
+    Path(id): Path<i64>,
+    Query(query): Query<StreamQuery>
+) -> impl IntoResponse {
     tracing::info!("Stream requested for movie ID: {}", id);
     
     let file_info: Option<(String, Option<String>)> = sqlx::query_as("SELECT file_path, codec FROM movie_files WHERE movie_id = ? LIMIT 1")
@@ -1863,16 +1874,26 @@ async fn start_movie_stream(State(state): State<Arc<AppState>>, Path(id): Path<i
             return (StatusCode::OK, Json(format!("/api/stream/direct/movie/{}", id))).into_response();
         }
 
-        tracing::debug!("Found path for HLS streaming: {:?}", path);
+        let is_dash = query.protocol.as_deref() == Some("dash");
         let stream_id = format!("movie_{}", id);
 
-        match state.stream_manager.start_hls(&stream_id, &path).await {
+        let result = if is_dash {
+            state.stream_manager.start_dash(&stream_id, &path).await
+        } else {
+            state.stream_manager.start_hls(&stream_id, &path).await
+        };
+
+        match result {
             Ok(_) => {
-                tracing::info!("HLS Stream started successfully for {}", stream_id);
-                (StatusCode::OK, Json(format!("/api/stream/hls/{}/playlist.m3u8", stream_id))).into_response()
+                let url = if is_dash {
+                    format!("/api/stream/dash/{}/manifest.mpd", stream_id)
+                } else {
+                    format!("/api/stream/hls/{}/playlist.m3u8", stream_id)
+                };
+                (StatusCode::OK, Json(url)).into_response()
             },
             Err(e) => {
-                tracing::error!("HLS Stream failed to start: {}", e);
+                tracing::error!("Stream failed to start: {}", e);
                 (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
             },
         }
@@ -1882,7 +1903,11 @@ async fn start_movie_stream(State(state): State<Arc<AppState>>, Path(id): Path<i
     }
 }
 
-async fn start_episode_stream(State(state): State<Arc<AppState>>, Path(id): Path<i64>) -> impl IntoResponse {
+async fn start_episode_stream(
+    State(state): State<Arc<AppState>>, 
+    Path(id): Path<i64>,
+    Query(query): Query<StreamQuery>
+) -> impl IntoResponse {
     tracing::info!("Stream requested for episode ID: {}", id);
 
     let file_info: Option<(String, Option<String>)> = sqlx::query_as("SELECT file_path, codec FROM episodes WHERE id = ? LIMIT 1")
@@ -1908,11 +1933,23 @@ async fn start_episode_stream(State(state): State<Arc<AppState>>, Path(id): Path
             return (StatusCode::OK, Json(format!("/api/stream/direct/episode/{}", id))).into_response();
         }
 
+        let is_dash = query.protocol.as_deref() == Some("dash");
         let stream_id = format!("episode_{}", id);
 
-        match state.stream_manager.start_hls(&stream_id, &path).await {
+        let result = if is_dash {
+            state.stream_manager.start_dash(&stream_id, &path).await
+        } else {
+            state.stream_manager.start_hls(&stream_id, &path).await
+        };
+
+        match result {
             Ok(_) => {
-                (StatusCode::OK, Json(format!("/api/stream/hls/{}/playlist.m3u8", stream_id))).into_response()
+                let url = if is_dash {
+                    format!("/api/stream/dash/{}/manifest.mpd", stream_id)
+                } else {
+                    format!("/api/stream/hls/{}/playlist.m3u8", stream_id)
+                };
+                (StatusCode::OK, Json(url)).into_response()
             },
             Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         }
@@ -1937,6 +1974,45 @@ async fn serve_direct_episode(State(state): State<Arc<AppState>>, Path(id): Path
     } else {
         (StatusCode::NOT_FOUND, "Episode not found").into_response()
     }
+}
+
+async fn serve_dash_manifest(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>
+) -> impl IntoResponse {
+    let (m_type, m_id) = if id.starts_with("movie_") {
+        ("movie", id.strip_prefix("movie_").unwrap().parse::<i64>().unwrap_or(0))
+    } else if id.starts_with("episode_") {
+        ("episode", id.strip_prefix("episode_").unwrap().parse::<i64>().unwrap_or(0))
+    } else {
+        ("", 0)
+    };
+
+    if m_id > 0 {
+        let info: Option<(i32, i32, i32)> = if m_type == "movie" {
+            sqlx::query_as("SELECT duration_secs, width, height FROM movie_files WHERE movie_id = ?")
+                .bind(m_id)
+                .fetch_optional(&state.pool)
+                .await
+                .unwrap_or(None)
+        } else {
+            sqlx::query_as("SELECT duration_secs, width, height FROM episodes WHERE id = ?")
+                .bind(m_id)
+                .fetch_optional(&state.pool)
+                .await
+                .unwrap_or(None)
+        };
+
+        if let Some((dur, width, height)) = info {
+            let manifest = media_core::scanner::streaming::generate_dash_manifest(dur as f64, width, height);
+            return (
+                [(header::CONTENT_TYPE, "application/dash+xml")],
+                manifest,
+            ).into_response();
+        }
+    }
+
+    (StatusCode::NOT_FOUND, "Media info not found for DASH manifest").into_response()
 }
 
 async fn serve_stream_file(
@@ -2033,13 +2109,22 @@ async fn serve_stream_file(
     let base_dir = PathBuf::from(&transcode_dir).join(&id);
     let file_path = base_dir.join(&file);
 
-    if file.ends_with(".ts") {
+    if file.ends_with(".ts") || file.ends_with(".webm") {
         // Extract segment index
-        let segment_index = file
-            .strip_prefix("seg_")
-            .and_then(|s| s.strip_suffix(".ts"))
-            .and_then(|s| s.parse::<usize>().ok())
-            .unwrap_or(0);
+        let segment_index = if file.ends_with(".ts") {
+            file.strip_prefix("seg_")
+                .and_then(|s| s.strip_suffix(".ts"))
+                .and_then(|s| s.parse::<usize>().ok())
+                .unwrap_or(0)
+        } else {
+            // DASH segments are chunk-streamX-XXXXX.webm
+            file.split('-')
+                .nth(2)
+                .and_then(|s| s.strip_suffix(".webm"))
+                .and_then(|s| s.parse::<usize>().ok())
+                .map(|idx| if idx > 0 { idx - 1 } else { 0 }) // DASH often starts at 1
+                .unwrap_or(0)
+        };
 
         let m_path = if id.starts_with("movie_") {
             let m_id = id.strip_prefix("movie_").unwrap().parse::<i64>().unwrap_or(0);
@@ -2069,6 +2154,10 @@ async fn serve_stream_file(
                 "application/vnd.apple.mpegurl"
             } else if file.ends_with(".ts") {
                 "video/mp2t"
+            } else if file.ends_with(".webm") {
+                "video/webm"
+            } else if file.ends_with(".mpd") {
+                "application/dash+xml"
             } else {
                 "application/octet-stream"
             };

@@ -34,6 +34,52 @@ impl FfmpegEngine {
         supported
     }
 
+    pub fn probe_hw_decoders() -> Vec<String> {
+        let mut supported = Vec::new();
+        let decoders_to_test = ["h264_v4l2m2m", "hevc_v4l2m2m", "h264_cuvid", "hevc_cuvid", "h264_qsv", "hevc_qsv"];
+        
+        for decoder in decoders_to_test {
+            let output = Command::new(crate::config::get_ffmpeg_path())
+                .args(&[
+                    "-v", "error",
+                    "-decoders"
+                ])
+                .output();
+                
+            if let Ok(out) = output {
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                if stdout.contains(decoder) {
+                    supported.push(decoder.to_string());
+                }
+            }
+        }
+        supported
+    }
+
+    pub fn get_hw_decoder(source_codec: &str, supported_decoders: &[String]) -> Option<String> {
+        match source_codec {
+            "h264" => {
+                if supported_decoders.contains(&"h264_v4l2m2m".to_string()) {
+                    Some("h264_v4l2m2m".to_string())
+                } else if supported_decoders.contains(&"h264_cuvid".to_string()) {
+                    Some("h264_cuvid".to_string())
+                } else {
+                    None
+                }
+            },
+            "hevc" => {
+                if supported_decoders.contains(&"hevc_v4l2m2m".to_string()) {
+                    Some("hevc_v4l2m2m".to_string())
+                } else if supported_decoders.contains(&"hevc_cuvid".to_string()) {
+                    Some("hevc_cuvid".to_string())
+                } else {
+                    None
+                }
+            },
+            _ => None
+        }
+    }
+
     pub fn check_ffmpeg() -> Result<()> {
         let ffmpeg_path = crate::config::get_ffmpeg_path();
         let output = Command::new(&ffmpeg_path)

@@ -7,6 +7,33 @@ use tracing::{info, error};
 pub struct FfmpegEngine;
 
 impl FfmpegEngine {
+    pub fn probe_hw_codecs() -> Vec<String> {
+        let mut supported = Vec::new();
+        // Include v4l2m2m for Broadcom/Raspberry Pi architectures
+        let codecs_to_test = ["h264_v4l2m2m", "h264_nvenc", "h264_qsv", "h264_videotoolbox", "h264_vaapi"];
+        
+        for codec in codecs_to_test {
+            let output = Command::new(crate::config::get_ffmpeg_path())
+                .args(&[
+                    "-v", "error",
+                    "-f", "lavfi",
+                    "-i", "color=c=black:s=128x128:r=1",
+                    "-c:v", codec,
+                    "-t", "0.5",
+                    "-f", "null",
+                    "-"
+                ])
+                .output();
+                
+            if let Ok(out) = output {
+                if out.status.success() {
+                    supported.push(codec.to_string());
+                }
+            }
+        }
+        supported
+    }
+
     pub fn check_ffmpeg() -> Result<()> {
         let ffmpeg_path = crate::config::get_ffmpeg_path();
         let output = Command::new(&ffmpeg_path)
@@ -75,6 +102,14 @@ impl FfmpegEngine {
         Ok(output_path.to_path_buf())
     }
 
+    fn format_vtt_time(seconds: f64) -> String {
+        let hrs = (seconds / 3600.0).floor() as i32;
+        let mins = ((seconds % 3600.0) / 60.0).floor() as i32;
+        let secs = (seconds % 60.0).floor() as i32;
+        let ms = ((seconds % 1.0) * 1000.0).floor() as i32;
+        format!("{:02}:{:02}:{:02}.{:03}", hrs, mins, secs, ms)
+    }
+
     /// Generates a sprite sheet (tile grid) for seek previews.
     /// Creates a 10x10 grid of tiny thumbnails.
     pub fn generate_sprite_sheet(input_path: &Path, output_path: &Path, duration_secs: f64) -> Result<PathBuf> {
@@ -96,6 +131,24 @@ impl FfmpegEngine {
             let err = String::from_utf8_lossy(&output.stderr);
             return Err(CoreError::FfmpegError(format!("FFmpeg sprite failed: {}", err)));
         }
+
+        // Generate WebVTT
+        let vtt_path = output_path.with_extension("vtt");
+        let sprite_filename = output_path.file_name().unwrap_or_default().to_string_lossy();
+        let mut vtt = String::from("WEBVTT\n\n");
+        
+        for i in 0..100 {
+            let start_time = Self::format_vtt_time(i as f64 * interval);
+            let end_time = Self::format_vtt_time((i + 1) as f64 * interval);
+            
+            let x = (i % 10) * 160;
+            let y = (i / 10) * 90; // Assuming 16:9 approx
+            
+            vtt.push_str(&format!("{} --> {}\n", start_time, end_time));
+            vtt.push_str(&format!("{}#xywh={},{},160,90\n\n", sprite_filename, x, y));
+        }
+        
+        let _ = std::fs::write(&vtt_path, vtt);
 
         Ok(output_path.to_path_buf())
     }
@@ -163,9 +216,9 @@ impl FfmpegEngine {
         let segment_pattern = output_dir.join("seg_%03d.ts");
 
         // Simple Hardware Acceleration check
-        // In a full implementation, we'd probe with `ffmpeg -encoders`
-        let encoder = if cfg!(target_os = "macos") {
-            "h264_videotoolbox"
+        let supported_codecs = Self::probe_hw_codecs();
+        let encoder = if let Some(codec) = supported_codecs.first() {
+            codec.as_str()
         } else {
             "libx264"
         };

@@ -65,7 +65,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ url, mediaId, mediaType, init
         },
         sources: [{
           src: url,
-          type: 'application/x-mpegURL'
+          type: url.includes('/direct/') ? 'video/mp4' : 'application/x-mpegURL'
         }]
       }, () => {
         console.log('Video.js player is ready');
@@ -151,7 +151,9 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ url, mediaId, mediaType, init
       <div className="w-full h-full max-w-7xl aspect-video relative group overflow-hidden" ref={videoRef}>
         <div className="absolute top-4 left-4 pointer-events-none z-10 opacity-0 group-hover:opacity-100 transition-opacity">
            <div className="bg-black/60 backdrop-blur-md px-4 py-2 rounded-lg border border-white/10">
-              <span className="text-red-500 font-black italic uppercase text-xs tracking-tighter">HLS Player (vjs)</span>
+              <span className="text-red-500 font-black italic uppercase text-xs tracking-tighter">
+                {url.includes('/direct/') ? 'Direct Play (vjs)' : 'HLS Player (vjs)'}
+              </span>
            </div>
         </div>
       </div>

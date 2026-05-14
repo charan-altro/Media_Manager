@@ -40,11 +40,11 @@ fn now_ms() -> u64 {
 fn generate_hls_manifest(_stream_id: &str, duration_secs: f64) -> String {
     let mut manifest = String::from("#EXTM3U\n");
     manifest.push_str("#EXT-X-VERSION:3\n");
-    manifest.push_str("#EXT-X-TARGETDURATION:10\n");
+    manifest.push_str("#EXT-X-TARGETDURATION:3\n");
     manifest.push_str("#EXT-X-MEDIA-SEQUENCE:0\n");
     manifest.push_str("#EXT-X-PLAYLIST-TYPE:VOD\n");
 
-    let segment_duration = 10.0;
+    let segment_duration = 3.0;
     let num_segments = (duration_secs / segment_duration).ceil() as usize;
 
     for i in 0..num_segments {
@@ -177,6 +177,8 @@ async fn main() {
         .route("/api/episodes/:id/play", post(play_episode))
         .route("/api/stream/movie/:id", post(start_movie_stream))
         .route("/api/stream/episode/:id", post(start_episode_stream))
+        .route("/api/stream/direct/movie/:id", get(serve_direct_movie))
+        .route("/api/stream/direct/episode/:id", get(serve_direct_episode))
         .route("/api/stream/hls/:id/:file", get(serve_stream_file))
         .nest_service("/transcodes", tower_http::services::ServeDir::new("transcodes"))
         .route("/api/movies/:id/download", get(download_movie))
@@ -1830,9 +1832,32 @@ async fn get_playback_status(State(state): State<Arc<AppState>>, Path((m_type, i
     }
 }
 async fn start_movie_stream(State(state): State<Arc<AppState>>, Path(id): Path<i64>) -> impl IntoResponse {
-    tracing::info!("HLS Stream requested for movie ID: {}", id);
-    if let Ok(Some(path)) = db::queries::get_movie_full_path(&state.pool, MovieId(id)).await {
-        tracing::debug!("Found path for streaming: {:?}", path);
+    tracing::info!("Stream requested for movie ID: {}", id);
+    
+    let file_info: Option<(String, Option<String>)> = sqlx::query_as("SELECT file_path, codec FROM movie_files WHERE movie_id = ? LIMIT 1")
+        .bind(id)
+        .fetch_optional(&state.pool)
+        .await
+        .unwrap_or_default();
+
+    if let Some((path_str, codec)) = file_info {
+        let path = if let Ok(Some(full_path)) = db::queries::get_movie_full_path(&state.pool, MovieId(id)).await {
+            full_path
+        } else {
+            PathBuf::from(&path_str)
+        };
+        
+        // Direct Play Check
+        let is_mp4 = path.extension().and_then(|e| e.to_str()).unwrap_or("").eq_ignore_ascii_case("mp4");
+        let codec_str = codec.as_deref().unwrap_or("").to_lowercase();
+        let is_compatible_codec = codec_str == "h264" || codec_str == "hvc1" || codec_str == "hevc" || codec_str == "avc1";
+
+        if is_mp4 && is_compatible_codec {
+            tracing::info!("Direct play enabled for movie ID: {}", id);
+            return (StatusCode::OK, Json(format!("/api/stream/direct/movie/{}", id))).into_response();
+        }
+
+        tracing::debug!("Found path for HLS streaming: {:?}", path);
         let stream_id = format!("movie_{}", id);
 
         match state.stream_manager.start_hls(&stream_id, &path).await {
@@ -1852,7 +1877,31 @@ async fn start_movie_stream(State(state): State<Arc<AppState>>, Path(id): Path<i
 }
 
 async fn start_episode_stream(State(state): State<Arc<AppState>>, Path(id): Path<i64>) -> impl IntoResponse {
-    if let Ok(Some(path)) = db::queries::get_episode_full_path(&state.pool, EpisodeId(id)).await {
+    tracing::info!("Stream requested for episode ID: {}", id);
+
+    let file_info: Option<(String, Option<String>)> = sqlx::query_as("SELECT file_path, codec FROM episodes WHERE id = ? LIMIT 1")
+        .bind(id)
+        .fetch_optional(&state.pool)
+        .await
+        .unwrap_or_default();
+
+    if let Some((path_str, codec)) = file_info {
+        let path = if let Ok(Some(full_path)) = db::queries::get_episode_full_path(&state.pool, EpisodeId(id)).await {
+            full_path
+        } else {
+            PathBuf::from(&path_str)
+        };
+        
+        // Direct Play Check
+        let is_mp4 = path.extension().and_then(|e| e.to_str()).unwrap_or("").eq_ignore_ascii_case("mp4");
+        let codec_str = codec.as_deref().unwrap_or("").to_lowercase();
+        let is_compatible_codec = codec_str == "h264" || codec_str == "hvc1" || codec_str == "hevc" || codec_str == "avc1";
+
+        if is_mp4 && is_compatible_codec {
+            tracing::info!("Direct play enabled for episode ID: {}", id);
+            return (StatusCode::OK, Json(format!("/api/stream/direct/episode/{}", id))).into_response();
+        }
+
         let stream_id = format!("episode_{}", id);
 
         match state.stream_manager.start_hls(&stream_id, &path).await {
@@ -1861,6 +1910,24 @@ async fn start_episode_stream(State(state): State<Arc<AppState>>, Path(id): Path
             },
             Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         }
+    } else {
+        (StatusCode::NOT_FOUND, "Episode not found").into_response()
+    }
+}
+
+async fn serve_direct_movie(State(state): State<Arc<AppState>>, Path(id): Path<i64>, req: axum::extract::Request) -> impl IntoResponse {
+    if let Ok(Some(path)) = db::queries::get_movie_full_path(&state.pool, MovieId(id)).await {
+        use tower::ServiceExt;
+        tower_http::services::ServeFile::new(path).oneshot(req).await.unwrap().into_response()
+    } else {
+        (StatusCode::NOT_FOUND, "Movie not found").into_response()
+    }
+}
+
+async fn serve_direct_episode(State(state): State<Arc<AppState>>, Path(id): Path<i64>, req: axum::extract::Request) -> impl IntoResponse {
+    if let Ok(Some(path)) = db::queries::get_episode_full_path(&state.pool, EpisodeId(id)).await {
+        use tower::ServiceExt;
+        tower_http::services::ServeFile::new(path).oneshot(req).await.unwrap().into_response()
     } else {
         (StatusCode::NOT_FOUND, "Episode not found").into_response()
     }
@@ -1982,12 +2049,8 @@ async fn serve_stream_file(
             let _ = state.stream_manager.request_segment(&id, &path, segment_index).await;
         }
 
-        // Long Polling
-        let mut attempts = 0;
-        while !file_path.exists() && attempts < 40 {
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            attempts += 1;
-        }
+        // Wait for segment via tokio watch channel
+        let _ = state.stream_manager.wait_for_segment(&id, segment_index).await;
     }
 
     if !file_path.exists() {

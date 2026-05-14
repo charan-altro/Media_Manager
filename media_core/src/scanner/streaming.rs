@@ -15,11 +15,13 @@ pub struct StreamSession {
     pub last_access: std::time::Instant,
     pub start_segment: usize,
     pub last_requested_segment: usize,
+    pub latest_segment_rx: tokio::sync::watch::Receiver<Option<usize>>,
 }
 
 pub struct StreamManager {
     sessions: Arc<TokioMutex<HashMap<String, StreamSession>>>,
     base_output_dir: PathBuf,
+    hw_encoder: String,
 }
 
 impl StreamManager {
@@ -27,9 +29,20 @@ impl StreamManager {
         if !base_output_dir.exists() {
             let _ = std::fs::create_dir_all(&base_output_dir);
         }
+
+        let supported_codecs = crate::scanner::ffmpeg::FfmpegEngine::probe_hw_codecs();
+        let hw_encoder = if let Some(codec) = supported_codecs.first() {
+            tracing::info!("Using detected hardware encoder: {}", codec);
+            codec.clone()
+        } else {
+            tracing::info!("No hardware encoder detected, falling back to libx264");
+            "libx264".to_string()
+        };
+
         Self {
             sessions: Arc::new(TokioMutex::new(HashMap::new())),
             base_output_dir,
+            hw_encoder,
         }
     }
 
@@ -51,15 +64,13 @@ impl StreamManager {
         let segment_pattern = output_dir.join("seg_%03d.ts");
         let normalized_input = crate::paths::normalize_slashes(input_path.to_str().unwrap());
 
-        let encoder = if cfg!(target_arch = "aarch64") { "h264_v4l2m2m" } 
-                      else if cfg!(target_os = "macos") { "h264_videotoolbox" } 
-                      else { "libx264" };
+        let encoder = &self.hw_encoder;
 
-        let start_time = (start_segment * 10).to_string();
+        let start_time = (start_segment * 3).to_string();
 
         let mut process = tokio::process::Command::new(crate::config::get_ffmpeg_path())
             .args(&[
-                "-loglevel", "error",
+                "-loglevel", "info",
                 "-ss", &start_time,
                 "-i", &normalized_input,
                 "-map", "0:v:0",
@@ -73,10 +84,10 @@ impl StreamManager {
                 "-ac", "2",
                 "-sn",
                 "-f", "hls",
-                "-hls_time", "10", 
+                "-hls_time", "3", 
                 "-hls_list_size", "0", 
                 "-hls_flags", "independent_segments",
-                "-force_key_frames", "expr:gte(t,n_forced*10)",
+                "-force_key_frames", "expr:gte(t,n_forced*3)",
                 "-start_number", &start_segment.to_string(),
                 "-hls_segment_type", "mpegts",
                 "-hls_segment_filename", segment_pattern.to_str().unwrap(),
@@ -99,6 +110,39 @@ impl StreamManager {
             )));
         }
 
+        let (tx, rx) = tokio::sync::watch::channel(None);
+        
+        // Spawn a task to monitor FFmpeg output and update the channel
+        if let Some(stderr) = process.stderr.take() {
+            tokio::spawn(async move {
+                use tokio::io::AsyncBufReadExt;
+                let mut reader = tokio::io::BufReader::new(stderr).lines();
+                while let Ok(Some(line)) = reader.next_line().await {
+                    if line.contains("Opening '") && line.contains(".ts' for writing") {
+                        if let Some(seg_str) = line.split("seg_").nth(1).and_then(|s| s.split('.').next()) {
+                            if let Ok(idx) = seg_str.parse::<usize>() {
+                                // Important: We know a segment is DONE when the NEXT segment starts writing!
+                                // Or if it's the very first segment, we might just have to return early and let it stream.
+                                // Actually, HLS can stream the .ts file while it's being written.
+                                // So we can just notify that the current segment has started writing.
+                                let _ = tx.send(Some(idx));
+                            }
+                        }
+                    }
+                }
+            });
+        }
+        if let Ok(Some(status)) = process.try_wait() {
+            let mut stderr_content = String::new();
+            if let Some(mut stderr) = process.stderr.take() {
+                let _ = stderr.read_to_string(&mut stderr_content).await;
+            }
+            return Err(crate::errors::CoreError::RuntimeError(format!(
+                "FFmpeg exited immediately with status {}. Stderr: {}", 
+                status, stderr_content
+            )));
+        }
+
         let mut sessions = self.sessions.lock().await;
         sessions.insert(id.to_string(), StreamSession {
             process,
@@ -107,9 +151,37 @@ impl StreamManager {
             last_access: std::time::Instant::now(),
             start_segment,
             last_requested_segment: start_segment,
+            latest_segment_rx: rx,
         });
 
         Ok(playlist_path)
+    }
+
+    pub async fn wait_for_segment(&self, id: &str, segment_index: usize) -> Result<bool> {
+        let mut rx = {
+            let sessions = self.sessions.lock().await;
+            if let Some(session) = sessions.get(id) {
+                session.latest_segment_rx.clone()
+            } else {
+                return Ok(false);
+            }
+        };
+
+        let result = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+            loop {
+                let current = *rx.borrow();
+                if let Some(idx) = current {
+                    if idx > segment_index {
+                        break;
+                    }
+                }
+                if rx.changed().await.is_err() {
+                    break;
+                }
+            }
+        }).await;
+        
+        Ok(result.is_ok())
     }
 
     pub async fn request_segment(&self, id: &str, input_path: &Path, segment_index: usize) -> Result<()> {

@@ -97,11 +97,10 @@ impl StreamManager {
             .kill_on_drop(true)
             .spawn()?;
 
-        // Wait a small amount of time to see if FFmpeg crashes immediately
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         if let Ok(Some(status)) = process.try_wait() {
             let mut stderr_content = String::new();
             if let Some(mut stderr) = process.stderr.take() {
+                use tokio::io::AsyncReadExt;
                 let _ = stderr.read_to_string(&mut stderr_content).await;
             }
             return Err(crate::errors::CoreError::RuntimeError(format!(

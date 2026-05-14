@@ -81,8 +81,14 @@ async fn main() {
     let pool = db::init_pool(&database_url).await.expect("Failed to initialize database pool");
     let task_manager = Arc::new(TaskManager::new());
     
-    // Configurable Transcode Directory
-    let transcode_dir = std::env::var("HLS_TRANSCODE_DIR").unwrap_or_else(|_| "transcodes".to_string());
+    // Configurable Transcode Directory (Default to RAM disk /dev/shm on Linux/Pi to save SD card life)
+    let transcode_dir = std::env::var("HLS_TRANSCODE_DIR").unwrap_or_else(|_| {
+        if cfg!(target_os = "linux") && std::path::Path::new("/dev/shm").exists() {
+            "/dev/shm/media_manager_transcodes".to_string()
+        } else {
+            std::env::temp_dir().join("media_manager_transcodes").to_string_lossy().to_string()
+        }
+    });
     media_core::config::set_hls_transcode_dir(transcode_dir.clone());
     let stream_manager = Arc::new(StreamManager::new(std::path::PathBuf::from(&transcode_dir)));
 

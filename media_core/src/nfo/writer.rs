@@ -132,6 +132,7 @@ impl NfoWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::{MovieId, LibraryId};
 
     #[tokio::test]
     async fn test_write_movie_nfo() {
@@ -139,8 +140,8 @@ mod tests {
         let path = temp_dir.join("movie_nfo.test");
         
         let movie = Movie {
-            id: 1,
-            library_id: 1,
+            id: MovieId(1),
+            library_id: LibraryId(1),
             title: "Test Movie".to_string(),
             year: Some(2023),
             tmdb_id: Some(12345),
@@ -155,6 +156,7 @@ mod tests {
             genres: Some("[\"Action\", \"Sci-Fi\"]".to_string()),
             language: Some("en".to_string()),
             cast_list: None,
+            preview_path: None,
             nfo_path: None,
             created_at: "2023-01-01".to_string(),
             updated_at: "2023-01-01".to_string(),

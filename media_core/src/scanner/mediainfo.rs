@@ -4,7 +4,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use crate::errors::{Result, CoreError};
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct MediaDetails {
     pub width: i32,
     pub height: i32,
@@ -13,6 +13,20 @@ pub struct MediaDetails {
     pub audio_channels: i32,
     pub size_bytes: i64,
     pub duration_secs: i32,
+}
+
+impl Default for MediaDetails {
+    fn default() -> Self {
+        Self {
+            width: 0,
+            height: 0,
+            video_codec: "unknown".to_string(),
+            audio_codec: "unknown".to_string(),
+            audio_channels: 0,
+            size_bytes: 0,
+            duration_secs: 0,
+        }
+    }
 }
 
 fn check_ffprobe() -> Result<()> {

@@ -69,7 +69,6 @@ impl StreamManager {
         std::fs::create_dir_all(&output_dir)?;
 
         let playlist_path = output_dir.join("playlist.m3u8");
-        let segment_pattern = output_dir.join("seg_%03d.ts");
         let normalized_input = crate::paths::normalize_slashes(&input_path.to_string_lossy());
 
         let args = self.build_ffmpeg_args(
@@ -77,7 +76,7 @@ impl StreamManager {
             &details,
             start_segment,
             &playlist_path,
-            &segment_pattern,
+            &output_dir,
         );
 
         let mut process = tokio::process::Command::new(crate::config::get_ffmpeg_path())
@@ -90,14 +89,24 @@ impl StreamManager {
         let (tx, rx) = tokio::sync::watch::channel(None);
         
         // Spawn a task to monitor FFmpeg output and update the channel
+        let output_dir_clone = output_dir.clone();
         tokio::spawn(async move {
             use tokio::io::AsyncBufReadExt;
             let mut reader = tokio::io::BufReader::new(stderr).lines();
+            let mut last_segment: Option<usize> = None;
+            
             while let Ok(Some(line)) = reader.next_line().await {
                 if line.contains("Opening '") && line.contains(".ts' for writing") {
                     if let Some(seg_str) = line.split("seg_").nth(1).and_then(|s| s.split('.').next()) {
                         match seg_str.parse::<usize>() {
                             Ok(idx) => {
+                                // Rename the PREVIOUS segment if it exists
+                                if let Some(prev_idx) = last_segment {
+                                    let old_path = output_dir_clone.join(format!(".seg_{:03}.ts", prev_idx));
+                                    let new_path = output_dir_clone.join(format!("seg_{:03}.ts", prev_idx));
+                                    let _ = tokio::fs::rename(old_path, new_path).await;
+                                }
+                                last_segment = Some(idx);
                                 let _ = tx.send(Some(idx));
                             }
                             Err(e) => {
@@ -108,6 +117,13 @@ impl StreamManager {
                 } else if line.contains("Error") || line.contains("failed") {
                     tracing::debug!("FFmpeg output: {}", line);
                 }
+            }
+
+            // Handle final segment on exit
+            if let Some(last_idx) = last_segment {
+                let old_path = output_dir_clone.join(format!(".seg_{:03}.ts", last_idx));
+                let new_path = output_dir_clone.join(format!("seg_{:03}.ts", last_idx));
+                let _ = tokio::fs::rename(old_path, new_path).await;
             }
         });
 
@@ -254,7 +270,7 @@ impl StreamManager {
         details: &mediainfo::MediaDetails,
         start_segment: usize,
         playlist_path: &Path,
-        segment_pattern: &Path,
+        output_dir: &Path,
     ) -> Vec<String> {
         // Decision Logic
         let v_codec = if details.video_codec == "h264" { "copy" } else { &self.hw_encoder };
@@ -305,10 +321,11 @@ impl StreamManager {
             args.push("expr:gte(t,n_forced*10)".to_string());
         }
 
+        let temp_segment_pattern = output_dir.join(".seg_%03d.ts");
         args.extend(vec![
             "-start_number".to_string(), start_segment.to_string(),
             "-hls_segment_type".to_string(), "mpegts".to_string(),
-            "-hls_segment_filename".to_string(), segment_pattern.to_string_lossy().to_string(),
+            "-hls_segment_filename".to_string(), temp_segment_pattern.to_string_lossy().to_string(),
             playlist_path.to_string_lossy().to_string(),
         ]);
 
@@ -339,8 +356,12 @@ mod tests {
             &details,
             0,
             &PathBuf::from("playlist.m3u8"),
-            &PathBuf::from("seg_%03d.ts"),
+            &PathBuf::from("tmp"),
         );
+
+        // Check -hls_segment_filename
+        let hls_seg_idx = args.iter().position(|r| r == "-hls_segment_filename").unwrap() + 1;
+        assert!(args[hls_seg_idx].contains(".seg_"));
 
         // Check if codecs are copy
         let v_codec_idx = args.iter().position(|r| r == "-c:v").unwrap() + 1;
@@ -377,8 +398,12 @@ mod tests {
             &details,
             0,
             &PathBuf::from("playlist.m3u8"),
-            &PathBuf::from("seg_%03d.ts"),
+            &PathBuf::from("tmp"),
         );
+
+        // Check -hls_segment_filename
+        let hls_seg_idx = args.iter().position(|r| r == "-hls_segment_filename").unwrap() + 1;
+        assert!(args[hls_seg_idx].contains(".seg_"));
 
         // Check if codecs are not copy
         let v_codec_idx = args.iter().position(|r| r == "-c:v").unwrap() + 1;

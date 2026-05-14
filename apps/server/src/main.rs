@@ -40,11 +40,11 @@ fn now_ms() -> u64 {
 fn generate_hls_manifest(_stream_id: &str, duration_secs: f64) -> String {
     let mut manifest = String::from("#EXTM3U\n");
     manifest.push_str("#EXT-X-VERSION:3\n");
-    manifest.push_str("#EXT-X-TARGETDURATION:3\n");
+    manifest.push_str("#EXT-X-TARGETDURATION:12\n");
     manifest.push_str("#EXT-X-MEDIA-SEQUENCE:0\n");
     manifest.push_str("#EXT-X-PLAYLIST-TYPE:VOD\n");
 
-    let segment_duration = 3.0;
+    let segment_duration = 10.0;
     let num_segments = (duration_secs / segment_duration).ceil() as usize;
 
     for i in 0..num_segments {

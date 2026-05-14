@@ -260,7 +260,7 @@ impl StreamManager {
         let v_codec = if details.video_codec == "h264" { "copy" } else { &self.hw_encoder };
         let a_codec = if details.audio_codec == "aac" { "copy" } else { "aac" };
 
-        let start_time = (start_segment * 3).to_string();
+        let start_time = (start_segment * 10).to_string();
 
         let mut args = vec![
             "-loglevel".to_string(), "info".to_string(),
@@ -295,14 +295,14 @@ impl StreamManager {
         args.extend(vec![
             "-sn".to_string(),
             "-f".to_string(), "hls".to_string(),
-            "-hls_time".to_string(), "3".to_string(),
+            "-hls_time".to_string(), "10".to_string(),
             "-hls_list_size".to_string(), "0".to_string(),
             "-hls_flags".to_string(), "independent_segments".to_string(),
         ]);
 
         if v_codec != "copy" {
             args.push("-force_key_frames".to_string());
-            args.push("expr:gte(t,n_forced*3)".to_string());
+            args.push("expr:gte(t,n_forced*10)".to_string());
         }
 
         args.extend(vec![

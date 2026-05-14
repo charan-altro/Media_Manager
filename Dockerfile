@@ -41,14 +41,13 @@ RUN npm run build
 
 # Stage 3: Build Custom FFmpeg with RPi hardware acceleration
 FROM cgr.dev/chainguard/wolfi-base AS ffmpeg-builder
-RUN apk update && apk add build-base git nasm yasm v4l-utils-dev
+RUN apk update && apk add build-base git nasm yasm linux-headers
 WORKDIR /ffmpeg
 RUN git clone --depth 1 https://github.com/FFmpeg/FFmpeg.git .
 RUN ./configure \
     --prefix=/usr/local \
     --enable-gpl \
     --enable-nonfree \
-    --enable-libv4l2 \
     --enable-v4l2-m2m \
     --disable-debug \
     --disable-doc \
@@ -58,8 +57,8 @@ RUN ./configure \
 
 # Stage 4: Minimal Hardened Runtime
 FROM cgr.dev/chainguard/wolfi-base
-# Install only essential runtime libs for FFmpeg (v4l)
-RUN apk update && apk add v4l-utils shadow
+# Shadow is needed for user management
+RUN apk update && apk add shadow
 
 # Create non-root user
 RUN groupadd -r mediavault && useradd -r -g mediavault mediavault

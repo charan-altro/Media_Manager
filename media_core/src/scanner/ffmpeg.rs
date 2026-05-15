@@ -6,7 +6,27 @@ use tracing::{info, error};
 
 pub struct FfmpegEngine;
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum StreamStrategy {
+    DirectCopy,
+    SmartRemux { video_copy: bool, audio_copy: bool },
+    FullTranscode,
+}
+
 impl FfmpegEngine {
+    /// Determines the best streaming strategy based on media details and browser support.
+    pub fn get_stream_strategy(details: &crate::scanner::mediainfo::MediaDetails) -> StreamStrategy {
+        let video_supported = ["h264", "vp9", "av1"].contains(&details.video_codec.as_str());
+        let audio_supported = ["aac", "mp3", "opus"].contains(&details.audio_codec.as_str());
+
+        match (video_supported, audio_supported) {
+            (true, true) => StreamStrategy::DirectCopy,
+            (true, false) => StreamStrategy::SmartRemux { video_copy: true, audio_copy: false },
+            (false, true) => StreamStrategy::SmartRemux { video_copy: false, audio_copy: true },
+            (false, false) => StreamStrategy::FullTranscode,
+        }
+    }
+
     pub fn probe_hw_codecs() -> Vec<String> {
         let mut supported = Vec::new();
         // Include v4l2m2m for Broadcom/Raspberry Pi architectures

@@ -1,37 +1,50 @@
 // media_core/src/scanner/streaming.rs
 use tokio::process::Child;
-use tokio::sync::Mutex as TokioMutex;
 use std::sync::Arc;
-use std::collections::HashMap;
+use dashmap::DashMap;
 use std::path::{Path, PathBuf};
 use crate::errors::Result;
 use std::process::Stdio;
-// use tokio::io::AsyncReadExt;
+use std::collections::HashMap;
 use crate::scanner::mediainfo;
+use tokio_util::io::ReaderStream;
+use tokio_util::bytes::Bytes;
+use futures::Stream;
+use std::pin::Pin;
+use std::task::{Context, Poll};
+use std::io;
 
 const SEG_PREFIX: &str = "seg_";
 const FFMPEG_SEG_PATTERN: &str = ".seg_%03d.ts";
 
-pub fn generate_hls_manifest(duration_secs: f64) -> String {
+pub struct ChildStream {
+    reader: ReaderStream<tokio::process::ChildStdout>,
+    _child: tokio::process::Child,
+}
+
+impl Stream for ChildStream {
+    type Item = io::Result<Bytes>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        Pin::new(&mut self.reader).poll_next(cx)
+    }
+}
+
+pub fn generate_hls_manifest(duration_secs: i32) -> String {
+    let segment_duration = 4;
     let mut manifest = String::from("#EXTM3U\n");
     manifest.push_str("#EXT-X-VERSION:3\n");
-    manifest.push_str("#EXT-X-TARGETDURATION:12\n");
+    manifest.push_str("#EXT-X-TARGETDURATION:4\n");
     manifest.push_str("#EXT-X-MEDIA-SEQUENCE:0\n");
     manifest.push_str("#EXT-X-PLAYLIST-TYPE:VOD\n");
 
-    let segment_duration = 10.0;
-    let num_segments = (duration_secs / segment_duration).ceil() as usize;
-
-    for i in 0..num_segments {
-        let remaining = duration_secs - (i as f64 * segment_duration);
-        let current_seg_dur = if remaining < segment_duration {
-            remaining
-        } else {
-            segment_duration
-        };
-
-        manifest.push_str(&format!("#EXTINF:{:.1},\n", current_seg_dur));
-        manifest.push_str(&format!("seg_{:03}.ts\n", i));
+    let mut leftover = duration_secs;
+    let mut segment_idx = 0;
+    while leftover > 0 {
+        let length = if leftover > segment_duration { segment_duration } else { leftover };
+        manifest.push_str(&format!("#EXTINF:{}.0,\nseg_{:03}.ts\n", length, segment_idx));
+        leftover -= length;
+        segment_idx += 1;
     }
 
     manifest.push_str("#EXT-X-ENDLIST\n");
@@ -80,8 +93,8 @@ pub struct StreamSession {
 }
 
 pub struct StreamManager {
-    sessions: Arc<TokioMutex<HashMap<String, StreamSession>>>,
-    pending_restarts: Arc<TokioMutex<HashMap<String, usize>>>,
+    sessions: Arc<DashMap<String, StreamSession>>,
+    pending_restarts: Arc<DashMap<String, usize>>,
     base_output_dir: PathBuf,
     hw_encoder: String,
     hw_decoders: Vec<String>,
@@ -105,8 +118,8 @@ impl StreamManager {
         let hw_decoders = crate::scanner::ffmpeg::FfmpegEngine::probe_hw_decoders();
 
         Self {
-            sessions: Arc::new(TokioMutex::new(HashMap::new())),
-            pending_restarts: Arc::new(TokioMutex::new(HashMap::new())),
+            sessions: Arc::new(DashMap::new()),
+            pending_restarts: Arc::new(DashMap::new()),
             base_output_dir,
             hw_encoder,
             hw_decoders,
@@ -246,8 +259,7 @@ impl StreamManager {
             )));
         }
 
-        let mut sessions = self.sessions.lock().await;
-        sessions.insert(id.to_string(), StreamSession {
+        self.sessions.insert(id.to_string(), StreamSession {
             process,
             output_dir: output_dir.clone(),
             input_path: input_path.to_path_buf(),
@@ -263,8 +275,7 @@ impl StreamManager {
 
     pub async fn wait_for_segment(&self, id: &str, segment_index: usize) -> Result<bool> {
         let mut rx = {
-            let sessions = self.sessions.lock().await;
-            if let Some(session) = sessions.get(id) {
+            if let Some(session) = self.sessions.get(id) {
                 session.latest_segment_rx.clone()
             } else {
                 return Ok(false);
@@ -274,11 +285,12 @@ impl StreamManager {
         // Update heartbeat to prevent reaping while waiting
         self.update_heartbeat(id).await;
 
-        let result = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        let result = tokio::time::timeout(std::time::Duration::from_secs(10), async {
             loop {
                 let current = *rx.borrow();
+                // If current segment being written is > segment_index, then segment_index is READY
                 if let Some(idx) = current {
-                    if idx >= segment_index { 
+                    if idx > segment_index { 
                         break;
                     }
                 }
@@ -288,13 +300,20 @@ impl StreamManager {
             }
         }).await;
         
+        if result.is_ok() {
+            // Verify file exists on disk (double check for race conditions)
+            let path = self.get_segment_path(id, segment_index);
+            for _ in 0..5 {
+                if path.exists() { return Ok(true); }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        }
+
         Ok(result.is_ok())
     }
 
-    pub async fn request_segment(&self, id: &str, input_path: &Path, segment_index: usize) -> Result<()> {
-        let mut sessions = self.sessions.lock().await;
-        
-        let (needs_restart, is_dash) = if let Some(session) = sessions.get_mut(id) {
+    pub async fn get_or_restart_process(&self, id: &str, input_path: &Path, segment_index: usize) -> Result<()> {
+        let (needs_restart, is_dash) = if let Some(mut session) = self.sessions.get_mut(id) {
             session.last_access = std::time::Instant::now();
             
             let segment_path = self.get_segment_path(id, segment_index);
@@ -315,22 +334,17 @@ impl StreamManager {
 
         if needs_restart {
             // Check if a restart for this id/segment is already in progress
-            let mut pending = self.pending_restarts.lock().await;
-            if let Some(&target) = pending.get(id) {
-                if target == segment_index {
+            if let Some(target) = self.pending_restarts.get(id) {
+                if *target == segment_index {
                     return Ok(());
                 }
             }
-            pending.insert(id.to_string(), segment_index);
-            drop(pending);
-            
-            drop(sessions);
+            self.pending_restarts.insert(id.to_string(), segment_index);
 
             let result = self.start_stream_at(id, input_path, segment_index, is_dash).await;
             
             // Clear pending restart regardless of success
-            let mut pending = self.pending_restarts.lock().await;
-            pending.remove(id);
+            self.pending_restarts.remove(id);
             
             return result.map(|_| ());
         }
@@ -338,33 +352,43 @@ impl StreamManager {
         Ok(())
     }
 
+    pub async fn request_segment(&self, id: &str, input_path: &Path, segment_index: usize) -> Result<()> {
+        self.get_or_restart_process(id, input_path, segment_index).await
+    }
+
     pub async fn stop_stream(&self, id: &str) {
-        let mut sessions = self.sessions.lock().await;
-        if let Some(mut session) = sessions.remove(id) {
+        if let Some((_, mut session)) = self.sessions.remove(id) {
             let _ = session.process.kill().await;
             let _ = std::fs::remove_dir_all(&session.output_dir);
+        }
+    }
+
+    pub async fn stop_all_streams(&self) {
+        let session_ids: Vec<String> = self.sessions.iter().map(|s| s.key().clone()).collect();
+        for id in session_ids {
+            self.stop_stream(&id).await;
         }
     }
 
     pub async fn cleanup_stale_streams(&self) {
         let mut session_ids_to_remove = Vec::new();
         let mut throttled_session_ids = Vec::new();
-        {
-            let sessions = self.sessions.lock().await;
-            let now = std::time::Instant::now();
-            let timeout = std::time::Duration::from_secs(120);
+        
+        let now = std::time::Instant::now();
+        let timeout = std::time::Duration::from_secs(120);
 
-            for (id, session) in sessions.iter() {
-                if now.duration_since(session.last_access) > timeout {
+        for entry in self.sessions.iter() {
+            let id = entry.key();
+            let session = entry.value();
+            if now.duration_since(session.last_access) > timeout {
+                session_ids_to_remove.push(id.clone());
+                continue;
+            }
+
+            if let Some(latest) = *session.latest_segment_rx.borrow() {
+                if latest > session.last_requested_segment + 30 { 
+                    throttled_session_ids.push(id.clone());
                     session_ids_to_remove.push(id.clone());
-                    continue;
-                }
-
-                if let Some(latest) = *session.latest_segment_rx.borrow() {
-                    if latest > session.last_requested_segment + 30 { 
-                        throttled_session_ids.push(id.clone());
-                        session_ids_to_remove.push(id.clone());
-                    }
                 }
             }
         }
@@ -380,8 +404,7 @@ impl StreamManager {
     }
 
     pub async fn update_heartbeat(&self, id: &str) {
-        let mut sessions = self.sessions.lock().await;
-        if let Some(session) = sessions.get_mut(id) {
+        if let Some(mut session) = self.sessions.get_mut(id) {
             session.last_access = std::time::Instant::now();
         }
     }
@@ -416,13 +439,24 @@ impl StreamManager {
         }
 
         // Decision Logic for HLS
-        let v_codec = if details.video_codec == "h264" { "copy" } else { &self.hw_encoder };
-        let a_codec = if details.audio_codec == "aac" { "copy" } else { "aac" };
+        let strategy = crate::scanner::ffmpeg::FfmpegEngine::get_stream_strategy(details);
+        let v_codec = match strategy {
+            crate::scanner::ffmpeg::StreamStrategy::DirectCopy => "copy",
+            crate::scanner::ffmpeg::StreamStrategy::SmartRemux { video_copy, .. } if video_copy => "copy",
+            _ => &self.hw_encoder,
+        };
+        let a_codec = match strategy {
+            crate::scanner::ffmpeg::StreamStrategy::DirectCopy => "copy",
+            crate::scanner::ffmpeg::StreamStrategy::SmartRemux { audio_copy, .. } if audio_copy => "copy",
+            _ => "aac",
+        };
 
-        let start_time = (start_segment * 10).to_string();
+        let start_time = (start_segment * 4).to_string();
 
         let mut args = vec![
             "-loglevel".to_string(), "info".to_string(),
+            "-probesize".to_string(), "32".to_string(),
+            "-analyzeduration".to_string(), "0".to_string(),
         ];
 
         // INJECT HW DECODER BEFORE -i
@@ -444,11 +478,20 @@ impl StreamManager {
         args.push("-c:v".to_string());
         args.push(v_codec.to_string());
         if v_codec != "copy" {
-            args.extend(vec![
-                "-pix_fmt".to_string(), "yuv420p".to_string(),
-                "-preset".to_string(), "ultrafast".to_string(),
-                "-crf".to_string(), "26".to_string(),
-            ]);
+            if v_codec == "h264_v4l2m2m" {
+                // Pi 4 optimized flags
+                args.extend(vec![
+                    "-b:v".to_string(), "4M".to_string(),
+                    "-maxrate".to_string(), "5M".to_string(),
+                    "-bufsize".to_string(), "8M".to_string(),
+                ]);
+            } else {
+                args.extend(vec![
+                    "-pix_fmt".to_string(), "yuv420p".to_string(),
+                    "-preset".to_string(), "ultrafast".to_string(),
+                    "-crf".to_string(), "26".to_string(),
+                ]);
+            }
 
             // Hardware Scaling (Pi 4 Optimized)
             if self.hw_decoders.contains(&"h264_v4l2m2m".to_string()) && details.width > 1280 {
@@ -471,14 +514,14 @@ impl StreamManager {
         args.extend(vec![
             "-sn".to_string(),
             "-f".to_string(), "hls".to_string(),
-            "-hls_time".to_string(), "10".to_string(),
+            "-hls_time".to_string(), "4".to_string(),
             "-hls_list_size".to_string(), "0".to_string(),
             "-hls_flags".to_string(), "independent_segments".to_string(),
         ]);
 
         if v_codec != "copy" {
             args.push("-force_key_frames".to_string());
-            args.push("expr:gte(t,n_forced*10)".to_string());
+            args.push("expr:gte(t,n_forced*4)".to_string());
         }
 
         let temp_segment_pattern = output_dir.join(FFMPEG_SEG_PATTERN);
@@ -502,6 +545,8 @@ impl StreamManager {
         let start_time = (start_segment * 10).to_string();
         let mut args = vec![
             "-loglevel".to_string(), "info".to_string(),
+            "-probesize".to_string(), "32".to_string(),
+            "-analyzeduration".to_string(), "0".to_string(),
         ];
 
         // HW Decoder for VP9/Opus transcode
@@ -546,12 +591,113 @@ impl StreamManager {
 
         args
     }
+
+    pub async fn stream_direct(
+        &self,
+        input_path: &std::path::Path,
+        start_time_secs: f64,
+    ) -> crate::errors::Result<ChildStream> {
+        let details = crate::scanner::mediainfo::get_media_info(input_path).unwrap_or_default();
+        let normalized_input = crate::paths::normalize_slashes(&input_path.to_string_lossy());
+        
+        let args = self.build_fmp4_args(&normalized_input, &details, start_time_secs);
+
+        let mut child = tokio::process::Command::new(crate::config::get_ffmpeg_path())
+            .args(&args)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .spawn()?;
+
+        let stdout = child.stdout.take().ok_or_else(|| crate::errors::CoreError::FfmpegError("Failed to capture stdout".to_string()))?;
+        
+        Ok(ChildStream {
+            reader: ReaderStream::new(stdout),
+            _child: child,
+        })
+    }
+
+    pub fn build_fmp4_args(
+        &self,
+        input_path: &str,
+        details: &crate::scanner::mediainfo::MediaDetails,
+        start_time_secs: f64,
+    ) -> Vec<String> {
+        let strategy = crate::scanner::ffmpeg::FfmpegEngine::get_stream_strategy(details);
+        let v_codec = match strategy {
+            crate::scanner::ffmpeg::StreamStrategy::DirectCopy => "copy",
+            crate::scanner::ffmpeg::StreamStrategy::SmartRemux { video_copy, .. } if video_copy => "copy",
+            _ => &self.hw_encoder,
+        };
+        let a_codec = match strategy {
+            crate::scanner::ffmpeg::StreamStrategy::DirectCopy => "copy",
+            crate::scanner::ffmpeg::StreamStrategy::SmartRemux { audio_copy, .. } if audio_copy => "copy",
+            _ => "aac",
+        };
+
+        let mut args = vec!["-loglevel".to_string(), "error".to_string()];
+        
+        if v_codec != "copy" {
+            if let Some(hw_decoder) = crate::scanner::ffmpeg::FfmpegEngine::get_hw_decoder(&details.video_codec, &self.hw_decoders) {
+                args.push("-c:v".to_string());
+                args.push(hw_decoder);
+            }
+        }
+
+        if start_time_secs > 0.0 {
+            args.extend(vec!["-ss".to_string(), start_time_secs.to_string()]);
+        }
+
+        args.extend(vec![
+            "-i".to_string(), input_path.to_string(),
+            "-map".to_string(), "0:v:0".to_string(),
+            "-map".to_string(), "0:a:0?".to_string(),
+            "-c:v".to_string(), v_codec.to_string(),
+        ]);
+
+        if v_codec != "copy" {
+            args.extend(vec![
+                "-preset".to_string(), "ultrafast".to_string(),
+                "-crf".to_string(), "26".to_string(),
+                "-force_key_frames".to_string(), "expr:gte(t,n_forced*2)".to_string(),
+            ]);
+        }
+
+        args.extend(vec![
+            "-c:a".to_string(), a_codec.to_string(),
+        ]);
+        
+        if a_codec != "copy" {
+            args.extend(vec!["-b:a".to_string(), "128k".to_string(), "-ac".to_string(), "2".to_string()]);
+        }
+
+        args.extend(vec![
+            "-movflags".to_string(), "frag_keyframe+empty_moov+default_base_moof".to_string(),
+            "-f".to_string(), "mp4".to_string(),
+            "pipe:1".to_string(),
+        ]);
+
+        args
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::scanner::mediainfo::MediaDetails;
+
+    #[test]
+    fn test_generate_hls_manifest() {
+        let duration = 25;
+        let manifest = generate_hls_manifest(duration);
+        
+        assert!(manifest.contains("#EXTM3U"));
+        assert!(manifest.contains("#EXT-X-PLAYLIST-TYPE:VOD"));
+        assert!(manifest.contains("#EXTINF:10.0,\nseg_000.ts"));
+        assert!(manifest.contains("#EXTINF:10.0,\nseg_001.ts"));
+        assert!(manifest.contains("#EXTINF:5.0,\nseg_002.ts"));
+        assert!(manifest.contains("#EXT-X-ENDLIST"));
+    }
 
     #[test]
     fn test_build_ffmpeg_args_smart_remux() {
@@ -604,7 +750,7 @@ mod tests {
             width: 1920,
             height: 1080,
             video_codec: "hevc".to_string(),
-            audio_codec: "mp3".to_string(),
+            audio_codec: "ac3".to_string(),
             audio_channels: 2,
             size_bytes: 1000,
             duration_secs: 100,
@@ -660,8 +806,7 @@ mod tests {
 
         let (_tx, rx) = tokio::sync::watch::channel(None);
         {
-            let mut sessions = manager.sessions.lock().await;
-            sessions.insert(id.to_string(), StreamSession {
+            manager.sessions.insert(id.to_string(), StreamSession {
                 process,
                 output_dir: output_dir.clone(),
                 input_path: PathBuf::from("input.mp4"),
@@ -693,8 +838,7 @@ mod tests {
         };
         let (_tx, rx) = tokio::sync::watch::channel(None);
         {
-            let mut sessions = manager.sessions.lock().await;
-            sessions.insert(id.to_string(), StreamSession {
+            manager.sessions.insert(id.to_string(), StreamSession {
                 process,
                 output_dir: output_dir.clone(),
                 input_path: PathBuf::from("input.mp4"),
@@ -736,8 +880,7 @@ mod tests {
 
         let (tx, rx) = tokio::sync::watch::channel(None);
         {
-            let mut sessions = manager.sessions.lock().await;
-            sessions.insert(id.to_string(), StreamSession {
+            manager.sessions.insert(id.to_string(), StreamSession {
                 process,
                 output_dir: output_dir.clone(),
                 input_path: PathBuf::from("input.mp4"),
@@ -752,16 +895,43 @@ mod tests {
         tx.send(Some(10)).unwrap();
         manager.cleanup_stale_streams().await;
         {
-            let sessions = manager.sessions.lock().await;
-            assert!(sessions.contains_key(id));
+            assert!(manager.sessions.contains_key(id));
         }
 
         tx.send(Some(31)).unwrap(); 
         manager.cleanup_stale_streams().await;
         {
-            let sessions = manager.sessions.lock().await;
-            assert!(!sessions.contains_key(id));
+            assert!(!manager.sessions.contains_key(id));
         }
+    }
+
+    #[tokio::test]
+    async fn test_get_or_restart_process_parallel() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let manager = Arc::new(StreamManager::new(temp_dir.path().to_path_buf()));
+        let id = "parallel_test";
+        let input_path = PathBuf::from("input.mp4");
+
+        // We can't easily mock start_stream_at without refactoring, 
+        // but we can check if pending_restarts handles concurrent calls.
+        
+        let mut handles = Vec::new();
+        for _ in 0..10 {
+            let m = manager.clone();
+            let id_clone = id.to_string();
+            let path_clone = input_path.clone();
+            handles.push(tokio::spawn(async move {
+                // This will fail because input.mp4 doesn't exist, but it should hit pending_restarts
+                let _ = m.get_or_restart_process(&id_clone, &path_clone, 0).await;
+            }));
+        }
+
+        for h in handles {
+            let _ = h.await;
+        }
+
+        // Check that pending_restarts is empty after all tasks finish
+        assert!(manager.pending_restarts.is_empty());
     }
 
     #[test]
@@ -799,5 +969,26 @@ mod tests {
 
         let vf_idx = args.iter().position(|r| r == "-vf").expect("Scaling filter missing") + 1;
         assert_eq!(args[vf_idx], "scale_v4l2m2m=1280:-1");
+    }
+
+    #[test]
+    fn test_build_fmp4_args() {
+        let manager = StreamManager::new(std::path::PathBuf::from("tmp"));
+        let details = crate::scanner::mediainfo::MediaDetails {
+            width: 1920,
+            height: 1080,
+            video_codec: "h264".to_string(),
+            audio_codec: "aac".to_string(),
+            audio_channels: 2,
+            size_bytes: 1000,
+            duration_secs: 100,
+        };
+
+        let args = manager.build_fmp4_args("input.mkv", &details, 0.0);
+        
+        assert!(args.contains(&"-movflags".to_string()));
+        assert!(args.contains(&"frag_keyframe+empty_moov+default_base_moof".to_string()));
+        assert!(args.contains(&"-f".to_string()));
+        assert!(args.contains(&"mp4".to_string()));
     }
 }

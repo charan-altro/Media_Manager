@@ -264,12 +264,14 @@ export const api = {
   checkUpdates: () =>
     request<UpdateCheckResult>('check_updates', '/system/update-check', { method: 'GET' }),
 
-  startStreaming: async (id: number, type: 'movie' | 'episode' = 'movie') => {
-    const path = type === 'movie' ? `/stream/movie/${id}` : `/stream/episode/${id}`;
+  startStreaming: async (id: number, type: 'movie' | 'episode' = 'movie', protocol?: 'hls' | 'dash' | 'direct') => {
+    const path = type === 'movie' 
+      ? `/stream/movie/${id}${protocol ? `?protocol=${protocol}` : ''}` 
+      : `/stream/episode/${id}${protocol ? `?protocol=${protocol}` : ''}`;
     const playlistUrl = await api.request<string>('start_streaming', path, { method: 'POST', id, media_type: type });
     
     // Add cache buster to prevent stale manifest loading
-    const buster = `?t=${Date.now()}`;
+    const buster = playlistUrl.includes('?') ? `&t=${Date.now()}` : `?t=${Date.now()}`;
     const urlWithBuster = playlistUrl + buster;
 
     if (IS_TAURI && !playlistUrl.startsWith('http')) {

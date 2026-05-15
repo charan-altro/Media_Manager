@@ -37,32 +37,6 @@ fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
-fn generate_hls_manifest(_stream_id: &str, duration_secs: f64) -> String {
-    let mut manifest = String::from("#EXTM3U\n");
-    manifest.push_str("#EXT-X-VERSION:3\n");
-    manifest.push_str("#EXT-X-TARGETDURATION:12\n");
-    manifest.push_str("#EXT-X-MEDIA-SEQUENCE:0\n");
-    manifest.push_str("#EXT-X-PLAYLIST-TYPE:VOD\n");
-
-    let segment_duration = 10.0;
-    let num_segments = (duration_secs / segment_duration).ceil() as usize;
-
-    for i in 0..num_segments {
-        let remaining = duration_secs - (i as f64 * segment_duration);
-        let current_seg_dur = if remaining < segment_duration {
-            remaining
-        } else {
-            segment_duration
-        };
-
-        manifest.push_str(&format!("#EXTINF:{:.1},\n", current_seg_dur));
-        manifest.push_str(&format!("seg_{:03}.ts\n", i));
-    }
-
-    manifest.push_str("#EXT-X-ENDLIST\n");
-    manifest
-}
-
 #[tokio::main]
 async fn main() {
     dotenvy::dotenv().ok();
@@ -188,7 +162,7 @@ async fn main() {
         .route("/api/stream/hls/:id/:file", get(serve_stream_file))
         .route("/api/stream/dash/:id/manifest.mpd", get(serve_dash_manifest))
         .route("/api/stream/dash/:id/:file", get(serve_stream_file))
-        .nest_service("/transcodes", tower_http::services::ServeDir::new("transcodes"))
+        .nest_service("/transcodes", tower_http::services::ServeDir::new(&transcode_dir))
         .route("/api/movies/:id/download", get(download_movie))
         .route("/api/episodes/:id/download", get(download_episode))
         // .route("/api/stream/:id/start", post(start_streaming))
@@ -205,7 +179,7 @@ async fn main() {
         .route("/api/system/update-check", get(check_updates))
         .route("/api/sync/trakt", post(sync_trakt))
         .layer(cors)
-        .with_state(app_state)
+        .with_state(app_state.clone())
         .fallback_service(
             tower_http::services::ServeDir::new("frontend/dist")
                 .fallback(tower_http::services::ServeFile::new("frontend/dist/index.html"))
@@ -215,7 +189,37 @@ async fn main() {
     tracing::info!("Server listening on {}", addr);
     
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal(app_state))
+        .await
+        .unwrap();
+}
+
+async fn shutdown_signal(state: Arc<AppState>) {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install signal handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+
+    tracing::info!("Shutdown signal received, cleaning up streams...");
+    state.stream_manager.stop_all_streams().await;
 }
 
 async fn health_check() -> impl IntoResponse {
@@ -785,13 +789,16 @@ async fn cleanup_batch(State(state): State<Arc<AppState>>, Json(payload): Json<B
 #[derive(serde::Deserialize)]
 struct ArtworkQuery { path: String }
 
-async fn get_local_artwork(State(state): State<Arc<AppState>>, Query(query): Query<ArtworkQuery>, req: axum::extract::Request) -> impl IntoResponse {
-    let mut path = PathBuf::from(&query.path);
+async fn get_local_artwork(State(state): State<Arc<AppState>>, Query(query): Query<ArtworkQuery>) -> impl IntoResponse {
+    let normalized_query_path = media_core::paths::normalize_slashes(&query.path);
+    let mut path = PathBuf::from(&normalized_query_path);
+    tracing::debug!("Artwork request for path: {:?}", path);
+
     if !path.exists() {
         // Try resolving relative to all libraries
         if let Ok(libraries) = db::queries::get_all_libraries(&state.pool).await {
             for lib in libraries {
-                let abs_path = media_core::paths::make_absolute(&query.path, std::path::Path::new(&lib.path));
+                let abs_path = media_core::paths::make_absolute(&normalized_query_path, std::path::Path::new(&lib.path));
                 if abs_path.exists() {
                     path = abs_path;
                     break;
@@ -801,29 +808,35 @@ async fn get_local_artwork(State(state): State<Arc<AppState>>, Query(query): Que
     }
 
     if !path.exists() {
+        tracing::warn!("Artwork not found: {:?}", query.path);
         return (StatusCode::NOT_FOUND, "File not found").into_response();
     }
 
-    use tower::ServiceExt;
-    use tower_http::services::ServeFile;
-    let mime = if query.path.ends_with(".png") { 
-        "image/png" 
-    } else if query.path.ends_with(".mp4") {
-        "video/mp4"
-    } else if query.path.ends_with(".webm") {
-        "video/webm"
-    } else { 
-        "image/jpeg" 
-    };
-    let service = ServeFile::new(path).precompressed_gzip();
-    
-    match service.oneshot(req).await {
-        Ok(res) => {
-            let mut res = res.into_response();
-            res.headers_mut().insert(header::CONTENT_TYPE, mime.parse().unwrap());
-            res
+    match tokio::fs::read(&path).await {
+        Ok(bytes) => {
+            let mime = if normalized_query_path.ends_with(".png") { 
+                "image/png" 
+            } else if normalized_query_path.ends_with(".mp4") {
+                "video/mp4"
+            } else if normalized_query_path.ends_with(".webm") {
+                "video/webm"
+            } else if normalized_query_path.ends_with(".webp") {
+                "image/webp"
+            } else if normalized_query_path.ends_with(".svg") {
+                "image/svg+xml"
+            } else { 
+                "image/jpeg" 
+            };
+            
+            (
+                [(header::CONTENT_TYPE, mime)],
+                bytes,
+            ).into_response()
         },
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => {
+            tracing::error!("Failed to read artwork file {:?}: {}", path, e);
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+        }
     }
 }
 
@@ -1857,26 +1870,39 @@ async fn start_movie_stream(
         .await
         .unwrap_or_default();
 
-    if let Some((path_str, codec)) = file_info {
+    if let Some((path_str, _codec)) = file_info {
         let path = if let Ok(Some(full_path)) = db::queries::get_movie_full_path(&state.pool, MovieId(id)).await {
             full_path
         } else {
             PathBuf::from(&path_str)
         };
         
-        // Direct Play Check
-        let is_mp4 = path.extension().and_then(|e| e.to_str()).unwrap_or("").eq_ignore_ascii_case("mp4");
-        let codec_str = codec.as_deref().unwrap_or("").to_lowercase();
-        let is_compatible_codec = codec_str == "h264" || codec_str == "hvc1" || codec_str == "hevc" || codec_str == "avc1";
+        let is_dash = query.protocol.as_deref() == Some("dash");
+        let is_hls = query.protocol.as_deref() == Some("hls");
+        let is_direct = query.protocol.as_deref() == Some("direct");
 
-        if is_mp4 && is_compatible_codec {
-            tracing::info!("Direct play enabled for movie ID: {}", id);
-            return (StatusCode::OK, Json(format!("/api/stream/direct/movie/{}", id))).into_response();
+        // Strategy Resolver (Matches Task S-1.2 in DOCS)
+        let details = media_core::scanner::mediainfo::MediaDetails {
+            video_codec: _codec.unwrap_or_default(),
+            ..Default::default()
+        };
+        let strategy = media_core::scanner::ffmpeg::FfmpegEngine::get_stream_strategy(&details);
+
+        if is_direct || (!is_dash && !is_hls) {
+            // Tier 1: Zero-CPU Direct Play for Browser-Native MP4s
+            if strategy == media_core::scanner::ffmpeg::StreamStrategy::DirectCopy && path.extension().map_or(false, |ext| ext == "mp4") {
+                tracing::info!("Tier 1: Zero-CPU Direct Play enabled for movie ID: {}", id);
+                return (StatusCode::OK, Json(format!("/api/stream/direct/movie/{}", id))).into_response();
+            }
+
+            // Tier 2: fMP4 Direct Stream (Smart Remux) for MKV/Other containers
+            tracing::info!("Tier 2: fMP4 Direct Stream enabled for movie ID: {}", id);
+            return (StatusCode::OK, Json(format!("/api/stream/direct/movie/{}?start=0", id))).into_response();
         }
 
-        let is_dash = query.protocol.as_deref() == Some("dash");
+        // Tier 3: Stateful HLS/DASH for high-compatibility/Seeking
+        tracing::info!("Tier 3: {} streaming enabled for movie ID: {}", if is_dash { "DASH" } else { "HLS" }, id);
         let stream_id = format!("movie_{}", id);
-
         let result = if is_dash {
             state.stream_manager.start_dash(&stream_id, &path).await
         } else {
@@ -1916,26 +1942,39 @@ async fn start_episode_stream(
         .await
         .unwrap_or_default();
 
-    if let Some((path_str, codec)) = file_info {
+    if let Some((path_str, _codec)) = file_info {
         let path = if let Ok(Some(full_path)) = db::queries::get_episode_full_path(&state.pool, EpisodeId(id)).await {
             full_path
         } else {
             PathBuf::from(&path_str)
         };
         
-        // Direct Play Check
-        let is_mp4 = path.extension().and_then(|e| e.to_str()).unwrap_or("").eq_ignore_ascii_case("mp4");
-        let codec_str = codec.as_deref().unwrap_or("").to_lowercase();
-        let is_compatible_codec = codec_str == "h264" || codec_str == "hvc1" || codec_str == "hevc" || codec_str == "avc1";
+        let is_dash = query.protocol.as_deref() == Some("dash");
+        let is_hls = query.protocol.as_deref() == Some("hls");
+        let is_direct = query.protocol.as_deref() == Some("direct");
 
-        if is_mp4 && is_compatible_codec {
-            tracing::info!("Direct play enabled for episode ID: {}", id);
-            return (StatusCode::OK, Json(format!("/api/stream/direct/episode/{}", id))).into_response();
+        // Strategy Resolver
+        let details = media_core::scanner::mediainfo::MediaDetails {
+            video_codec: _codec.unwrap_or_default(),
+            ..Default::default()
+        };
+        let strategy = media_core::scanner::ffmpeg::FfmpegEngine::get_stream_strategy(&details);
+
+        if is_direct || (!is_dash && !is_hls) {
+            // Tier 1: Zero-CPU Direct Play
+            if strategy == media_core::scanner::ffmpeg::StreamStrategy::DirectCopy && path.extension().map_or(false, |ext| ext == "mp4") {
+                tracing::info!("Tier 1: Zero-CPU Direct Play enabled for episode ID: {}", id);
+                return (StatusCode::OK, Json(format!("/api/stream/direct/episode/{}", id))).into_response();
+            }
+
+            // Tier 2: fMP4 Direct Stream
+            tracing::info!("Tier 2: fMP4 Direct Stream enabled for episode ID: {}", id);
+            return (StatusCode::OK, Json(format!("/api/stream/direct/episode/{}?start=0", id))).into_response();
         }
 
-        let is_dash = query.protocol.as_deref() == Some("dash");
+        // Tier 3: Stateful HLS/DASH
+        tracing::info!("Tier 3: {} streaming enabled for episode ID: {}", if is_dash { "DASH" } else { "HLS" }, id);
         let stream_id = format!("episode_{}", id);
-
         let result = if is_dash {
             state.stream_manager.start_dash(&stream_id, &path).await
         } else {
@@ -1958,19 +1997,32 @@ async fn start_episode_stream(
     }
 }
 
-async fn serve_direct_movie(State(state): State<Arc<AppState>>, Path(id): Path<i64>, req: axum::extract::Request) -> impl IntoResponse {
+// serve_direct_movie and serve_direct_episode now use axum::extract::Request directly
+async fn serve_direct_movie(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    req: axum::extract::Request,
+) -> impl IntoResponse {
     if let Ok(Some(path)) = db::queries::get_movie_full_path(&state.pool, MovieId(id)).await {
         use tower::ServiceExt;
-        tower_http::services::ServeFile::new(path).oneshot(req).await.unwrap().into_response()
+        use tower_http::services::ServeFile;
+        let service = ServeFile::new(path);
+        service.oneshot(req).await.unwrap().into_response()
     } else {
         (StatusCode::NOT_FOUND, "Movie not found").into_response()
     }
 }
 
-async fn serve_direct_episode(State(state): State<Arc<AppState>>, Path(id): Path<i64>, req: axum::extract::Request) -> impl IntoResponse {
+async fn serve_direct_episode(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    req: axum::extract::Request,
+) -> impl IntoResponse {
     if let Ok(Some(path)) = db::queries::get_episode_full_path(&state.pool, EpisodeId(id)).await {
         use tower::ServiceExt;
-        tower_http::services::ServeFile::new(path).oneshot(req).await.unwrap().into_response()
+        use tower_http::services::ServeFile;
+        let service = ServeFile::new(path);
+        service.oneshot(req).await.unwrap().into_response()
     } else {
         (StatusCode::NOT_FOUND, "Episode not found").into_response()
     }
@@ -2093,7 +2145,7 @@ async fn serve_stream_file(
 
             if let Some(dur) = duration {
                 tracing::info!("Generating in-memory manifest for {} ({}s)", id, dur);
-                let manifest = generate_hls_manifest(&id, dur as f64);
+                let manifest = media_core::scanner::streaming::generate_hls_manifest(dur);
                 return (
                     [(header::CONTENT_TYPE, "application/vnd.apple.mpegurl")],
                     manifest,

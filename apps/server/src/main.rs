@@ -170,6 +170,7 @@ async fn main() {
         .route("/api/playback/heartbeat", post(update_playback_progress))
         .route("/api/playback/status/:type/:id", get(get_playback_status))
         .route("/api/movies/:id/subtitles/search", get(search_subtitles))
+        .route("/api/assets/:hash/:type", get(get_asset_handler))
         .route("/api/tasks/stream", get(task_stream))
         .route("/api/export/csv", get(export_csv))
         .route("/api/export/html", get(export_html))
@@ -1393,10 +1394,14 @@ async fn process_movie_advanced(State(state): State<Arc<AppState>>, Path(id): Pa
         let _permit = task_manager.acquire_heavy_permit().await;
         let start_ms = now_ms();
         if let Ok(Some(movie)) = db::queries::get_movie_by_id(&pool, MovieId(id)).await {
-            let libraries = db::queries::get_all_libraries(&pool).await.unwrap_or_default();
-            if let (Some(lib), Ok(Some(path))) = (libraries.into_iter().find(|l| l.id == movie.library_id), db::queries::get_movie_full_path(&pool, movie.id).await) {
-                let row: Option<(i64,)> = sqlx::query_as("SELECT id FROM movie_files WHERE movie_id = ? LIMIT 1").bind(id).fetch_optional(&pool).await.unwrap_or_default();
-                if let Some((file_id,)) = row {
+            let file_info: Option<media_core::models::MovieFile> = sqlx::query_as("SELECT * FROM movie_files WHERE movie_id = ? LIMIT 1")
+                .bind(id)
+                .fetch_optional(&pool)
+                .await
+                .unwrap_or_default();
+
+            if let Some(file) = file_info {
+                if let Ok(Some(path)) = db::queries::get_movie_full_path(&pool, movie.id).await {
                     task_manager.broadcast(media_core::models::TaskUpdate {
                         task_id: task_id.clone(),
                         status: "running".to_string(),
@@ -1405,43 +1410,40 @@ async fn process_movie_advanced(State(state): State<Arc<AppState>>, Path(id): Pa
                         message: format!("Analyzing movie: {}...", movie.title),
                         started_at: Some(start_ms),
                         finished_at: None,
-                        debug_info:
- Some("Running FFmpeg cropdetect and thumbnail extraction...".to_string()),
+                        debug_info: Some("Generating centralized sprites, previews, and thumbnails...".to_string()),
                         files_new: None,
                         files_healed: None,
                         files_missing: None,
                     });
 
                     if path.exists() {
-                        let folder = path.parent().unwrap();
-                        let thumb_dest = folder.join(format!("{}.thumb.jpg", path.file_stem().unwrap().to_str().unwrap()));
-                        let lib_root = std::path::Path::new(&lib.path);
-                        
-                        // 1. Detect Ratio
-                        let ratio = media_core::scanner::ffmpeg::FfmpegEngine::detect_aspect_ratio(&path).ok();
-                        
-                        // 2. Extract Thumb
-                        let thumb = media_core::scanner::ffmpeg::FfmpegEngine::extract_thumbnail(&path, &thumb_dest, "00:05:00").ok();
+                        // Ensure fingerprint exists
+                        let fingerprint = match file.fingerprint {
+                            Some(f) if !f.is_empty() => f,
+                            _ => {
+                                let f = media_core::scanner::hash::calculate_oshash(&path).unwrap_or_default();
+                                let _ = sqlx::query("UPDATE movie_files SET fingerprint = ? WHERE id = ?")
+                                    .bind(&f)
+                                    .bind(file.id)
+                                    .execute(&pool)
+                                    .await;
+                                f
+                            }
+                        };
 
-                        // 3. Generate Preview (Stash Style)
-                        let preview_dest = folder.join(format!("{}.preview.mp4", path.file_stem().unwrap().to_str().unwrap()));
-                        let preview = media_core::scanner::ffmpeg::FfmpegEngine::generate_preview(&path, &preview_dest).ok();
-
-                        // Relativize paths for DB
-                        let rel_thumb = thumb.as_ref().and_then(|p| {
-                            media_core::paths::make_relative(p, lib_root).ok()
-                        });
-                        let rel_preview = preview.as_ref().and_then(|p| {
-                            media_core::paths::make_relative(p, lib_root).ok()
-                        });
-
-                        let _ = sqlx::query("UPDATE movie_files SET aspect_ratio = ?, thumbnail_path = ?, preview_path = ? WHERE id = ?")
-                            .bind(ratio)
-                            .bind(rel_thumb)
-                            .bind(rel_preview)
-                            .bind(file_id)
-                            .execute(&pool)
-                            .await;
+                        if !fingerprint.is_empty() {
+                            let generated_root = std::path::Path::new("data/generated");
+                            let duration = file.duration_secs.unwrap_or(0) as f64;
+                            
+                            // Generate Assets (Centralized)
+                            if let Ok(_) = media_core::scanner::ffmpeg::FfmpegEngine::generate_advanced_assets(&path, &fingerprint, generated_root, duration) {
+                                // Record in generated_assets table
+                                let _ = db::queries::upsert_generated_asset(&pool, &fingerprint, "thumb", &format!("{}/thumb.jpg", fingerprint)).await;
+                                let _ = db::queries::upsert_generated_asset(&pool, &fingerprint, "sprite", &format!("{}/sprite.webp", fingerprint)).await;
+                                let _ = db::queries::upsert_generated_asset(&pool, &fingerprint, "vtt", &format!("{}/sprite.vtt", fingerprint)).await;
+                                let _ = db::queries::upsert_generated_asset(&pool, &fingerprint, "preview", &format!("{}/preview.mp4", fingerprint)).await;
+                            }
+                        }
                     }
                 }
             }
@@ -1454,9 +1456,8 @@ async fn process_movie_advanced(State(state): State<Arc<AppState>>, Path(id): Pa
             total: 1,
             message: "Advanced analysis complete".to_string(),
             started_at: Some(start_ms),
-            finished_at: None,
-            debug_info:
- None,
+            finished_at: Some(now_ms()),
+            debug_info: None,
             files_new: None,
             files_healed: None,
             files_missing: None,
@@ -1482,61 +1483,49 @@ async fn process_tv_show_advanced(State(state): State<Arc<AppState>>, Path(id): 
 
         let total = all_episodes.len() as i32;
         
-        // Find the library for this show to get root path
-        let show: Option<(i64,)> = sqlx::query_as("SELECT library_id FROM tv_shows WHERE id = ?").bind(id).fetch_optional(&pool).await.unwrap_or_default();
-        let mut lib_root_opt = None;
-        if let Some((lib_id,)) = show {
-            if let Ok(libraries) = db::queries::get_all_libraries(&pool).await {
-                if let Some(lib) = libraries.into_iter().find(|l| l.id == LibraryId(lib_id)) {
-                    lib_root_opt = Some(PathBuf::from(lib.path));
-                }
-            }
-        }
+        for (i, ep) in all_episodes.into_iter().enumerate() {
+            let _permit = task_manager.acquire_heavy_permit().await;
+            
+            task_manager.broadcast(media_core::models::TaskUpdate {
+                task_id: task_id.clone(),
+                status: "running".to_string(),
+                progress: i as i32,
+                total,
+                message: format!("Analyzing Ep {}/{}", i+1, total),
+                started_at: Some(start_ms),
+                finished_at: None,
+                debug_info: Some(format!("Generating assets for: {}", ep.original_name)),
+                files_new: None,
+                files_healed: None,
+                files_missing: None,
+            });
 
-        if let Some(lib_root) = lib_root_opt {
-            for (i, ep) in all_episodes.into_iter().enumerate() {
-                let _permit = task_manager.acquire_heavy_permit().await;
-                
-                task_manager.broadcast(media_core::models::TaskUpdate {
-                    task_id: task_id.clone(),
-                    status: "running".to_string(),
-                    progress: i as i32,
-                    total,
-                    message: format!("Analyzing Ep {}/{}", i+1, total),
-                    started_at: Some(start_ms),
-                    finished_at: None,
-                    debug_info:
- Some(format!("FFmpeg deep analysis for: {}", ep.original_name)),
-                    files_new: None,
-                    files_healed: None,
-                    files_missing: None,
-                });
+            if let Ok(Some(path)) = db::queries::get_episode_full_path(&pool, ep.id).await {
+                if path.exists() {
+                    // Ensure fingerprint exists
+                    let fingerprint = match ep.fingerprint {
+                        Some(f) if !f.is_empty() => f,
+                        _ => {
+                            let f = media_core::scanner::hash::calculate_oshash(&path).unwrap_or_default();
+                            let _ = sqlx::query("UPDATE episodes SET fingerprint = ? WHERE id = ?")
+                                .bind(&f)
+                                .bind(ep.id)
+                                .execute(&pool)
+                                .await;
+                            f
+                        }
+                    };
 
-                if let Ok(Some(path)) = db::queries::get_episode_full_path(&pool, ep.id).await {
-                    if path.exists() {
-                        let folder = path.parent().unwrap();
-                        let thumb_dest = folder.join(format!("{}.thumb.jpg", path.file_stem().unwrap().to_str().unwrap()));
+                    if !fingerprint.is_empty() {
+                        let generated_root = std::path::Path::new("data/generated");
+                        let duration = ep.duration_secs.unwrap_or(0) as f64;
                         
-                        let ratio = media_core::scanner::ffmpeg::FfmpegEngine::detect_aspect_ratio(&path).ok();
-                        let thumb = media_core::scanner::ffmpeg::FfmpegEngine::extract_thumbnail(&path, &thumb_dest, "00:05:00").ok();
-                        
-                        let preview_dest = folder.join(format!("{}.preview.mp4", path.file_stem().unwrap().to_str().unwrap()));
-                        let preview = media_core::scanner::ffmpeg::FfmpegEngine::generate_preview(&path, &preview_dest).ok();
-
-                        let rel_thumb = thumb.as_ref().and_then(|p| {
-                            media_core::paths::make_relative(p, &lib_root).ok()
-                        });
-                        let rel_preview = preview.as_ref().and_then(|p| {
-                            media_core::paths::make_relative(p, &lib_root).ok()
-                        });
-
-                        let _ = sqlx::query("UPDATE episodes SET aspect_ratio = ?, thumbnail_path = ?, preview_path = ? WHERE id = ?")
-                            .bind(ratio)
-                            .bind(rel_thumb)
-                            .bind(rel_preview)
-                            .bind(ep.id)
-                            .execute(&pool)
-                            .await;
+                        if let Ok(_) = media_core::scanner::ffmpeg::FfmpegEngine::generate_advanced_assets(&path, &fingerprint, generated_root, duration) {
+                            let _ = db::queries::upsert_generated_asset(&pool, &fingerprint, "thumb", &format!("{}/thumb.jpg", fingerprint)).await;
+                            let _ = db::queries::upsert_generated_asset(&pool, &fingerprint, "sprite", &format!("{}/sprite.webp", fingerprint)).await;
+                            let _ = db::queries::upsert_generated_asset(&pool, &fingerprint, "vtt", &format!("{}/sprite.vtt", fingerprint)).await;
+                            let _ = db::queries::upsert_generated_asset(&pool, &fingerprint, "preview", &format!("{}/preview.mp4", fingerprint)).await;
+                        }
                     }
                 }
             }
@@ -1549,9 +1538,8 @@ async fn process_tv_show_advanced(State(state): State<Arc<AppState>>, Path(id): 
             total,
             message: "TV Show deep analysis complete".to_string(),
             started_at: Some(start_ms),
-            finished_at: None,
-            debug_info:
- None,
+            finished_at: Some(now_ms()),
+            debug_info: None,
             files_new: None,
             files_healed: None,
             files_missing: None,
@@ -1595,8 +1583,7 @@ async fn process_library_advanced(State(state): State<Arc<AppState>>, Path(id): 
                         message: format!("Movies: {}/{}", i+1, total),
                         started_at: Some(start_ms),
                         finished_at: None,
-                        debug_info:
- Some(format!("Analyzing: {}", movie.title)),
+                        debug_info: Some(format!("Analyzing: {}", movie.title)),
                         files_new: None,
                         files_healed: None,
                         files_missing: None,
@@ -1604,25 +1591,25 @@ async fn process_library_advanced(State(state): State<Arc<AppState>>, Path(id): 
 
                     let input_path = media_core::paths::make_absolute(&file.file_path, &lib_root);
                     if input_path.exists() {
-                        let folder = input_path.parent().unwrap();
-                        let thumb_dest = folder.join(format!("{}.thumb.jpg", input_path.file_stem().unwrap().to_str().unwrap()));
-                        
-                        let ratio = media_core::scanner::ffmpeg::FfmpegEngine::detect_aspect_ratio(&input_path).ok();
-                        let thumb = media_core::scanner::ffmpeg::FfmpegEngine::extract_thumbnail(&input_path, &thumb_dest, "00:05:00").ok();
-                        
-                        let preview_dest = folder.join(format!("{}.preview.mp4", input_path.file_stem().unwrap().to_str().unwrap()));
-                        let preview = media_core::scanner::ffmpeg::FfmpegEngine::generate_preview(&input_path, &preview_dest).ok();
+                        let fingerprint = match file.fingerprint {
+                            Some(f) if !f.is_empty() => f,
+                            _ => {
+                                let f = media_core::scanner::hash::calculate_oshash(&input_path).unwrap_or_default();
+                                let _ = sqlx::query("UPDATE movie_files SET fingerprint = ? WHERE id = ?").bind(&f).bind(file.id).execute(&pool).await;
+                                f
+                            }
+                        };
 
-                        let rel_thumb = thumb.as_ref().and_then(|p| media_core::paths::make_relative(p, &lib_root).ok());
-                        let rel_preview = preview.as_ref().and_then(|p| media_core::paths::make_relative(p, &lib_root).ok());
-
-                        let _ = sqlx::query("UPDATE movie_files SET aspect_ratio = ?, thumbnail_path = ?, preview_path = ? WHERE id = ?")
-                            .bind(ratio)
-                            .bind(rel_thumb)
-                            .bind(rel_preview)
-                            .bind(file.id)
-                            .execute(&pool)
-                            .await;
+                        if !fingerprint.is_empty() {
+                            let duration = file.duration_secs.unwrap_or(0) as f64;
+                            let generated_root = std::path::Path::new("data/generated");
+                            if let Ok(_) = media_core::scanner::ffmpeg::FfmpegEngine::generate_advanced_assets(&input_path, &fingerprint, generated_root, duration) {
+                                let _ = db::queries::upsert_generated_asset(&pool, &fingerprint, "thumb", &format!("{}/thumb.jpg", fingerprint)).await;
+                                let _ = db::queries::upsert_generated_asset(&pool, &fingerprint, "sprite", &format!("{}/sprite.webp", fingerprint)).await;
+                                let _ = db::queries::upsert_generated_asset(&pool, &fingerprint, "vtt", &format!("{}/sprite.vtt", fingerprint)).await;
+                                let _ = db::queries::upsert_generated_asset(&pool, &fingerprint, "preview", &format!("{}/preview.mp4", fingerprint)).await;
+                            }
+                        }
                     }
                 }
             }
@@ -1647,8 +1634,7 @@ async fn process_library_advanced(State(state): State<Arc<AppState>>, Path(id): 
                             message: format!("Show {}/{}, Ep {}/{}", si+1, total_shows, ei+1, ep_total),
                             started_at: Some(start_ms),
                             finished_at: None,
-                            debug_info:
- Some(format!("Analyzing: {} - {}", show.title, ep.original_name)),
+                            debug_info: Some(format!("Analyzing: {} - {}", show.title, ep.original_name)),
                             files_new: None,
                             files_healed: None,
                             files_missing: None,
@@ -1656,25 +1642,25 @@ async fn process_library_advanced(State(state): State<Arc<AppState>>, Path(id): 
 
                         let input_path = media_core::paths::make_absolute(&ep.file_path, &lib_root);
                         if input_path.exists() {
-                            let folder = input_path.parent().unwrap();
-                            let thumb_dest = folder.join(format!("{}.thumb.jpg", input_path.file_stem().unwrap().to_str().unwrap()));
-                            
-                            let ratio = media_core::scanner::ffmpeg::FfmpegEngine::detect_aspect_ratio(&input_path).ok();
-                            let thumb = media_core::scanner::ffmpeg::FfmpegEngine::extract_thumbnail(&input_path, &thumb_dest, "00:05:00").ok();
-                            
-                            let preview_dest = folder.join(format!("{}.preview.mp4", input_path.file_stem().unwrap().to_str().unwrap()));
-                            let preview = media_core::scanner::ffmpeg::FfmpegEngine::generate_preview(&input_path, &preview_dest).ok();
+                            let fingerprint = match ep.fingerprint {
+                                Some(f) if !f.is_empty() => f,
+                                _ => {
+                                    let f = media_core::scanner::hash::calculate_oshash(&input_path).unwrap_or_default();
+                                    let _ = sqlx::query("UPDATE episodes SET fingerprint = ? WHERE id = ?").bind(&f).bind(ep.id).execute(&pool).await;
+                                    f
+                                }
+                            };
 
-                            let rel_thumb = thumb.as_ref().and_then(|p| media_core::paths::make_relative(p, &lib_root).ok());
-                            let rel_preview = preview.as_ref().and_then(|p| media_core::paths::make_relative(p, &lib_root).ok());
-
-                            let _ = sqlx::query("UPDATE episodes SET aspect_ratio = ?, thumbnail_path = ?, preview_path = ? WHERE id = ?")
-                                .bind(ratio)
-                                .bind(rel_thumb)
-                                .bind(rel_preview)
-                                .bind(ep.id)
-                                .execute(&pool)
-                                .await;
+                            if !fingerprint.is_empty() {
+                                let duration = ep.duration_secs.unwrap_or(0) as f64;
+                                let generated_root = std::path::Path::new("data/generated");
+                                if let Ok(_) = media_core::scanner::ffmpeg::FfmpegEngine::generate_advanced_assets(&input_path, &fingerprint, generated_root, duration) {
+                                    let _ = db::queries::upsert_generated_asset(&pool, &fingerprint, "thumb", &format!("{}/thumb.jpg", fingerprint)).await;
+                                    let _ = db::queries::upsert_generated_asset(&pool, &fingerprint, "sprite", &format!("{}/sprite.webp", fingerprint)).await;
+                                    let _ = db::queries::upsert_generated_asset(&pool, &fingerprint, "vtt", &format!("{}/sprite.vtt", fingerprint)).await;
+                                    let _ = db::queries::upsert_generated_asset(&pool, &fingerprint, "preview", &format!("{}/preview.mp4", fingerprint)).await;
+                                }
+                            }
                         }
                     }
                 }
@@ -1850,6 +1836,35 @@ async fn get_playback_status(State(state): State<Arc<AppState>>, Path((m_type, i
     match res {
         Some((pos, dur, finished)) => Json(serde_json::json!({ "position_ms": pos, "duration_ms": dur, "is_finished": finished })).into_response(),
         None => Json(serde_json::json!({ "position_ms": 0, "duration_ms": 0, "is_finished": false })).into_response(),
+    }
+}
+
+async fn get_asset_handler(Path((hash, a_type)): Path<(String, String)>) -> impl IntoResponse {
+    let ext = match a_type.as_str() {
+        "sprite" => "webp",
+        "preview" => "mp4",
+        "vtt" => "vtt",
+        "thumb" => "jpg",
+        _ => "jpg",
+    };
+    
+    let path = std::path::PathBuf::from("data/generated").join(&hash).join(format!("{}.{}", a_type, ext));
+    
+    if !path.exists() {
+        return (StatusCode::NOT_FOUND, "Asset not found").into_response();
+    }
+
+    match tokio::fs::read(&path).await {
+        Ok(bytes) => {
+            let mime = match ext {
+                "webp" => "image/webp",
+                "mp4" => "video/mp4",
+                "vtt" => "text/vtt",
+                _ => "image/jpeg",
+            };
+            ([(header::CONTENT_TYPE, mime)], bytes).into_response()
+        },
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
 #[derive(serde::Deserialize)]

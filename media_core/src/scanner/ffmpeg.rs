@@ -168,6 +168,27 @@ impl FfmpegEngine {
         Ok(output_path.to_path_buf())
     }
 
+    pub fn generate_advanced_assets(input_path: &Path, hash: &str, generated_root: &Path, duration_secs: f64) -> Result<()> {
+        let dest_dir = generated_root.join(hash);
+        if !dest_dir.exists() {
+            std::fs::create_dir_all(&dest_dir)?;
+        }
+
+        // 1. Thumbnail
+        let thumb_path = dest_dir.join("thumb.jpg");
+        Self::extract_thumbnail(input_path, &thumb_path, "00:01:00")?;
+
+        // 2. Sprite Sheet (also generates .vtt)
+        let sprite_path = dest_dir.join("sprite.webp");
+        Self::generate_sprite_sheet(input_path, &sprite_path, duration_secs)?;
+
+        // 3. Hover Preview
+        let preview_path = dest_dir.join("preview.mp4");
+        Self::generate_preview(input_path, &preview_path)?;
+
+        Ok(())
+    }
+
     fn format_vtt_time(seconds: f64) -> String {
         let hrs = (seconds / 3600.0).floor() as i32;
         let mins = ((seconds % 3600.0) / 60.0).floor() as i32;

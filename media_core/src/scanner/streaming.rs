@@ -693,9 +693,9 @@ mod tests {
         
         assert!(manifest.contains("#EXTM3U"));
         assert!(manifest.contains("#EXT-X-PLAYLIST-TYPE:VOD"));
-        assert!(manifest.contains("#EXTINF:10.0,\nseg_000.ts"));
-        assert!(manifest.contains("#EXTINF:10.0,\nseg_001.ts"));
-        assert!(manifest.contains("#EXTINF:5.0,\nseg_002.ts"));
+        assert!(manifest.contains("#EXTINF:4.0,\nseg_000.ts"));
+        assert!(manifest.contains("#EXTINF:4.0,\nseg_001.ts"));
+        assert!(manifest.contains("#EXTINF:1.0,\nseg_006.ts"));
         assert!(manifest.contains("#EXT-X-ENDLIST"));
     }
 
@@ -710,6 +710,7 @@ mod tests {
             audio_channels: 2,
             size_bytes: 1000,
             duration_secs: 100,
+            ..Default::default()
         };
 
         let args = manager.build_ffmpeg_args(
@@ -754,6 +755,7 @@ mod tests {
             audio_channels: 2,
             size_bytes: 1000,
             duration_secs: 100,
+            ..Default::default()
         };
 
         let args = manager.build_ffmpeg_args(
@@ -948,6 +950,7 @@ mod tests {
             audio_channels: 2,
             size_bytes: 1000,
             duration_secs: 100,
+            ..Default::default()
         };
 
         let args = manager.build_ffmpeg_args(
@@ -982,6 +985,7 @@ mod tests {
             audio_channels: 2,
             size_bytes: 1000,
             duration_secs: 100,
+            ..Default::default()
         };
 
         let args = manager.build_fmp4_args("input.mkv", &details, 0.0);

@@ -24,11 +24,9 @@ use std::convert::Infallible;
 
 use media_core::scanner::streaming::StreamManager;
 
-struct AppState {
-    pool: SqlitePool,
-    task_manager: Arc<TaskManager>,
-    stream_manager: Arc<StreamManager>,
-}
+pub mod state;
+pub mod routes;
+use state::AppState;
 
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
@@ -125,7 +123,7 @@ async fn main() {
     };
 
     let app = Router::new()
-        .route("/api/health", get(health_check))
+        .nest("/api", routes::health::router())
         .route("/api/webhooks/:source", post(handle_webhook))
         .route("/api/libraries", get(get_libraries).post(create_library))
         .route("/api/libraries/:id", axum::routing::delete(delete_library))
@@ -223,9 +221,7 @@ async fn shutdown_signal(state: Arc<AppState>) {
     state.stream_manager.stop_all_streams().await;
 }
 
-async fn health_check() -> impl IntoResponse {
-    (StatusCode::OK, "OK")
-}
+
 
 async fn handle_webhook(
     State(state): State<Arc<AppState>>,

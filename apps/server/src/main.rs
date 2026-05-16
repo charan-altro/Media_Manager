@@ -17,7 +17,6 @@ use media_core::task_manager::TaskManager;
 use media_core::cleanup::CleanupService;
 use media_core::exporter::Exporter;
 use opener;
-use sqlx::SqlitePool;
 use tower_http::cors::CorsLayer;
 use futures::stream::Stream;
 use std::convert::Infallible;
@@ -25,15 +24,9 @@ use std::convert::Infallible;
 use media_core::scanner::streaming::StreamManager;
 
 pub mod state;
+pub mod utils;
 pub mod routes;
 use state::AppState;
-
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as u64
-}
 
 #[tokio::main]
 async fn main() {
@@ -124,7 +117,7 @@ async fn main() {
 
     let app = Router::new()
         .nest("/api", routes::health::router())
-        .route("/api/webhooks/:source", post(handle_webhook))
+        .nest("/api", routes::webhook::router())
         .route("/api/libraries", get(get_libraries).post(create_library))
         .route("/api/libraries/:id", axum::routing::delete(delete_library))
         .route("/api/libraries/:id/scan", post(scan_library))
@@ -221,49 +214,6 @@ async fn shutdown_signal(state: Arc<AppState>) {
     state.stream_manager.stop_all_streams().await;
 }
 
-
-
-async fn handle_webhook(
-    State(state): State<Arc<AppState>>,
-    Path(source): Path<String>,
-    Json(payload): Json<serde_json::Value>,
-) -> impl IntoResponse {
-    let pool = state.pool.clone();
-    let task_manager = state.task_manager.clone();
-    let task_id = uuid::Uuid::new_v4().to_string();
-
-    tracing::info!("Received webhook from {}: {:?}", source, payload);
-
-    tokio::spawn(async move {
-        // Trigger a global scan or specific library scan based on webhook logic
-        let libraries = db::queries::get_all_libraries(&pool).await.unwrap_or_default();
-        let target_lib = match source.as_str() {
-            "radarr" => libraries.into_iter().find(|l| l.media_type == media_core::models::MediaType::Movie),
-            "sonarr" => libraries.into_iter().find(|l| l.media_type == media_core::models::MediaType::Tv),
-            _ => libraries.into_iter().next(),
-        };
-
-        if let Some(lib) = target_lib {
-            task_manager.broadcast(media_core::models::TaskUpdate {
-                task_id: task_id.clone(),
-                status: "running".to_string(),
-                progress: 0,
-                total: 1,
-                message: format!("Webhook trigger: Scanning {}", lib.name),
-                started_at: Some(now_ms()),
-                finished_at: None,
-                debug_info: Some(format!("Source: {}", source)),
-                files_new: None,
-                files_healed: None,
-                files_missing: None,
-            });
-
-            let _ = media_core::scanner::worker::scan_library(&pool, &lib, task_id.clone(), &task_manager).await;
-        }
-    });
-
-    StatusCode::ACCEPTED
-}
 
 
 async fn get_libraries(State(state): State<Arc<AppState>>) -> impl IntoResponse {
@@ -465,7 +415,7 @@ async fn bulk_scrape(State(state): State<Arc<AppState>>, Path(id): Path<i64>) ->
             total,
             message: "Enrichment completed".to_string(),
             started_at: Some(start_ms),
-            finished_at: Some(now_ms()),
+            finished_at: Some(utils::now_ms()),
             debug_info: None,
             files_new: None,
             files_healed: None,
@@ -525,7 +475,7 @@ async fn scrape_batch(State(state): State<Arc<AppState>>, Json(payload): Json<Ba
     let task_id = uuid::Uuid::new_v4().to_string();
 
     tokio::spawn(async move {
-        let start_ms = now_ms();
+        let start_ms = utils::now_ms();
         let clients = std::sync::Arc::new(media_core::scraper::ScraperClients::from_settings(&pool).await);
         
         let settings = db::queries::get_settings(&pool).await.unwrap_or_default();
@@ -628,7 +578,7 @@ async fn cleanup_batch(State(state): State<Arc<AppState>>, Json(payload): Json<B
     let task_id = uuid::Uuid::new_v4().to_string();
 
     tokio::spawn(async move {
-        let start_ms = now_ms();
+        let start_ms = utils::now_ms();
         let total = payload.ids.len() as i32;
         let mut processed = 0;
 
@@ -936,7 +886,7 @@ async fn refresh_metadata(State(state): State<Arc<AppState>>, Path(id): Path<i64
     let task_id = uuid::Uuid::new_v4().to_string();
 
     tokio::spawn(async move {
-        let start_ms = now_ms();
+        let start_ms = utils::now_ms();
         let clients = media_core::scraper::ScraperClients::from_settings(&pool).await;
         
         let settings = db::queries::get_settings(&pool).await.unwrap_or_default();
@@ -987,7 +937,7 @@ async fn refresh_metadata(State(state): State<Arc<AppState>>, Path(id): Path<i64
             total: 1,
             message: "Metadata refresh complete".to_string(),
             started_at: Some(start_ms),
-            finished_at: Some(now_ms()),
+            finished_at: Some(utils::now_ms()),
             debug_info: None,
             files_new: None,
             files_healed: None,
@@ -1045,7 +995,7 @@ async fn search_subtitles(State(state): State<Arc<AppState>>, Path(id): Path<i64
     }
 
     tokio::spawn(async move {
-        let start_ms = now_ms();
+        let start_ms = utils::now_ms();
         if let Ok(Some(movie)) = db::queries::get_movie_by_id(&pool, media_core::models::MovieId(id)).await {
             let file_info: Option<(String,)> = sqlx::query_as("SELECT file_path FROM movie_files WHERE movie_id = ? LIMIT 1")
                 .bind(id)
@@ -1388,7 +1338,7 @@ async fn process_movie_advanced(State(state): State<Arc<AppState>>, Path(id): Pa
 
     tokio::spawn(async move {
         let _permit = task_manager.acquire_heavy_permit().await;
-        let start_ms = now_ms();
+        let start_ms = utils::now_ms();
         if let Ok(Some(movie)) = db::queries::get_movie_by_id(&pool, MovieId(id)).await {
             let file_info: Option<media_core::models::MovieFile> = sqlx::query_as("SELECT * FROM movie_files WHERE movie_id = ? LIMIT 1")
                 .bind(id)
@@ -1452,7 +1402,7 @@ async fn process_movie_advanced(State(state): State<Arc<AppState>>, Path(id): Pa
             total: 1,
             message: "Advanced analysis complete".to_string(),
             started_at: Some(start_ms),
-            finished_at: Some(now_ms()),
+            finished_at: Some(utils::now_ms()),
             debug_info: None,
             files_new: None,
             files_healed: None,
@@ -1469,7 +1419,7 @@ async fn process_tv_show_advanced(State(state): State<Arc<AppState>>, Path(id): 
     let task_id = uuid::Uuid::new_v4().to_string();
 
     tokio::spawn(async move {
-        let start_ms = now_ms();
+        let start_ms = utils::now_ms();
         let seasons = db::queries::get_seasons_by_show_id(&pool, TvShowId(id)).await.unwrap_or_default();
         let mut all_episodes = Vec::new();
         for s in seasons {
@@ -1534,7 +1484,7 @@ async fn process_tv_show_advanced(State(state): State<Arc<AppState>>, Path(id): 
             total,
             message: "TV Show deep analysis complete".to_string(),
             started_at: Some(start_ms),
-            finished_at: Some(now_ms()),
+            finished_at: Some(utils::now_ms()),
             debug_info: None,
             files_new: None,
             files_healed: None,
@@ -1551,7 +1501,7 @@ async fn process_library_advanced(State(state): State<Arc<AppState>>, Path(id): 
     let task_id = uuid::Uuid::new_v4().to_string();
 
     tokio::spawn(async move {
-        let start_ms = now_ms();
+        let start_ms = utils::now_ms();
         let libraries = db::queries::get_all_libraries(&pool).await.unwrap_or_default();
         let lib = match libraries.into_iter().find(|l| l.id == LibraryId(id)) {
             Some(l) => l,

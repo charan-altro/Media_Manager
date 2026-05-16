@@ -1,7 +1,7 @@
 // core/src/db/queries.rs
 use sqlx::sqlite::SqlitePool;
 use crate::db::Result;
-use crate::models::{Library, MediaType, Movie, LibraryId, MovieId, TvShowId, SeasonId, EpisodeId, MovieFileId};
+use crate::models::{Library, MediaType, Movie, LibraryId, MovieId, TvShowId, SeasonId, EpisodeId, MovieFileId, MediaStream};
 
 pub async fn delete_library(pool: &SqlitePool, id: LibraryId) -> Result<()> {
     sqlx::query("DELETE FROM libraries WHERE id = ?")
@@ -610,5 +610,43 @@ pub async fn get_episode_full_path(pool: &SqlitePool, episode_id: EpisodeId) -> 
     } else {
         Ok(None)
     }
+}
+
+pub async fn upsert_media_stream(pool: &SqlitePool, stream: &MediaStream) -> Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO media_streams (file_hash, stream_index, stream_type, codec, language, title, channels, is_default)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(file_hash, stream_index) DO UPDATE SET
+            codec = excluded.codec,
+            language = excluded.language,
+            title = excluded.title,
+            channels = excluded.channels,
+            is_default = excluded.is_default
+        "#
+    )
+    .bind(&stream.file_hash)
+    .bind(stream.stream_index)
+    .bind(&stream.stream_type)
+    .bind(&stream.codec)
+    .bind(&stream.language)
+    .bind(&stream.title)
+    .bind(stream.channels)
+    .bind(stream.is_default)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn upsert_generated_asset(pool: &SqlitePool, hash: &str, asset_type: &str, path: &str) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO generated_assets (file_hash, asset_type, path) VALUES (?, ?, ?) ON CONFLICT(file_hash, asset_type) DO UPDATE SET path=excluded.path"
+    )
+    .bind(hash)
+    .bind(asset_type)
+    .bind(path)
+    .execute(pool)
+    .await?;
+    Ok(())
 }
 

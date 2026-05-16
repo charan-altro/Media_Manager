@@ -14,10 +14,20 @@ pub fn normalize_slashes(path: &str) -> String {
 /// Converts an absolute path to a relative path based on a library root.
 /// Returns the relative path as a normalized string with forward slashes.
 pub fn make_relative(full_path: &Path, library_root: &Path) -> Result<String> {
-    let relative = full_path.strip_prefix(library_root)
-        .map_err(|_| anyhow!("Path {:?} is not within library root {:?}", full_path, library_root))?;
+    let full_str = normalize_slashes(&full_path.to_string_lossy());
+    let root_str = normalize_slashes(&library_root.to_string_lossy());
     
-    Ok(normalize_slashes(&relative.to_string_lossy()))
+    let relative = if full_str.starts_with(&root_str) {
+        let mut rel = &full_str[root_str.len()..];
+        if rel.starts_with('/') {
+            rel = &rel[1..];
+        }
+        rel.to_string()
+    } else {
+        return Err(anyhow!("Path {} is not within library root {}", full_str, root_str));
+    };
+    
+    Ok(relative)
 }
 
 /// Converts a relative path (from the DB) back to an absolute path for the current OS.

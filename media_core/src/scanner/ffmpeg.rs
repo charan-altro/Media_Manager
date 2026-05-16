@@ -6,7 +6,27 @@ use tracing::{info, error};
 
 pub struct FfmpegEngine;
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum StreamStrategy {
+    DirectCopy,
+    SmartRemux { video_copy: bool, audio_copy: bool },
+    FullTranscode,
+}
+
 impl FfmpegEngine {
+    /// Determines the best streaming strategy based on media details and browser support.
+    pub fn get_stream_strategy(details: &crate::scanner::mediainfo::MediaDetails) -> StreamStrategy {
+        let video_supported = ["h264", "vp9", "av1"].contains(&details.video_codec.as_str());
+        let audio_supported = ["aac", "mp3", "opus"].contains(&details.audio_codec.as_str());
+
+        match (video_supported, audio_supported) {
+            (true, true) => StreamStrategy::DirectCopy,
+            (true, false) => StreamStrategy::SmartRemux { video_copy: true, audio_copy: false },
+            (false, true) => StreamStrategy::SmartRemux { video_copy: false, audio_copy: true },
+            (false, false) => StreamStrategy::FullTranscode,
+        }
+    }
+
     pub fn probe_hw_codecs() -> Vec<String> {
         let mut supported = Vec::new();
         // Include v4l2m2m for Broadcom/Raspberry Pi architectures
@@ -32,6 +52,52 @@ impl FfmpegEngine {
             }
         }
         supported
+    }
+
+    pub fn probe_hw_decoders() -> Vec<String> {
+        let mut supported = Vec::new();
+        let decoders_to_test = ["h264_v4l2m2m", "hevc_v4l2m2m", "h264_cuvid", "hevc_cuvid", "h264_qsv", "hevc_qsv"];
+        
+        for decoder in decoders_to_test {
+            let output = Command::new(crate::config::get_ffmpeg_path())
+                .args(&[
+                    "-v", "error",
+                    "-decoders"
+                ])
+                .output();
+                
+            if let Ok(out) = output {
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                if stdout.contains(decoder) {
+                    supported.push(decoder.to_string());
+                }
+            }
+        }
+        supported
+    }
+
+    pub fn get_hw_decoder(source_codec: &str, supported_decoders: &[String]) -> Option<String> {
+        match source_codec {
+            "h264" => {
+                if supported_decoders.contains(&"h264_v4l2m2m".to_string()) {
+                    Some("h264_v4l2m2m".to_string())
+                } else if supported_decoders.contains(&"h264_cuvid".to_string()) {
+                    Some("h264_cuvid".to_string())
+                } else {
+                    None
+                }
+            },
+            "hevc" => {
+                if supported_decoders.contains(&"hevc_v4l2m2m".to_string()) {
+                    Some("hevc_v4l2m2m".to_string())
+                } else if supported_decoders.contains(&"hevc_cuvid".to_string()) {
+                    Some("hevc_cuvid".to_string())
+                } else {
+                    None
+                }
+            },
+            _ => None
+        }
     }
 
     pub fn check_ffmpeg() -> Result<()> {
@@ -100,6 +166,27 @@ impl FfmpegEngine {
         }
 
         Ok(output_path.to_path_buf())
+    }
+
+    pub fn generate_advanced_assets(input_path: &Path, hash: &str, generated_root: &Path, duration_secs: f64) -> Result<()> {
+        let dest_dir = generated_root.join(hash);
+        if !dest_dir.exists() {
+            std::fs::create_dir_all(&dest_dir)?;
+        }
+
+        // 1. Thumbnail
+        let thumb_path = dest_dir.join("thumb.jpg");
+        Self::extract_thumbnail(input_path, &thumb_path, "00:01:00")?;
+
+        // 2. Sprite Sheet (also generates .vtt)
+        let sprite_path = dest_dir.join("sprite.webp");
+        Self::generate_sprite_sheet(input_path, &sprite_path, duration_secs)?;
+
+        // 3. Hover Preview
+        let preview_path = dest_dir.join("preview.mp4");
+        Self::generate_preview(input_path, &preview_path)?;
+
+        Ok(())
     }
 
     fn format_vtt_time(seconds: f64) -> String {

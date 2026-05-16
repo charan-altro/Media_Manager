@@ -93,3 +93,24 @@ impl Resolution {
         else { Self::R480p }
     }
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct MediaStream {
+    pub id: i64,
+    pub file_hash: String,
+    pub stream_index: i32,
+    pub stream_type: String,
+    pub codec: Option<String>,
+    pub language: Option<String>,
+    pub title: Option<String>,
+    pub channels: Option<i32>,
+    pub is_default: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct GeneratedAsset {
+    pub id: i64,
+    pub file_hash: String,
+    pub asset_type: String,
+    pub path: String,
+}

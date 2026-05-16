@@ -682,6 +682,24 @@ async fn process_file(pool: &SqlitePool, library: &Library, item: &ParsedFile, i
         }
     }
 
+    // Bridge extracted streams to the database
+    if let (Some(ref info), Some(ref fingerprint)) = (&item.media_info, &item.fingerprint) {
+        for stream in &info.streams {
+            let media_stream = crate::models::MediaStream {
+                id: 0,
+                file_hash: fingerprint.clone(),
+                stream_index: stream.index,
+                stream_type: stream.stream_type.clone(),
+                codec: Some(stream.codec.clone()),
+                language: stream.language.clone(),
+                title: stream.title.clone(),
+                channels: stream.channels,
+                is_default: false,
+            };
+            db::queries::upsert_media_stream(pool, &media_stream).await?;
+        }
+    }
+
     if is_known {
         Ok(ProcessAction::Updated)
     } else {

@@ -1,2 +1,6 @@
 pub mod health;
 pub mod webhook;
+pub mod library;
+pub mod media;
+pub mod scraper;
+pub mod cleanup;

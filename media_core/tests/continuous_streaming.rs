@@ -1,5 +1,5 @@
 // media_core/tests/continuous_streaming.rs
-use media_core::scanner::streaming::StreamManager;
+use media_core::scanner::streaming::{StreamManager, StreamingService};
 use tempfile::tempdir;
 use std::path::PathBuf;
 

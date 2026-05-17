@@ -2,12 +2,15 @@ use media_core::{db, scanner, models};
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::Arc;
+use media_core::db::{LibraryReader, LibraryWriter, Repositories};
 
 #[tokio::test]
 async fn test_fast_skip_logic() -> anyhow::Result<()> {
     // 1. Setup fresh DB
     let db_url = "sqlite::memory:";
     let pool = db::init_pool(db_url).await?;
+    let repos = Arc::new(Repositories::new(pool.clone()));
 
     // 2. Setup test media
     let test_dir = PathBuf::from("test_media_fast_skip");
@@ -23,12 +26,12 @@ async fn test_fast_skip_logic() -> anyhow::Result<()> {
     }
 
     // 3. Add library and initial scan
-    let lib_id = db::queries::insert_library(&pool, "Test Lib", test_dir.to_str().unwrap(), models::MediaType::Movie).await?;
-    let libraries = db::queries::get_all_libraries(&pool).await?;
+    let lib_id = repos.library.insert("Test Lib", test_dir.to_str().unwrap(), models::MediaType::Movie).await?;
+    let libraries = repos.library.find_all().await?;
     let lib = libraries.into_iter().find(|l| l.id == lib_id).unwrap();
 
-    let task_manager = std::sync::Arc::new(media_core::task_manager::TaskManager::new());
-    scanner::worker::scan_library(&pool, &lib, "initial_scan".into(), &task_manager).await?;
+    let task_manager = Arc::new(media_core::task_manager::TaskManager::new());
+    scanner::worker::scan_library(repos.clone(), &lib, "initial_scan".into(), &task_manager).await?;
 
     // 4. Verify mtime is set
     let movie_file: models::MovieFile = sqlx::query_as("SELECT * FROM movie_files LIMIT 1")
@@ -46,7 +49,7 @@ async fn test_fast_skip_logic() -> anyhow::Result<()> {
         .execute(&pool).await?;
 
     // 6. Rescan (Should Skip)
-    scanner::worker::scan_library(&pool, &lib, "rescan_skip".into(), &task_manager).await?;
+    scanner::worker::scan_library(repos.clone(), &lib, "rescan_skip".into(), &task_manager).await?;
 
     let movie_file_after_skip: models::MovieFile = sqlx::query_as("SELECT * FROM movie_files LIMIT 1")
         .fetch_one(&pool).await?;
@@ -68,7 +71,7 @@ async fn test_fast_skip_logic() -> anyhow::Result<()> {
     assert_ne!(new_mtime, original_mtime);
 
     // 8. Rescan (Should NOT Skip)
-    scanner::worker::scan_library(&pool, &lib, "rescan_full".into(), &task_manager).await?;
+    scanner::worker::scan_library(repos.clone(), &lib, "rescan_full".into(), &task_manager).await?;
 
     let movie_file_after_full: models::MovieFile = sqlx::query_as("SELECT * FROM movie_files LIMIT 1")
         .fetch_one(&pool).await?;

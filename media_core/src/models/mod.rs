@@ -114,3 +114,12 @@ pub struct GeneratedAsset {
     pub asset_type: String,
     pub path: String,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct PlaybackState {
+    pub media_id: i64,
+    pub media_type: String,
+    pub position_ms: i32,
+    pub duration_ms: i32,
+    pub is_finished: bool,
+}

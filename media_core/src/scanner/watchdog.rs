@@ -1,23 +1,22 @@
 // core/src/scanner/watchdog.rs
 use std::path::{Path, PathBuf};
 use notify::{Watcher, RecursiveMode, Config};
-use sqlx::sqlite::SqlitePool;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::time::{sleep, Duration};
 use tracing::info;
-use crate::task_manager::TaskManager;
-use crate::scanner::worker;
+use crate::scanner::service::ScannerService;
 use std::collections::HashSet;
+use crate::db::{Repositories, LibraryReader};
 
 pub struct Watchdog {
-    pool: SqlitePool,
-    task_manager: Arc<TaskManager>,
+    repos: Arc<Repositories>,
+    scanner_service: Arc<dyn ScannerService>,
 }
 
 impl Watchdog {
-    pub fn new(pool: SqlitePool, task_manager: Arc<TaskManager>) -> Self {
-        Self { pool, task_manager }
+    pub fn new(repos: Arc<Repositories>, scanner_service: Arc<dyn ScannerService>) -> Self {
+        Self { repos, scanner_service }
     }
 
     pub async fn start(&self) -> anyhow::Result<()> {
@@ -33,13 +32,11 @@ impl Watchdog {
 
         info!("Watchdog started, monitoring for file changes and new libraries...");
 
-        let pool_clone = self.pool.clone();
+        let repos_clone = self.repos.clone();
         
         loop {
             // Check for new libraries every 30 seconds
-            let pool_for_poll = pool_clone.clone();
-            
-            if let Ok(libraries) = crate::db::queries::get_all_libraries(&pool_for_poll).await {
+            if let Ok(libraries) = repos_clone.library.find_all().await {
                 for lib in libraries {
                     if !watched_paths.contains(&lib.path) {
                         info!("Watchdog: New library detected, watching: {}", lib.path);
@@ -87,7 +84,7 @@ impl Watchdog {
             info!("New file detected: {:?}", path);
             
             // Find which library this belongs to
-            let libraries = crate::db::queries::get_all_libraries(&self.pool).await.unwrap_or_default();
+            let libraries = self.repos.library.find_all().await.unwrap_or_default();
             
             // Normalize path for comparison
             let normalized_path = crate::paths::normalize_slashes(&path.to_string_lossy());
@@ -97,13 +94,12 @@ impl Watchdog {
                 normalized_path.starts_with(&normalized_lib)
             }) {
                 let task_id = format!("watchdog-{}", uuid::Uuid::new_v4());
-                let pool = self.pool.clone();
-                let task_manager = self.task_manager.clone();
+                let scanner_service = self.scanner_service.clone();
                 let path_clone = path.clone();
                 
                 // Trigger targeted scan
                 tokio::spawn(async move {
-                    let _ = worker::scan_single_file(&pool, &lib, path_clone, task_id, &task_manager).await;
+                    let _ = scanner_service.scan_single_file(&lib, path_clone, task_id).await;
                 });
             }
         }

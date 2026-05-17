@@ -4,11 +4,26 @@ use crate::models::{TaskUpdate, LibraryId};
 use std::sync::{Arc, Mutex};
 use std::collections::{HashSet, HashMap};
 
+#[cfg_attr(test, mockall::automock)]
+pub trait ProgressSink: Send + Sync {
+    fn broadcast(&self, update: TaskUpdate);
+}
+
 pub struct TaskManager {
     pub sender: broadcast::Sender<TaskUpdate>,
     pub heavy_task_semaphore: Arc<Semaphore>,
     pub running_scans: Arc<TokioMutex<HashSet<LibraryId>>>,
     pub history: Arc<Mutex<HashMap<String, TaskUpdate>>>,
+}
+
+impl ProgressSink for TaskManager {
+    fn broadcast(&self, update: TaskUpdate) {
+        if let Ok(mut history) = self.history.lock() {
+            history.insert(update.task_id.clone(), update.clone());
+        }
+        
+        let _ = self.sender.send(update);
+    }
 }
 
 impl TaskManager {
@@ -23,14 +38,6 @@ impl TaskManager {
 
     pub fn subscribe(&self) -> broadcast::Receiver<TaskUpdate> {
         self.sender.subscribe()
-    }
-
-    pub fn broadcast(&self, update: TaskUpdate) {
-        if let Ok(mut history) = self.history.lock() {
-            history.insert(update.task_id.clone(), update.clone());
-        }
-        
-        let _ = self.sender.send(update);
     }
 
     pub fn get_history(&self) -> Vec<TaskUpdate> {

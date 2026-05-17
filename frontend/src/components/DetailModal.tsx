@@ -67,6 +67,17 @@ const DetailModal: React.FC<DetailModalProps> = ({
     }
   };
 
+  const getStreamingUrlWithSeek = (url: string, positionMs: number) => {
+    if (!url) return url;
+    // If it's a JIT stream (contains /direct/), we MUST update the start parameter
+    // so FFmpeg performs server-side seeking.
+    if (url.includes('/direct/') && url.includes('start=')) {
+      const seconds = Math.floor(positionMs / 1000);
+      return url.replace(/start=\d+(\.\d+)?/, `start=${seconds}`);
+    }
+    return url;
+  };
+
   const genres = React.useMemo(() => {
     try {
       const g = typeof item.genres === 'string' ? JSON.parse(item.genres) : item.genres;
@@ -527,7 +538,9 @@ const DetailModal: React.FC<DetailModalProps> = ({
             <div className="flex flex-col gap-2">
               <button 
                 onClick={() => {
-                  setStreamingUrl(pendingUrl);
+                  if (pendingUrl) {
+                    setStreamingUrl(getStreamingUrlWithSeek(pendingUrl, resumePosition));
+                  }
                   setShowResumeDialog(false);
                 }}
                 className="w-full bg-red-600 hover:bg-red-700 py-3 rounded-xl font-black uppercase text-xs tracking-widest text-white transition"
@@ -537,7 +550,9 @@ const DetailModal: React.FC<DetailModalProps> = ({
               <button 
                 onClick={() => {
                   setResumePosition(0);
-                  setStreamingUrl(pendingUrl);
+                  if (pendingUrl) {
+                    setStreamingUrl(getStreamingUrlWithSeek(pendingUrl, 0));
+                  }
                   setShowResumeDialog(false);
                 }}
                 className="w-full bg-zinc-800 hover:bg-zinc-700 py-3 rounded-xl font-black uppercase text-xs tracking-widest text-white transition border border-zinc-700"
@@ -554,6 +569,7 @@ const DetailModal: React.FC<DetailModalProps> = ({
           url={streamingUrl} 
           mediaId={activeMediaId!}
           mediaType={activeMediaType!}
+          duration={item.duration_secs || (item.runtime ? item.runtime * 60 : 0)}
           initialPosition={resumePosition}
           onClose={async () => {
             setStreamingUrl(null);

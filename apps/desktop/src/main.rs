@@ -2,9 +2,11 @@
 use std::sync::Arc;
 use std::path::PathBuf;
 use tauri::{State, Emitter, Manager};
-use media_core::db;
-use media_core::task_manager::TaskManager;
-use media_core::models::{Library, Movie, MediaType, TVShow, Season, Episode, TaskUpdate};
+use media_core::db::{self, Repositories, LibraryReader, LibraryWriter, MovieReader, MovieWriter, TvReader, TvWriter, MediaRepository, SettingsRepository};
+use media_core::task_manager::{TaskManager, ProgressSink};
+use media_core::scanner::service::{ScannerService, DefaultScannerService};
+use media_core::scraper::service::{ScraperService, DefaultScraperService};
+use media_core::models::{Library, Movie, MediaType, TVShow, Season, Episode, TaskUpdate, MovieId, TvShowId, LibraryId};
 use media_core::cleanup::CleanupService;
 use media_core::exporter::Exporter;
 use sqlx::SqlitePool;
@@ -13,7 +15,10 @@ use tauri::path::BaseDirectory;
 
 struct AppState {
     pool: SqlitePool,
+    repos: Arc<Repositories>,
     task_manager: Arc<TaskManager>,
+    scanner_service: Arc<dyn ScannerService>,
+    scraper_service: Arc<dyn ScraperService>,
 }
 
 fn now_ms() -> u64 {
@@ -25,7 +30,7 @@ fn now_ms() -> u64 {
 
 #[tauri::command]
 async fn get_libraries(state: State<'_, AppState>) -> Result<Vec<Library>, String> {
-    db::queries::get_all_libraries(&state.pool).await.map_err(|e| e.to_string())
+    state.repos.library.find_all().await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -35,26 +40,25 @@ async fn create_library(
     media_type: MediaType,
     state: State<'_, AppState>,
 ) -> Result<i64, String> {
-    let id = db::queries::insert_library(&state.pool, &name, &path, media_type)
+    let id = state.repos.library.insert(&name, &path, media_type)
         .await
         .map_err(|e| e.to_string())?;
     
     // Auto-scan
-    let pool = state.pool.clone();
-    let task_manager = state.task_manager.clone();
+    let scanner_service = state.scanner_service.clone();
     let task_id = uuid::Uuid::new_v4().to_string();
     let library = Library { id, name, path, media_type, created_at: "".to_string() };
     
     tauri::async_runtime::spawn(async move {
-        let _ = media_core::scanner::worker::scan_library(&pool, &library, task_id, &task_manager).await;
+        let _ = scanner_service.scan_library(&library, task_id).await;
     });
 
-    Ok(id.into())
+    Ok(id.0)
 }
 
 #[tauri::command]
 async fn delete_library(id: i64, state: State<'_, AppState>) -> Result<(), String> {
-    db::queries::delete_library(&state.pool, media_core::models::LibraryId(id)).await.map_err(|e| e.to_string())
+    state.repos.library.delete(media_core::models::LibraryId(id)).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -64,10 +68,10 @@ async fn get_movies(
     language: Option<String>, 
     state: State<'_, AppState>
 ) -> Result<Vec<Movie>, String> {
-    let mut movies = db::queries::get_all_movies(&state.pool, library_id.map(media_core::models::LibraryId), genre, language)
+    let mut movies = state.repos.movie.find_all(library_id.map(media_core::models::LibraryId), genre, language)
         .await.map_err(|e| e.to_string())?;
     
-    let libraries = db::queries::get_all_libraries(&state.pool).await.unwrap_or_default();
+    let libraries = state.repos.library.find_all().await.unwrap_or_default();
     
     // Convert relative paths to absolute for Tauri
     for movie in &mut movies {
@@ -96,10 +100,10 @@ async fn get_tv_shows(
     language: Option<String>, 
     state: State<'_, AppState>
 ) -> Result<Vec<TVShow>, String> {
-    let mut shows = db::queries::get_all_tv_shows(&state.pool, library_id.map(media_core::models::LibraryId), genre, language)
+    let mut shows = state.repos.tv.find_all_shows(library_id.map(media_core::models::LibraryId), genre, language)
         .await.map_err(|e| e.to_string())?;
     
-    let libraries = db::queries::get_all_libraries(&state.pool).await.unwrap_or_default();
+    let libraries = state.repos.library.find_all().await.unwrap_or_default();
 
     for show in &mut shows {
         if let Some(lib) = libraries.iter().find(|l| l.id == show.library_id) {
@@ -122,34 +126,33 @@ async fn get_tv_shows(
 
 #[tauri::command]
 async fn get_seasons(show_id: i64, state: State<'_, AppState>) -> Result<Vec<Season>, String> {
-    db::queries::get_seasons_by_show_id(&state.pool, media_core::models::TvShowId(show_id)).await.map_err(|e| e.to_string())
+    state.repos.tv.find_seasons_by_show_id(media_core::models::TvShowId(show_id)).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn get_episodes(season_id: i64, state: State<'_, AppState>) -> Result<Vec<Episode>, String> {
-    db::queries::get_episodes_by_season_id(&state.pool, media_core::models::SeasonId(season_id)).await.map_err(|e| e.to_string())
+    state.repos.tv.find_episodes_by_season_id(media_core::models::SeasonId(season_id)).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn get_genres(state: State<'_, AppState>) -> Result<Vec<String>, String> {
-    db::queries::get_unique_genres(&state.pool).await.map_err(|e| e.to_string())
+    state.repos.media.get_unique_genres().await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn get_languages(state: State<'_, AppState>) -> Result<Vec<String>, String> {
-    db::queries::get_unique_languages(&state.pool).await.map_err(|e| e.to_string())
+    state.repos.media.get_unique_languages().await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn start_scan(library_id: i64, state: State<'_, AppState>) -> Result<String, String> {
-    let pool = state.pool.clone();
-    let task_manager = state.task_manager.clone();
+    let service = state.scanner_service.clone();
     let task_id = uuid::Uuid::new_v4().to_string();
     
-    let libraries = db::queries::get_all_libraries(&pool).await.map_err(|e| e.to_string())?;
+    let libraries = state.repos.library.find_all().await.map_err(|e| e.to_string())?;
     if let Some(lib) = libraries.into_iter().find(|l| l.id == media_core::models::LibraryId(library_id)) {
         tauri::async_runtime::spawn(async move {
-            let _ = media_core::scanner::worker::scan_library(&pool, &lib, task_id, &task_manager).await;
+            let _ = service.scan_library(&lib, task_id).await;
         });
         Ok("Scan started".to_string())
     } else {
@@ -159,78 +162,17 @@ async fn start_scan(library_id: i64, state: State<'_, AppState>) -> Result<Strin
 
 #[tauri::command]
 async fn scrape_batch(ids: Vec<i64>, media_type: String, state: State<'_, AppState>) -> Result<String, String> {
-    let pool = state.pool.clone();
-    let task_manager = state.task_manager.clone();
-    let task_id = uuid::Uuid::new_v4().to_string();
-
+    let service = state.scraper_service.clone();
+    
     tauri::async_runtime::spawn(async move {
-        let start_ms = now_ms();
-        let clients = std::sync::Arc::new(media_core::scraper::ScraperClients::from_settings(&pool).await);
-        
-        let settings = db::queries::get_settings(&pool).await.unwrap_or_default();
-        let script_path = settings.get("post_processing_script").cloned();
-
-        let mut all_tasks = Vec::new();
-        if media_type == "movie" {
-            if let Ok(movies) = db::queries::get_movies_by_ids(&pool, &ids.iter().map(|&x| media_core::models::MovieId(x)).collect::<Vec<_>>()).await {
-                all_tasks.extend(movies.into_iter().map(|m| (m.id.0, m.title, m.year, "movie")));
-            }
-        } else {
-            if let Ok(shows) = db::queries::get_tv_shows_by_ids(&pool, &ids.iter().map(|&x| media_core::models::TvShowId(x)).collect::<Vec<_>>()).await {
-                all_tasks.extend(shows.into_iter().map(|s| (s.id.0, s.title, None, "tv")));
+        for id in ids {
+            let task_id = uuid::Uuid::new_v4().to_string();
+            if media_type == "movie" {
+                let _ = service.scrape_movie(MovieId(id), task_id).await;
+            } else {
+                let _ = service.scrape_tv_show(TvShowId(id), task_id).await;
             }
         }
-
-        let total = all_tasks.len() as i32;
-        let pool = Arc::new(pool);
-        let task_manager_clone = task_manager.clone();
-        let task_id_clone = task_id.clone();
-
-        use futures::StreamExt;
-        let stream = futures::stream::iter(all_tasks.into_iter().enumerate());
-        
-        stream.for_each_concurrent(5, |(i, (id, title, year, m_type))| {
-            let clients = clients.clone();
-            let pool = pool.clone();
-            let task_manager = task_manager_clone.clone();
-            let task_id = task_id_clone.clone();
-            let title_clone = title.clone();
-            let script_path_clone = script_path.clone();
-            
-            async move {
-                if m_type == "movie" {
-                    let _ = media_core::scraper::scrape_movie(media_core::models::MovieId(id), &title_clone, year, &clients, &pool, script_path_clone.as_deref()).await;
-                } else {
-                    let _ = media_core::scraper::scrape_tv_show(media_core::models::TvShowId(id), &title_clone, &clients, &pool, script_path_clone.as_deref()).await;
-                }
-                
-                task_manager.broadcast(TaskUpdate {
-                    task_id,
-                    status: "running".to_string(),
-                    progress: (i + 1) as i32,
-                    total,
-                    message: format!("Processed: {}", title_clone),
-                    started_at: Some(start_ms),
-                    debug_info: None,
-                    finished_at: None,
-                    files_new: None,
-                    files_healed: None,
-                    files_missing: None,
-                });
-            }
-        }).await;
-
-        task_manager.broadcast(TaskUpdate {
-            task_id,
-            status: "completed".to_string(),
-            progress: total,
-            total,
-            message: "Batch scrape completed".to_string(),
-            started_at: Some(start_ms),
-            debug_info: None,
-            finished_at: Some(now_ms()),
-            ..Default::default()
-        });
     });
 
     Ok("Batch scrape started".to_string())
@@ -238,7 +180,7 @@ async fn scrape_batch(ids: Vec<i64>, media_type: String, state: State<'_, AppSta
 
 #[tauri::command]
 async fn cleanup_batch(ids: Vec<i64>, media_type: String, state: State<'_, AppState>) -> Result<String, String> {
-    let pool = state.pool.clone();
+    let repos = state.repos.clone();
     let task_manager = state.task_manager.clone();
     let task_id = uuid::Uuid::new_v4().to_string();
 
@@ -251,22 +193,20 @@ async fn cleanup_batch(ids: Vec<i64>, media_type: String, state: State<'_, AppSt
             let renamer = media_core::renamer::Renamer::new(None, None);
             for id in ids {
                 processed += 1;
-                if let Ok(Some(movie)) = db::queries::get_movie_by_id(&pool, media_core::models::MovieId(id)).await {
-                    let libraries = db::queries::get_all_libraries(&pool).await.unwrap_or_default();
+                if let Ok(Some(movie)) = repos.movie.find_by_id(media_core::models::MovieId(id)).await {
+                    let libraries = repos.library.find_all().await.unwrap_or_default();
                     if let Some(lib) = libraries.into_iter().find(|l| l.id == movie.library_id) {
                         let lib_root = PathBuf::from(&lib.path);
-                        let file_info: Option<media_core::models::MovieFile> = sqlx::query_as("SELECT * FROM movie_files WHERE movie_id = ? LIMIT 1")
-                            .bind(movie.id).fetch_optional(&pool).await.unwrap_or_default();
+                        let file_info = repos.movie.find_file_by_movie_id(movie.id).await.unwrap_or_default();
                         
                         if let Some(file) = file_info {
                             let old_path = PathBuf::from(&file.file_path);
-                            let settings = db::queries::get_settings(&pool).await.unwrap_or_default();
+                            let settings = repos.settings.get_all().await.unwrap_or_default();
                             let script_path = settings.get("post_processing_script").map(|s| s.as_str());
 
                             if let Ok(new_path) = renamer.rename_movie(&movie, &old_path, &lib_root, file.resolution, file.codec.as_deref(), script_path) {
                                 let new_path_str = new_path.to_string_lossy().to_string();
-                                let _ = sqlx::query("UPDATE movie_files SET file_path = ? WHERE id = ?")
-                                    .bind(&new_path_str).bind(file.id).execute(&pool).await;
+                                let _ = repos.movie.update_file_path(file.id, &new_path_str).await;
 
                                 let parent = new_path.parent().unwrap_or(&lib_root);
                                 let cleanup = CleanupService::new(parent.to_path_buf());
@@ -298,7 +238,7 @@ async fn cleanup_batch(ids: Vec<i64>, media_type: String, state: State<'_, AppSt
             message: "Batch cleanup completed".to_string(), 
             started_at: Some(start_ms), 
             debug_info: None, 
-            finished_at: None,
+            finished_at: Some(now_ms()),
             ..Default::default()
         });
     });
@@ -309,56 +249,40 @@ async fn cleanup_batch(ids: Vec<i64>, media_type: String, state: State<'_, AppSt
 #[tauri::command]
 async fn update_movie(id: i64, title: String, year: Option<i32>, plot: Option<String>, rating: Option<f32>, genres: Option<Vec<String>>, state: State<'_, AppState>) -> Result<(), String> {
     let genres_json = genres.map(|g| serde_json::to_string(&g).unwrap_or_default());
-    db::queries::update_movie(&state.pool, media_core::models::MovieId(id), &title, year, plot.as_deref(), rating, genres_json.as_deref()).await.map_err(|e| e.to_string())
+    state.repos.movie.update(media_core::models::MovieId(id), &title, year, plot.as_deref(), rating, genres_json.as_deref()).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn update_tv_show(id: i64, title: String, plot: Option<String>, rating: Option<f32>, genres: Option<Vec<String>>, state: State<'_, AppState>) -> Result<(), String> {
     let genres_json = genres.map(|g| serde_json::to_string(&g).unwrap_or_default());
-    db::queries::update_tv_show(&state.pool, media_core::models::TvShowId(id), &title, plot.as_deref(), rating, genres_json.as_deref(), None, None, None, None).await.map_err(|e| e.to_string())
+    state.repos.tv.update_show(media_core::models::TvShowId(id), &title, plot.as_deref(), rating, genres_json.as_deref(), None, None, None, None).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn get_settings(state: State<'_, AppState>) -> Result<std::collections::HashMap<String, String>, String> {
-    db::queries::get_settings(&state.pool).await.map_err(|e| e.to_string())
+    state.repos.settings.get_all().await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn set_settings(settings: std::collections::HashMap<String, String>, state: State<'_, AppState>) -> Result<(), String> {
     for (key, value) in settings {
-        db::queries::set_setting(&state.pool, &key, &value).await.map_err(|e| e.to_string())?;
+        state.repos.settings.set(&key, &value).await.map_err(|e| e.to_string())?;
     }
     Ok(())
 }
 
 #[tauri::command]
 async fn refresh_metadata(id: i64, state: State<'_, AppState>) -> Result<(), String> {
-    let start_ms = now_ms();
-    let pool = state.pool.clone();
-    let task_manager = state.task_manager.clone();
+    let service = state.scraper_service.clone();
     let task_id = uuid::Uuid::new_v4().to_string();
-    let clients = media_core::scraper::ScraperClients::from_settings(&pool).await;
-    let settings = db::queries::get_settings(&pool).await.unwrap_or_default();
-    let script_path = settings.get("post_processing_script").map(|s| s.as_str());
 
-    if let Ok(Some(movie)) = db::queries::get_movie_by_id(&pool, media_core::models::MovieId(id)).await {
-        let _ = media_core::scraper::scrape_movie(movie.id, &movie.title, movie.year, &clients, &pool, script_path).await;
-    } else {
-        let shows = db::queries::get_all_tv_shows(&pool, None, None, None).await.unwrap_or_default();
-        if let Some(show) = shows.into_iter().find(|s| s.id == media_core::models::TvShowId(id)) {
-            let _ = media_core::scraper::scrape_tv_show(show.id, &show.title, &clients, &pool, script_path).await;
+    tauri::async_runtime::spawn(async move {
+        // Try as movie
+        let res = service.scrape_movie(MovieId(id), task_id.clone()).await;
+        if res.is_err() {
+            // Try as TV show
+            let _ = service.scrape_tv_show(TvShowId(id), task_id).await;
         }
-    }
-    task_manager.broadcast(TaskUpdate { 
-        task_id, 
-        status: "completed".to_string(), 
-        progress: 1, 
-        total: 1, 
-        message: "Metadata refresh complete".to_string(), 
-        started_at: Some(start_ms), 
-        debug_info: None, 
-        finished_at: None,
-        ..Default::default()
     });
 
     Ok(())
@@ -366,7 +290,7 @@ async fn refresh_metadata(id: i64, state: State<'_, AppState>) -> Result<(), Str
 
 #[tauri::command]
 async fn play_movie(id: i64, state: State<'_, AppState>) -> Result<(), String> {
-    if let Ok(Some(path)) = db::queries::get_movie_full_path(&state.pool, media_core::models::MovieId(id)).await {
+    if let Ok(Some(path)) = state.repos.movie.get_full_path(media_core::models::MovieId(id)).await {
         opener::open(path).map_err(|e| e.to_string())?;
     }
     Ok(())
@@ -374,7 +298,7 @@ async fn play_movie(id: i64, state: State<'_, AppState>) -> Result<(), String> {
 
 #[tauri::command]
 async fn play_episode(id: i64, state: State<'_, AppState>) -> Result<(), String> {
-    if let Ok(Some(path)) = db::queries::get_episode_full_path(&state.pool, media_core::models::EpisodeId(id)).await {
+    if let Ok(Some(path)) = state.repos.tv.get_episode_full_path(media_core::models::EpisodeId(id)).await {
         opener::open(path).map_err(|e| e.to_string())?;
     }
     Ok(())
@@ -382,22 +306,22 @@ async fn play_episode(id: i64, state: State<'_, AppState>) -> Result<(), String>
 
 #[tauri::command]
 async fn export_csv(state: State<'_, AppState>) -> Result<String, String> {
-    let movies = db::queries::get_all_movies(&state.pool, None, None, None).await.unwrap_or_default();
-    let tv_shows = db::queries::get_all_tv_shows(&state.pool, None, None, None).await.unwrap_or_default();
+    let movies = state.repos.movie.find_all(None, None, None).await.unwrap_or_default();
+    let tv_shows = state.repos.tv.find_all_shows(None, None, None).await.unwrap_or_default();
     Ok(Exporter::to_csv(&movies, &tv_shows))
 }
 
 #[tauri::command]
 async fn export_html(state: State<'_, AppState>) -> Result<String, String> {
-    let movies = db::queries::get_all_movies(&state.pool, None, None, None).await.unwrap_or_default();
-    let tv_shows = db::queries::get_all_tv_shows(&state.pool, None, None, None).await.unwrap_or_default();
+    let movies = state.repos.movie.find_all(None, None, None).await.unwrap_or_default();
+    let tv_shows = state.repos.tv.find_all_shows(None, None, None).await.unwrap_or_default();
     Ok(Exporter::to_html(&movies, &tv_shows))
 }
 
 #[tauri::command]
 async fn export_json(state: State<'_, AppState>) -> Result<String, String> {
-    let movies = db::queries::get_all_movies(&state.pool, None, None, None).await.unwrap_or_default();
-    let tv_shows = db::queries::get_all_tv_shows(&state.pool, None, None, None).await.unwrap_or_default();
+    let movies = state.repos.movie.find_all(None, None, None).await.unwrap_or_default();
+    let tv_shows = state.repos.tv.find_all_shows(None, None, None).await.unwrap_or_default();
     Exporter::to_json(&movies, &tv_shows).map_err(|e| e.to_string())
 }
 
@@ -412,7 +336,7 @@ async fn check_updates() -> Result<serde_json::Value, String> {
 #[tauri::command]
 async fn create_backup(state: State<'_, AppState>) -> Result<String, String> {
     let backup_dir = std::path::Path::new("backups");
-    let _ = media_core::maintenance::MaintenanceEngine::export_all_nfos(&state.pool).await;
+    let _ = media_core::maintenance::MaintenanceEngine::export_all_nfos(&state.repos).await;
     media_core::maintenance::MaintenanceEngine::create_backup(&state.pool, backup_dir).await
         .map(|p| format!("{:?}", p))
         .map_err(|e| e.to_string())
@@ -420,123 +344,39 @@ async fn create_backup(state: State<'_, AppState>) -> Result<String, String> {
 
 #[tauri::command]
 async fn bulk_scrape(id: i64, state: State<'_, AppState>) -> Result<String, String> {
-    let pool = state.pool.clone();
-    let task_manager = state.task_manager.clone();
+    let service = state.scraper_service.clone();
     let task_id = uuid::Uuid::new_v4().to_string();
     
-    let libraries = db::queries::get_all_libraries(&pool).await.map_err(|e| e.to_string())?;
-    if let Some(_lib) = libraries.into_iter().find(|l| l.id == media_core::models::LibraryId(id)) {
-        let pool_clone = pool.clone();
-        let task_manager_clone = task_manager.clone();
-        
-        tauri::async_runtime::spawn(async move {
-            let mut all_ids_movies: Vec<i64> = Vec::new();
-            let mut all_ids_tv: Vec<i64> = Vec::new();
-
-            if let Ok(movies) = db::queries::get_all_movies(&pool_clone, Some(media_core::models::LibraryId(id)), None, None).await {
-                all_ids_movies = movies.into_iter()
-                    .filter(|m| m.status == media_core::models::MediaStatus::Unmatched)
-                    .map(|m| m.id.0)
-                    .collect();
-            }
-            if let Ok(shows) = db::queries::get_all_tv_shows(&pool_clone, Some(media_core::models::LibraryId(id)), None, None).await {
-                all_ids_tv = shows.into_iter()
-                    .filter(|s| s.status == media_core::models::MediaStatus::Unmatched)
-                    .map(|s| s.id.0)
-                    .collect();
-            }
-
-            let start_ms = now_ms();
-            let clients = std::sync::Arc::new(media_core::scraper::ScraperClients::from_settings(&pool_clone).await);
-            let settings = db::queries::get_settings(&pool_clone).await.unwrap_or_default();
-            let script_path = settings.get("post_processing_script").cloned();
-
-            let mut all_tasks = Vec::new();
-            if let Ok(movies) = db::queries::get_movies_by_ids(&pool_clone, &all_ids_movies.iter().map(|&x| media_core::models::MovieId(x)).collect::<Vec<_>>()).await {
-                all_tasks.extend(movies.into_iter().map(|m| (m.id.0, m.title, m.year, "movie")));
-            }
-            if let Ok(shows) = db::queries::get_tv_shows_by_ids(&pool_clone, &all_ids_tv.iter().map(|&x| media_core::models::TvShowId(x)).collect::<Vec<_>>()).await {
-                all_tasks.extend(shows.into_iter().map(|s| (s.id.0, s.title, None, "tv")));
-            }
-
-            let total = all_tasks.len() as i32;
-            let pool_clone_inner = Arc::new(pool_clone);
-
-            use futures::StreamExt;
-            let stream = futures::stream::iter(all_tasks.into_iter().enumerate());
-
-            stream.for_each_concurrent(5, |(i, (id, title, year, m_type))| {
-                let clients = clients.clone();
-                let pool = pool_clone_inner.clone();
-                let task_manager = task_manager_clone.clone();
-                let task_id = task_id.clone();
-                let title_clone = title.clone();
-                let script_path_clone = script_path.clone();
-
-                async move {
-                    if m_type == "movie" {
-                        let _ = media_core::scraper::scrape_movie(id.into(), &title_clone, year, &clients, &pool, script_path_clone.as_deref()).await;
-                    } else {
-                        let _ = media_core::scraper::scrape_tv_show(id.into(), &title_clone, &clients, &pool, script_path_clone.as_deref()).await;
-                    }
-
-                    task_manager.broadcast(TaskUpdate {
-                        task_id,
-                        status: "running".to_string(),
-                        progress: (i + 1) as i32,
-                        total,
-                        message: format!("Processed: {}", title_clone),
-                        started_at: Some(start_ms),
-                        debug_info: None,
-                        finished_at: None,
-                        ..Default::default()
-                    });
-                }
-            }).await;
-
-            task_manager_clone.broadcast(TaskUpdate {
-                task_id,
-                status: "completed".to_string(),
-                progress: total,
-                total,
-                message: "Bulk scrape completed".to_string(),
-                started_at: Some(start_ms),
-                debug_info: None, 
-                finished_at: None,
-                ..Default::default()
-            });
-        });
-        Ok("Bulk scrape started".to_string())
-    } else {
-        Err("Library not found".to_string())
-    }
+    tauri::async_runtime::spawn(async move {
+        let _ = service.bulk_scrape_library(LibraryId(id), task_id).await;
+    });
+    
+    Ok("Bulk scrape started".to_string())
 }
 
 #[tauri::command]
 async fn rename_movie(id: i64, state: State<'_, AppState>) -> Result<String, String> {
-    let pool = state.pool.clone();
-    match db::queries::get_movie_by_id(&pool, media_core::models::MovieId(id)).await {
+    let repos = state.repos.clone();
+    match repos.movie.find_by_id(media_core::models::MovieId(id)).await {
         Ok(Some(movie)) => {
             let movie_id = movie.id;
-            let libraries = db::queries::get_all_libraries(&pool).await.unwrap_or_default();
+            let libraries = repos.library.find_all().await.unwrap_or_default();
             if let Some(lib) = libraries.into_iter().find(|l| l.id == movie.library_id) {
-                let file_info: Option<media_core::models::MovieFile> = sqlx::query_as("SELECT * FROM movie_files WHERE movie_id = ? LIMIT 1")
-                    .bind(movie_id).fetch_optional(&pool).await.unwrap_or_default();
+                let file_info = repos.movie.find_file_by_movie_id(movie_id).await.unwrap_or_default();
                 if let Some(file) = file_info {
-                    let pool_clone = pool.clone();
+                    let repos_clone = repos.clone();
                     let lib_path = lib.path.clone();
                     let old_path_str = file.file_path.clone();
                     let renamer = media_core::renamer::Renamer::new(None, None);
                     let old_path = std::path::PathBuf::from(&old_path_str);
                     let lib_root = std::path::PathBuf::from(&lib_path);
-                    let settings = db::queries::get_settings(&pool_clone).await.unwrap_or_default();
+                    let settings = repos_clone.settings.get_all().await.unwrap_or_default();
                     let script_path = settings.get("post_processing_script").cloned();
 
                     match renamer.rename_movie(&movie, &old_path, &lib_root, file.resolution, file.codec.as_deref(), script_path.as_deref()) {
                         Ok(new_path) => {
                             let new_path_str = new_path.to_string_lossy().to_string();
-                            let _ = sqlx::query("UPDATE movie_files SET file_path = ? WHERE id = ?")
-                                .bind(new_path_str).bind(file.id).execute(&pool_clone).await;
+                            let _ = repos_clone.movie.update_file_path(file.id, &new_path_str).await;
                             return Ok("Movie renamed successfully".to_string());
                         }
                         Err(e) => return Err(e.to_string())
@@ -551,14 +391,14 @@ async fn rename_movie(id: i64, state: State<'_, AppState>) -> Result<String, Str
 
 #[tauri::command]
 async fn search_subtitles(id: i64, state: State<'_, AppState>) -> Result<(), String> {
-    let pool = state.pool.clone();
+    let repos = state.repos.clone();
     let task_manager = state.task_manager.clone();
     let task_id = uuid::Uuid::new_v4().to_string();
     
     // Check environment first, then database settings
     let mut api_key = std::env::var("OPENSUBTITLES_API_KEY").unwrap_or_default();
     if api_key.is_empty() {
-        if let Ok(settings) = db::queries::get_settings(&pool).await {
+        if let Ok(settings) = repos.settings.get_all().await {
             if let Some(key) = settings.get("opensubtitles_api_key") {
                 api_key = key.clone();
             }
@@ -571,12 +411,11 @@ async fn search_subtitles(id: i64, state: State<'_, AppState>) -> Result<(), Str
 
     tauri::async_runtime::spawn(async move {
         let start_ms = now_ms();
-        if let Ok(Some(movie)) = db::queries::get_movie_by_id(&pool, media_core::models::MovieId(id)).await {
-            let file_info: Option<(String,)> = sqlx::query_as("SELECT file_path FROM movie_files WHERE movie_id = ? LIMIT 1")
-                .bind(id).fetch_optional(&pool).await.unwrap_or_default();
+        if let Ok(Some(movie)) = repos.movie.find_by_id(media_core::models::MovieId(id)).await {
+            let file_info = repos.movie.find_file_by_movie_id(movie.id).await.unwrap_or_default();
 
-            if let Some((path_str,)) = file_info {
-                let dest_path = std::path::PathBuf::from(path_str);
+            if let Some(file) = file_info {
+                let dest_path = std::path::PathBuf::from(file.file_path);
                 let client = media_core::subtitles::SubtitleClient::new(api_key);
                 let mut results = None;
                 if let Ok(hash) = media_core::subtitles::compute_opensubtitles_hash(&dest_path) {
@@ -608,7 +447,7 @@ async fn search_subtitles(id: i64, state: State<'_, AppState>) -> Result<(), Str
             message: "Subtitle search finished".to_string(), 
             started_at: Some(start_ms), 
             debug_info: None, 
-            finished_at: None,
+            finished_at: Some(now_ms()),
             ..Default::default()
         });
     });
@@ -617,14 +456,13 @@ async fn search_subtitles(id: i64, state: State<'_, AppState>) -> Result<(), Str
 
 #[tauri::command]
 async fn process_movie_advanced(id: i64, state: State<'_, AppState>) -> Result<(), String> {
-    let pool = state.pool.clone();
+    let repos = state.repos.clone();
     let task_manager = state.task_manager.clone();
     let task_id = uuid::Uuid::new_v4().to_string();
     tauri::async_runtime::spawn(async move {
         let start_ms = now_ms();
-        if let Ok(Some(movie)) = db::queries::get_movie_by_id(&pool, media_core::models::MovieId(id)).await {
-            let file_info: Option<media_core::models::MovieFile> = sqlx::query_as("SELECT * FROM movie_files WHERE movie_id = ? LIMIT 1")
-                .bind(id).fetch_optional(&pool).await.unwrap_or_default();
+        if let Ok(Some(movie)) = repos.movie.find_by_id(media_core::models::MovieId(id)).await {
+            let file_info = repos.movie.find_file_by_movie_id(movie.id).await.unwrap_or_default();
             if let Some(file) = file_info {
                 task_manager.broadcast(TaskUpdate {
                     task_id: task_id.clone(),
@@ -634,87 +472,128 @@ async fn process_movie_advanced(id: i64, state: State<'_, AppState>) -> Result<(
                     message: format!("Analyzing: {}", movie.title),
                     started_at: Some(start_ms),
                     debug_info: None, finished_at: None, ..Default::default() });
-                let input_path = std::path::PathBuf::from(&file.file_path);
-                if input_path.exists() {
-                    let folder = input_path.parent().unwrap();
-                    let thumb_dest = folder.join(format!("{}.thumb.jpg", input_path.file_stem().unwrap().to_str().unwrap()));
-                    let ratio = media_core::scanner::ffmpeg::FfmpegEngine::detect_aspect_ratio(&input_path).ok();
-                    let thumb = media_core::scanner::ffmpeg::FfmpegEngine::extract_thumbnail(&input_path, &thumb_dest, "00:05:00").ok();
-                    let _ = sqlx::query("UPDATE movie_files SET aspect_ratio = ?, thumbnail_path = ? WHERE id = ?")
-                        .bind(ratio).bind(thumb.map(|p| p.to_string_lossy().to_string())).bind(file.id).execute(&pool).await;
+                if let Ok(Some(input_path)) = repos.movie.get_full_path(movie.id).await {
+                    if input_path.exists() {
+                        let fingerprint = match file.fingerprint {
+                            Some(f) if !f.is_empty() => f,
+                            _ => {
+                                let f = media_core::scanner::hash::calculate_oshash(&input_path).unwrap_or_default();
+                                let _ = repos.movie.update_file_fingerprint(file.id, &f).await;
+                                f
+                            }
+                        };
+
+                        if !fingerprint.is_empty() {
+                            let duration = file.duration_secs.unwrap_or(0) as f64;
+                            let generated_root = std::path::Path::new("data/generated");
+                            if let Ok(_) = media_core::scanner::ffmpeg::FfmpegEngine::generate_advanced_assets(&input_path, &fingerprint, generated_root, duration) {
+                                let _ = repos.media.upsert_generated_asset(&fingerprint, "thumb", &format!("{}/thumb.jpg", fingerprint)).await;
+                                let _ = repos.media.upsert_generated_asset(&fingerprint, "sprite", &format!("{}/sprite.webp", fingerprint)).await;
+                                let _ = repos.media.upsert_generated_asset(&fingerprint, "vtt", &format!("{}/sprite.vtt", fingerprint)).await;
+                                let _ = repos.media.upsert_generated_asset(&fingerprint, "preview", &format!("{}/preview.mp4", fingerprint)).await;
+                            }
+                        }
+                    }
                 }
             }
         }
-        let _ = task_manager.broadcast(TaskUpdate { task_id, status: "completed".to_string(), progress: 1, total: 1, message: "Advanced analysis complete".to_string(), started_at: Some(start_ms), debug_info: None, finished_at: None, ..Default::default() });
+        let _ = task_manager.broadcast(TaskUpdate { task_id, status: "completed".to_string(), progress: 1, total: 1, message: "Advanced analysis complete".to_string(), started_at: Some(start_ms), debug_info: None, finished_at: Some(now_ms()), ..Default::default() });
     });
     Ok(())
 }
 
 #[tauri::command]
 async fn process_tv_show_advanced(id: i64, state: State<'_, AppState>) -> Result<(), String> {
-    let pool = state.pool.clone();
+    let repos = state.repos.clone();
     let task_manager = state.task_manager.clone();
     let task_id = uuid::Uuid::new_v4().to_string();
     tauri::async_runtime::spawn(async move {
         let start_ms = now_ms();
-        if let Ok(Some(show)) = db::queries::get_tv_show_by_id(&pool, media_core::models::TvShowId(id)).await {
-            let seasons = db::queries::get_seasons_by_show_id(&pool, show.id).await.unwrap_or_default();
+        if let Ok(Some(show)) = repos.tv.find_show_by_id(media_core::models::TvShowId(id)).await {
+            let seasons = repos.tv.find_seasons_by_show_id(show.id).await.unwrap_or_default();
             for s in seasons {
-                let eps = db::queries::get_episodes_by_season_id(&pool, s.id).await.unwrap_or_default();
+                let eps = repos.tv.find_episodes_by_season_id(s.id).await.unwrap_or_default();
                 for ep in eps {
-                    let input_path = std::path::PathBuf::from(&ep.file_path);
-                    if input_path.exists() {
-                        let folder = input_path.parent().unwrap();
-                        let thumb_dest = folder.join(format!("{}.thumb.jpg", input_path.file_stem().unwrap().to_str().unwrap()));
-                        let ratio = media_core::scanner::ffmpeg::FfmpegEngine::detect_aspect_ratio(&input_path).ok();
-                        let thumb = media_core::scanner::ffmpeg::FfmpegEngine::extract_thumbnail(&input_path, &thumb_dest, "00:05:00").ok();
-                        let _ = sqlx::query("UPDATE episodes SET aspect_ratio = ?, thumbnail_path = ? WHERE id = ?")
-                            .bind(ratio).bind(thumb.map(|p| p.to_string_lossy().to_string())).bind(ep.id).execute(&pool).await;
+                    if let Ok(Some(input_path)) = repos.tv.get_episode_full_path(ep.id).await {
+                        if input_path.exists() {
+                            let fingerprint = match ep.fingerprint {
+                                Some(f) if !f.is_empty() => f,
+                                _ => {
+                                    let f = media_core::scanner::hash::calculate_oshash(&input_path).unwrap_or_default();
+                                    let _ = repos.tv.update_episode_fingerprint(ep.id, &f).await;
+                                    f
+                                }
+                            };
+
+                            if !fingerprint.is_empty() {
+                                let duration = ep.duration_secs.unwrap_or(0) as f64;
+                                let generated_root = std::path::Path::new("data/generated");
+                                if let Ok(_) = media_core::scanner::ffmpeg::FfmpegEngine::generate_advanced_assets(&input_path, &fingerprint, generated_root, duration) {
+                                    let _ = repos.media.upsert_generated_asset(&fingerprint, "thumb", &format!("{}/thumb.jpg", fingerprint)).await;
+                                    let _ = repos.media.upsert_generated_asset(&fingerprint, "sprite", &format!("{}/sprite.webp", fingerprint)).await;
+                                    let _ = repos.media.upsert_generated_asset(&fingerprint, "vtt", &format!("{}/sprite.vtt", fingerprint)).await;
+                                    let _ = repos.media.upsert_generated_asset(&fingerprint, "preview", &format!("{}/preview.mp4", fingerprint)).await;
+                                }
+                            }
+                        }
                     }
                 }
             }
         }
-        let _ = task_manager.broadcast(TaskUpdate { task_id, status: "completed".to_string(), progress: 1, total: 1, message: "TV analysis complete".to_string(), started_at: Some(start_ms), debug_info: None, finished_at: None, ..Default::default() });
+        let _ = task_manager.broadcast(TaskUpdate { task_id, status: "completed".to_string(), progress: 1, total: 1, message: "TV analysis complete".to_string(), started_at: Some(start_ms), debug_info: None, finished_at: Some(now_ms()), ..Default::default() });
     });
     Ok(())
 }
 
 #[tauri::command]
 async fn process_library_advanced(id: i64, state: State<'_, AppState>) -> Result<(), String> {
-    let pool = state.pool.clone();
+    let repos = state.repos.clone();
     let task_manager = state.task_manager.clone();
     let task_id = uuid::Uuid::new_v4().to_string();
     tauri::async_runtime::spawn(async move {
         let start_ms = now_ms();
-        if let Ok(movies) = db::queries::get_all_movies(&pool, Some(media_core::models::LibraryId(id)), None, None).await {
+        if let Ok(movies) = repos.movie.find_all(Some(media_core::models::LibraryId(id)), None, None).await {
             for movie in movies {
-                let file_info: Option<media_core::models::MovieFile> = sqlx::query_as("SELECT * FROM movie_files WHERE movie_id = ? LIMIT 1")
-                    .bind(movie.id).fetch_optional(&pool).await.unwrap_or_default();
+                let file_info = repos.movie.find_file_by_movie_id(movie.id).await.unwrap_or_default();
                 if let Some(file) = file_info {
-                    let input_path = std::path::PathBuf::from(&file.file_path);
-                    if input_path.exists() {
-                        let folder = input_path.parent().unwrap();
-                        let thumb_dest = folder.join(format!("{}.thumb.jpg", input_path.file_stem().unwrap().to_str().unwrap()));
-                        let ratio = media_core::scanner::ffmpeg::FfmpegEngine::detect_aspect_ratio(&input_path).ok();
-                        let thumb = media_core::scanner::ffmpeg::FfmpegEngine::extract_thumbnail(&input_path, &thumb_dest, "00:05:00").ok();
-                        let _ = sqlx::query("UPDATE movie_files SET aspect_ratio = ?, thumbnail_path = ? WHERE id = ?")
-                            .bind(ratio).bind(thumb.map(|p| p.to_string_lossy().to_string())).bind(file.id).execute(&pool).await;
+                    if let Ok(Some(input_path)) = repos.movie.get_full_path(movie.id).await {
+                        if input_path.exists() {
+                            let fingerprint = match file.fingerprint {
+                                Some(f) if !f.is_empty() => f,
+                                _ => {
+                                    let f = media_core::scanner::hash::calculate_oshash(&input_path).unwrap_or_default();
+                                    let _ = repos.movie.update_file_fingerprint(file.id, &f).await;
+                                    f
+                                }
+                            };
+
+                            if !fingerprint.is_empty() {
+                                let duration = file.duration_secs.unwrap_or(0) as f64;
+                                let generated_root = std::path::Path::new("data/generated");
+                                if let Ok(_) = media_core::scanner::ffmpeg::FfmpegEngine::generate_advanced_assets(&input_path, &fingerprint, generated_root, duration) {
+                                    let _ = repos.media.upsert_generated_asset(&fingerprint, "thumb", &format!("{}/thumb.jpg", fingerprint)).await;
+                                    let _ = repos.media.upsert_generated_asset(&fingerprint, "sprite", &format!("{}/sprite.webp", fingerprint)).await;
+                                    let _ = repos.media.upsert_generated_asset(&fingerprint, "vtt", &format!("{}/sprite.vtt", fingerprint)).await;
+                                    let _ = repos.media.upsert_generated_asset(&fingerprint, "preview", &format!("{}/preview.mp4", fingerprint)).await;
+                                }
+                            }
+                        }
                     }
                 }
             }
         }
-        let _ = task_manager.broadcast(TaskUpdate { task_id, status: "completed".to_string(), progress: 1, total: 1, message: "Library analysis complete".to_string(), started_at: Some(start_ms), debug_info: None, finished_at: None, ..Default::default() });
+        let _ = task_manager.broadcast(TaskUpdate { task_id, status: "completed".to_string(), progress: 1, total: 1, message: "Library analysis complete".to_string(), started_at: Some(start_ms), debug_info: None, finished_at: Some(now_ms()), ..Default::default() });
     });
     Ok(())
 }
 
 #[tauri::command]
 async fn sync_trakt(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
-    let settings_map = db::queries::get_settings(&state.pool).await.unwrap_or_default();
+    let settings_map = state.repos.settings.get_all().await.unwrap_or_default();
     let access_token = settings_map.get("trakt_access_token").cloned().unwrap_or_default();
     if access_token.is_empty() { return Err("Trakt not authenticated".to_string()); }
-    let scraper_clients = media_core::scraper::ScraperClients::from_settings(&state.pool).await;
-    let movies = db::queries::get_all_movies(&state.pool, None, None, None).await.unwrap_or_default();
+    let scraper_clients = media_core::scraper::ScraperClients::from_settings(&state.repos).await;
+    let movies = state.repos.movie.find_all(None, None, None).await.unwrap_or_default();
     let mut trakt_movies = Vec::new();
     for m in movies {
         if let Some(tmdb) = m.tmdb_id {
@@ -730,7 +609,7 @@ async fn sync_trakt(state: State<'_, AppState>) -> Result<serde_json::Value, Str
 
 #[tauri::command]
 async fn cleanup_duplicates(id: i64, state: State<'_, AppState>) -> Result<Vec<PathBuf>, String> {
-    let libraries = db::queries::get_all_libraries(&state.pool).await.map_err(|e| e.to_string())?;
+    let libraries = state.repos.library.find_all().await.map_err(|e| e.to_string())?;
     if let Some(lib) = libraries.into_iter().find(|l| l.id == media_core::models::LibraryId(id)) {
         let cleanup = CleanupService::new(PathBuf::from(lib.path));
         cleanup.remove_duplicate_artwork().map_err(|e| e.to_string())
@@ -741,7 +620,7 @@ async fn cleanup_duplicates(id: i64, state: State<'_, AppState>) -> Result<Vec<P
 
 #[tauri::command]
 async fn cleanup_empty_folders(id: i64, state: State<'_, AppState>) -> Result<Vec<PathBuf>, String> {
-    let libraries = db::queries::get_all_libraries(&state.pool).await.map_err(|e| e.to_string())?;
+    let libraries = state.repos.library.find_all().await.map_err(|e| e.to_string())?;
     if let Some(lib) = libraries.into_iter().find(|l| l.id == media_core::models::LibraryId(id)) {
         let cleanup = CleanupService::new(PathBuf::from(lib.path));
         cleanup.remove_empty_folders().map_err(|e| e.to_string())
@@ -752,12 +631,10 @@ async fn cleanup_empty_folders(id: i64, state: State<'_, AppState>) -> Result<Ve
 
 #[tauri::command]
 async fn start_streaming(id: i64, media_type: String, state: State<'_, AppState>, app_handle: tauri::AppHandle) -> Result<String, String> {
-    let pool = state.pool.clone();
-
     let path = if media_type == "movie" {
-        db::queries::get_movie_full_path(&pool, media_core::models::MovieId(id)).await
+        state.repos.movie.get_full_path(media_core::models::MovieId(id)).await
     } else {
-        db::queries::get_episode_full_path(&pool, media_core::models::EpisodeId(id)).await
+        state.repos.tv.get_episode_full_path(media_core::models::EpisodeId(id)).await
     }.map_err(|e| e.to_string())?;
 
     if let Some(input_path) = path {
@@ -845,14 +722,14 @@ async fn copy_with_progress(
 
 #[tauri::command]
 async fn download_to_local(id: i64, media_type: String, dest_path: String, state: State<'_, AppState>) -> Result<String, String> {
-    let pool = state.pool.clone();
+    let repos = state.repos.clone();
     let task_manager = state.task_manager.clone();
     let task_id = uuid::Uuid::new_v4().to_string();
     
     let path = if media_type == "movie" {
-        db::queries::get_movie_full_path(&pool, media_core::models::MovieId(id)).await
+        repos.movie.get_full_path(media_core::models::MovieId(id)).await
     } else {
-        db::queries::get_episode_full_path(&pool, media_core::models::EpisodeId(id)).await
+        repos.tv.get_episode_full_path(media_core::models::EpisodeId(id)).await
     }.map_err(|e| e.to_string())?;
 
     if let Some(src) = path {
@@ -904,7 +781,7 @@ async fn download_to_local(id: i64, media_type: String, dest_path: String, state
                         total: 100,
                         message: format!("Download completed: {}", src_clone.file_name().unwrap_or_default().to_string_lossy()),
                         started_at: Some(start_ms),
-                        debug_info: None, finished_at: None, ..Default::default() });
+                        debug_info: None, finished_at: Some(now_ms()), ..Default::default() });
                 }
                 Err(e) => {
                     task_manager_clone.broadcast(TaskUpdate {
@@ -914,7 +791,7 @@ async fn download_to_local(id: i64, media_type: String, dest_path: String, state
                         total: 100,
                         message: format!("Download failed: {}", e),
                         started_at: Some(start_ms),
-                        debug_info: None, finished_at: None, ..Default::default() });
+                        debug_info: None, finished_at: Some(now_ms()), ..Default::default() });
                 }
             }
         });
@@ -927,69 +804,28 @@ async fn download_to_local(id: i64, media_type: String, dest_path: String, state
 
 #[tauri::command]
 async fn get_playback_status(id: i64, media_type: String, state: State<'_, AppState>) -> Result<serde_json::Value, String> {
-    let row: Option<(i64, i64, bool)> = sqlx::query_as("SELECT position_ms, duration_ms, is_finished FROM playback_state WHERE media_id = ? AND media_type = ?")
-        .bind(id).bind(media_type).fetch_optional(&state.pool).await.map_err(|e| e.to_string())?;
-
-    if let Some((pos, dur, fin)) = row {
-        Ok(serde_json::json!({ "position_ms": pos, "duration_ms": dur, "is_finished": fin }))
-    } else {
-        Ok(serde_json::json!({ "position_ms": 0, "duration_ms": 0, "is_finished": false }))
+    match state.repos.media.get_playback_status(id, &media_type).await {
+        Ok(Some(status)) => Ok(serde_json::json!({
+            "position_ms": status.position_ms,
+            "duration_ms": status.duration_ms,
+            "is_finished": status.is_finished
+        })),
+        _ => Ok(serde_json::json!({ "position_ms": 0, "duration_ms": 0, "is_finished": false }))
     }
-}
-
-#[tauri::command]
-async fn generate_preview(
-    id: i64,
-    media_type: String,
-    state: State<'_, AppState>
-) -> Result<String, String> {
-    let path_str = if media_type == "movie" {
-        let file = sqlx::query_as::<_, media_core::models::movie::MovieFile>("SELECT * FROM movie_files WHERE movie_id = ? LIMIT 1")
-            .bind(id).fetch_optional(&state.pool).await.map_err(|e| e.to_string())?;
-        file.ok_or("Movie file not found")?.file_path
-    } else {
-        let episode = sqlx::query_as::<_, media_core::models::tv::Episode>("SELECT * FROM episodes WHERE id = ?")
-            .bind(id).fetch_optional(&state.pool).await.map_err(|e| e.to_string())?;
-        episode.ok_or("Episode not found")?.file_path
-    };
-
-    let input_path = std::path::PathBuf::from(path_str);
-    
-    let app_data = std::env::var("APPDATA").unwrap_or_else(|_| ".".to_string());
-    let previews_dir = std::path::PathBuf::from(app_data).join("MediaManager").join("previews");
-    if !previews_dir.exists() {
-        std::fs::create_dir_all(&previews_dir).map_err(|e| e.to_string())?;
-    }
-    let output_name = format!("{}_{}_preview.mp4", media_type, id);
-    let output_path = previews_dir.join(&output_name);
-
-    if !output_path.exists() {
-        media_core::scanner::ffmpeg::FfmpegEngine::generate_preview(&input_path, &output_path)
-            .map_err(|e| e.to_string())?;
-    }
-
-    Ok(output_path.to_string_lossy().to_string())
 }
 
 #[tauri::command]
 async fn update_playback_progress(
     media_id: i64,
     media_type: String,
-    position_ms: i64,
-    duration_ms: i64,
+    position_ms: i32,
+    duration_ms: i32,
     is_finished: bool,
     state: State<'_, AppState>
 ) -> Result<(), String> {
-    sqlx::query("INSERT INTO playback_state (media_id, media_type, position_ms, duration_ms, is_finished, updated_at)
-                VALUES (?, ?, ?, ?, ?, datetime('now'))
-                ON CONFLICT(media_id, media_type) DO UPDATE SET
-                position_ms = excluded.position_ms,
-                duration_ms = excluded.duration_ms,
-                is_finished = excluded.is_finished,
-                updated_at = datetime('now')")
-        .bind(media_id).bind(media_type).bind(position_ms).bind(duration_ms).bind(is_finished)
-        .execute(&state.pool).await.map_err(|e| e.to_string())?;
-    Ok(())
+    state.repos.media.update_playback_status(media_id, &media_type, position_ms, duration_ms, is_finished)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 fn main() {
@@ -1006,14 +842,36 @@ fn main() {
     let pool = tauri::async_runtime::block_on(async {
         db::init_pool(&database_url).await.expect("Failed to initialize database pool")
     });
+    let repos = Arc::new(Repositories::new(pool.clone()));
     let task_manager = Arc::new(TaskManager::new());
+    
+    let clients = tauri::async_runtime::block_on(async {
+        Arc::new(media_core::scraper::ScraperClients::from_settings(&repos).await)
+    });
+    let scraper_service = Arc::new(DefaultScraperService::new(
+        repos.clone(),
+        task_manager.clone(),
+        clients,
+    ));
+    let scanner_service = Arc::new(DefaultScannerService::new(
+        repos.clone(),
+        task_manager.clone(),
+    ));
+
     let task_manager_clone = task_manager.clone();
-    let pool_for_watchdog = pool.clone();
-    let task_manager_for_watchdog = task_manager.clone();
-    let pool_for_notifications = pool.clone();
+    let repos_for_watchdog = repos.clone();
+    let scanner_service_for_watchdog = scanner_service.clone();
+    let repos_for_notifications = repos.clone();
     let task_manager_for_notifications = task_manager.clone();
+    
     tauri::Builder::default()
-        .manage(AppState { pool, task_manager })
+        .manage(AppState { 
+            pool: pool.clone(), 
+            repos: repos.clone(), 
+            task_manager,
+            scanner_service,
+            scraper_service,
+        })
         .invoke_handler(tauri::generate_handler![
             get_libraries, create_library, delete_library,
             get_movies, get_tv_shows, get_seasons, get_episodes,
@@ -1025,14 +883,11 @@ fn main() {
             rename_movie, search_subtitles, process_movie_advanced,
             process_tv_show_advanced, process_library_advanced, sync_trakt,
             cleanup_duplicates, cleanup_empty_folders, start_streaming,
-            download_to_local, get_playback_status, generate_preview, update_playback_progress
+            download_to_local, get_playback_status, update_playback_progress
         ])
         .setup(|app| {
             // Resolve sidecar paths
             let handle = app.handle();
-            
-            // Sidecars are named with the target triple, e.g., ffmpeg-x86_64-pc-windows-msvc.exe
-            // Tauri's sidecar() helper handles this, but we need the absolute path for Command::new
             
             #[cfg(target_os = "windows")]
             let (ffmpeg_name, ffprobe_name) = ("ffmpeg.exe", "ffprobe.exe");
@@ -1058,7 +913,7 @@ fn main() {
                 let notifier = media_core::notifications::Notifier::new();
                 while let Ok(update) = rx.recv().await {
                     if update.status == "completed" || update.status == "error" {
-                        if let Ok(settings) = db::queries::get_settings(&pool_for_notifications).await {
+                        if let Ok(settings) = repos_for_notifications.settings.get_all().await {
                             if let Some(url) = settings.get("discord_webhook_url") {
                                 if !url.is_empty() {
                                     let _ = notifier.send_discord_webhook(url, &update).await;
@@ -1069,7 +924,7 @@ fn main() {
                 }
             });
             tauri::async_runtime::spawn(async move {
-                let watchdog = media_core::scanner::watchdog::Watchdog::new(pool_for_watchdog, task_manager_for_watchdog);
+                let watchdog = media_core::scanner::watchdog::Watchdog::new(repos_for_watchdog, scanner_service_for_watchdog);
                 let _ = watchdog.start().await;
             });
             let handle = app.handle().clone();

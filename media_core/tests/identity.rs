@@ -2,12 +2,15 @@ use media_core::{db, scanner, models};
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::Arc;
+use media_core::db::{LibraryReader, LibraryWriter, MovieReader, Repositories};
 
 #[tokio::test]
 async fn test_identity_healing() -> anyhow::Result<()> {
     // 1. Setup fresh DB
     let db_url = "sqlite::memory:"; // Use in-memory for testing
     let pool = db::init_pool(db_url).await?;
+    let repos = Arc::new(Repositories::new(pool.clone()));
 
     // 2. Setup test media
     let test_dir = PathBuf::from("test_media_mvp1_1");
@@ -23,15 +26,15 @@ async fn test_identity_healing() -> anyhow::Result<()> {
     }
 
     // 3. Add library and scan
-    let lib_id = db::queries::insert_library(&pool, "Test Lib", test_dir.to_str().unwrap(), models::MediaType::Movie).await?;
-    let libraries = db::queries::get_all_libraries(&pool).await?;
+    let lib_id = repos.library.insert("Test Lib", test_dir.to_str().unwrap(), models::MediaType::Movie).await?;
+    let libraries = repos.library.find_all().await?;
     let lib = libraries.into_iter().find(|l| l.id == lib_id).unwrap();
 
-    let task_manager = std::sync::Arc::new(media_core::task_manager::TaskManager::new());
-    scanner::worker::scan_library(&pool, &lib, "test_task".into(), &task_manager).await?;
+    let task_manager = Arc::new(media_core::task_manager::TaskManager::new());
+    scanner::worker::scan_library(repos.clone(), &lib, "test_task".into(), &task_manager).await?;
 
     // 4. Verify initial fingerprint
-    let movies = db::queries::get_all_movies(&pool, Some(lib_id), None, None).await?;
+    let movies = repos.movie.find_all(Some(lib_id), None, None).await?;
     assert_eq!(movies.len(), 1);
     
     let movie_file = sqlx::query_as::<_, models::MovieFile>("SELECT * FROM movie_files WHERE movie_id = ?")
@@ -50,10 +53,10 @@ async fn test_identity_healing() -> anyhow::Result<()> {
     fs::rename(&file_path, &new_file_path)?;
 
     // 6. Scan again
-    scanner::worker::scan_library(&pool, &lib, "test_task_2".into(), &task_manager).await?;
+    scanner::worker::scan_library(repos.clone(), &lib, "test_task_2".into(), &task_manager).await?;
 
     // 7. Verify Healing (Fingerprint remains same, path updates)
-    let movies_after = db::queries::get_all_movies(&pool, Some(lib_id), None, None).await?;
+    let movies_after = repos.movie.find_all(Some(lib_id), None, None).await?;
     assert_eq!(movies_after.len(), 1, "Should still have 1 movie after move");
 
     let movie_file_after = sqlx::query_as::<_, models::MovieFile>("SELECT * FROM movie_files WHERE movie_id = ?")

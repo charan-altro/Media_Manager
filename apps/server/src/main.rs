@@ -2,11 +2,11 @@
 use axum::Router;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use media_core::db;
+use media_core::db::{self, SettingsRepository};
 use media_core::task_manager::TaskManager;
 use tower_http::cors::CorsLayer;
 
-use media_core::scanner::streaming::StreamManager;
+use media_core::scanner::streaming::{StreamManager, StreamingService};
 
 pub mod state;
 pub mod utils;
@@ -29,6 +29,7 @@ async fn main() {
 
     let database_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite:mediavault.db?mode=rwc".to_string());
     let pool = db::init_pool(&database_url).await.expect("Failed to initialize database pool");
+    let repos = Arc::new(db::Repositories::new(pool.clone()));
     let task_manager = Arc::new(TaskManager::new());
     
     // Configurable Transcode Directory (Default to RAM disk /dev/shm on Linux/Pi to save SD card life)
@@ -40,12 +41,26 @@ async fn main() {
         }
     });
     media_core::config::set_hls_transcode_dir(transcode_dir.clone());
-    let stream_manager = Arc::new(StreamManager::new(std::path::PathBuf::from(&transcode_dir)));
+    let stream_manager: Arc<dyn StreamingService> = Arc::new(StreamManager::new(std::path::PathBuf::from(&transcode_dir)));
+
+    let clients = Arc::new(media_core::scraper::ScraperClients::from_settings(&repos).await);
+    let scraper_service = Arc::new(media_core::scraper::service::DefaultScraperService::new(
+        repos.clone(),
+        task_manager.clone(),
+        clients,
+    ));
+    let scanner_service = Arc::new(media_core::scanner::service::DefaultScannerService::new(
+        repos.clone(),
+        task_manager.clone(),
+    ));
 
     let app_state = Arc::new(AppState {
         pool: pool.clone(),
+        repos: repos.clone(),
         task_manager: task_manager.clone(),
         stream_manager: stream_manager.clone(),
+        scraper_service: scraper_service.clone(),
+        scanner_service: scanner_service.clone(),
     });
 
     // Start background stream cleanup
@@ -60,7 +75,7 @@ async fn main() {
 
     // Start background notification monitor
     let task_manager_for_notifications = task_manager.clone();
-    let pool_for_notifications = pool.clone();
+    let repos_for_notifications = app_state.repos.clone();
     tokio::spawn(async move {
         let mut rx = task_manager_for_notifications.subscribe();
         let notifier = media_core::notifications::Notifier::new();
@@ -69,7 +84,7 @@ async fn main() {
             // Only notify on completion or error
             if update.status == "completed" || update.status == "error" {
                 // Check settings for webhook URL
-                if let Ok(settings) = db::queries::get_settings(&pool_for_notifications).await {
+                if let Ok(settings) = repos_for_notifications.settings.get_all().await {
                     if let Some(url) = settings.get("discord_webhook_url") {
                         if !url.is_empty() {
                             let _ = notifier.send_discord_webhook(url, &update).await;
@@ -81,10 +96,10 @@ async fn main() {
     });
 
     // Start Real-time Watchdog
-    let pool_for_watchdog = pool.clone();
-    let task_manager_for_watchdog = task_manager.clone();
+    let repos_for_watchdog = repos.clone();
+    let scanner_service_for_watchdog = scanner_service.clone();
     tokio::spawn(async move {
-        let watchdog = media_core::scanner::watchdog::Watchdog::new(pool_for_watchdog, task_manager_for_watchdog);
+        let watchdog = media_core::scanner::watchdog::Watchdog::new(repos_for_watchdog, scanner_service_for_watchdog);
         if let Err(e) = watchdog.start().await {
             tracing::error!("Watchdog failed: {}", e);
         }

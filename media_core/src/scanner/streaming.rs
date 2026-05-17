@@ -13,9 +13,45 @@ use futures::Stream;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::io;
+use async_trait::async_trait;
 
 const SEG_PREFIX: &str = "seg_";
 const FFMPEG_SEG_PATTERN: &str = ".seg_%03d.ts";
+
+#[async_trait]
+pub trait StreamingService: Send + Sync {
+    /// Starts an HLS stream at a specific segment.
+    async fn start_hls(&self, id: &str, input_path: &Path) -> Result<PathBuf>;
+    async fn start_hls_at(&self, id: &str, input_path: &Path, start_segment: usize) -> Result<PathBuf>;
+    
+    /// Starts a DASH stream at a specific segment.
+    async fn start_dash(&self, id: &str, input_path: &Path) -> Result<PathBuf>;
+    async fn start_dash_at(&self, id: &str, input_path: &Path, start_segment: usize) -> Result<PathBuf>;
+
+    /// Starts a direct JIT remuxed stream (fMP4) piped to stdout.
+    async fn start_direct_stream(&self, input_path: &Path, start_time: f64) -> Result<ChildStream>;
+
+    /// Waits for a specific segment to be generated.
+    async fn wait_for_segment(&self, id: &str, segment_index: usize) -> Result<bool>;
+
+    /// Requests a segment, restarting the process if necessary.
+    async fn request_segment(&self, id: &str, input_path: &Path, segment_index: usize) -> Result<()>;
+
+    /// Stops a specific stream session.
+    async fn stop_stream(&self, id: &str);
+
+    /// Stops all active stream sessions.
+    async fn stop_all_streams(&self);
+
+    /// Updates the heartbeat for a session to prevent it from being reaped.
+    async fn update_heartbeat(&self, id: &str);
+
+    /// Periodically called to clean up idle or runaway stream sessions.
+    async fn cleanup_stale_streams(&self);
+
+    /// Generates a path for a segment.
+    fn get_segment_path(&self, id: &str, segment_index: usize) -> PathBuf;
+}
 
 pub struct ChildStream {
     reader: ReaderStream<tokio::process::ChildStdout>,
@@ -31,10 +67,10 @@ impl Stream for ChildStream {
 }
 
 pub fn generate_hls_manifest(duration_secs: i32) -> String {
-    let segment_duration = 4;
+    let segment_duration = 10;
     let mut manifest = String::from("#EXTM3U\n");
     manifest.push_str("#EXT-X-VERSION:3\n");
-    manifest.push_str("#EXT-X-TARGETDURATION:4\n");
+    manifest.push_str("#EXT-X-TARGETDURATION:11\n");
     manifest.push_str("#EXT-X-MEDIA-SEQUENCE:0\n");
     manifest.push_str("#EXT-X-PLAYLIST-TYPE:VOD\n");
 
@@ -124,22 +160,6 @@ impl StreamManager {
             hw_encoder,
             hw_decoders,
         }
-    }
-
-    pub async fn start_hls(&self, id: &str, input_path: &Path) -> Result<PathBuf> {
-        self.start_hls_at(id, input_path, 0).await
-    }
-
-    pub async fn start_hls_at(&self, id: &str, input_path: &Path, start_segment: usize) -> Result<PathBuf> {
-        self.start_stream_at(id, input_path, start_segment, false).await
-    }
-
-    pub async fn start_dash(&self, id: &str, input_path: &Path) -> Result<PathBuf> {
-        self.start_dash_at(id, input_path, 0).await
-    }
-
-    pub async fn start_dash_at(&self, id: &str, input_path: &Path, start_segment: usize) -> Result<PathBuf> {
-        self.start_stream_at(id, input_path, start_segment, true).await
     }
 
     async fn start_stream_at(&self, id: &str, input_path: &Path, start_segment: usize, is_dash: bool) -> Result<PathBuf> {
@@ -273,158 +293,6 @@ impl StreamManager {
         Ok(manifest_path)
     }
 
-    pub async fn wait_for_segment(&self, id: &str, segment_index: usize) -> Result<bool> {
-        let mut rx = {
-            if let Some(session) = self.sessions.get(id) {
-                session.latest_segment_rx.clone()
-            } else {
-                return Ok(false);
-            }
-        };
-
-        // Update heartbeat to prevent reaping while waiting
-        self.update_heartbeat(id).await;
-
-        let result = tokio::time::timeout(std::time::Duration::from_secs(10), async {
-            loop {
-                let current = *rx.borrow();
-                // If current segment being written is > segment_index, then segment_index is READY
-                if let Some(idx) = current {
-                    if idx > segment_index { 
-                        break;
-                    }
-                }
-                if rx.changed().await.is_err() {
-                    break;
-                }
-            }
-        }).await;
-        
-        if result.is_ok() {
-            // Verify file exists on disk (double check for race conditions)
-            let path = self.get_segment_path(id, segment_index);
-            for _ in 0..5 {
-                if path.exists() { return Ok(true); }
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            }
-        }
-
-        Ok(result.is_ok())
-    }
-
-    pub async fn get_or_restart_process(&self, id: &str, input_path: &Path, segment_index: usize) -> Result<()> {
-        let (needs_restart, is_dash) = if let Some(mut session) = self.sessions.get_mut(id) {
-            session.last_access = std::time::Instant::now();
-            
-            let segment_path = self.get_segment_path(id, segment_index);
-            let temp_path = self.get_temp_segment_path(id, segment_index);
-            
-            // If segment is before current start, too far ahead, or MISSING on disk
-            let needs_restart = segment_index < session.start_segment 
-                || segment_index > session.last_requested_segment + 50 
-                || (!segment_path.exists() && !temp_path.exists());
-
-            if !needs_restart {
-                session.last_requested_segment = segment_index;
-            }
-            (needs_restart, session.is_dash)
-        } else {
-            (true, id.contains("dash"))
-        };
-
-        if needs_restart {
-            // Check if a restart for this id/segment is already in progress
-            if let Some(target) = self.pending_restarts.get(id) {
-                if *target == segment_index {
-                    return Ok(());
-                }
-            }
-            self.pending_restarts.insert(id.to_string(), segment_index);
-
-            let result = self.start_stream_at(id, input_path, segment_index, is_dash).await;
-            
-            // Clear pending restart regardless of success
-            self.pending_restarts.remove(id);
-            
-            return result.map(|_| ());
-        }
-
-        Ok(())
-    }
-
-    pub async fn request_segment(&self, id: &str, input_path: &Path, segment_index: usize) -> Result<()> {
-        self.get_or_restart_process(id, input_path, segment_index).await
-    }
-
-    pub async fn stop_stream(&self, id: &str) {
-        if let Some((_, mut session)) = self.sessions.remove(id) {
-            let _ = session.process.kill().await;
-            let _ = std::fs::remove_dir_all(&session.output_dir);
-        }
-    }
-
-    pub async fn stop_all_streams(&self) {
-        let session_ids: Vec<String> = self.sessions.iter().map(|s| s.key().clone()).collect();
-        for id in session_ids {
-            self.stop_stream(&id).await;
-        }
-    }
-
-    pub async fn cleanup_stale_streams(&self) {
-        let mut session_ids_to_remove = Vec::new();
-        let mut throttled_session_ids = Vec::new();
-        
-        let now = std::time::Instant::now();
-        let timeout = std::time::Duration::from_secs(120);
-
-        for entry in self.sessions.iter() {
-            let id = entry.key();
-            let session = entry.value();
-            if now.duration_since(session.last_access) > timeout {
-                session_ids_to_remove.push(id.clone());
-                continue;
-            }
-
-            if let Some(latest) = *session.latest_segment_rx.borrow() {
-                if latest > session.last_requested_segment + 30 { 
-                    throttled_session_ids.push(id.clone());
-                    session_ids_to_remove.push(id.clone());
-                }
-            }
-        }
-
-        for id in session_ids_to_remove {
-            if throttled_session_ids.contains(&id) {
-                tracing::info!("Throttling active transcoder: session {} is too far ahead", id);
-            } else {
-                tracing::info!("Cleaning up stale stream session: {}", id);
-            }
-            self.stop_stream(&id).await;
-        }
-    }
-
-    pub async fn update_heartbeat(&self, id: &str) {
-        if let Some(mut session) = self.sessions.get_mut(id) {
-            session.last_access = std::time::Instant::now();
-        }
-    }
-
-    fn get_segment_path(&self, id: &str, segment_index: usize) -> PathBuf {
-        let hls_path = self.base_output_dir.join(id).join(format!("seg_{:03}.ts", segment_index));
-        if hls_path.exists() {
-            return hls_path;
-        }
-        self.base_output_dir.join(id).join(format!("chunk-stream0-{:05}.webm", segment_index + 1))
-    }
-
-    fn get_temp_segment_path(&self, id: &str, segment_index: usize) -> PathBuf {
-        let hls_path = self.base_output_dir.join(id).join(format!(".seg_{:03}.ts", segment_index));
-        if hls_path.exists() {
-            return hls_path;
-        }
-        self.base_output_dir.join(id).join(format!(".chunk-stream0-{:05}.webm", segment_index + 1))
-    }
-
     fn build_ffmpeg_args(
         &self,
         input_path: &str,
@@ -451,12 +319,12 @@ impl StreamManager {
             _ => "aac",
         };
 
-        let start_time = (start_segment * 4).to_string();
+        let start_time = (start_segment * 10).to_string();
 
         let mut args = vec![
             "-loglevel".to_string(), "info".to_string(),
-            "-probesize".to_string(), "32".to_string(),
-            "-analyzeduration".to_string(), "0".to_string(),
+            "-probesize".to_string(), "5000000".to_string(),
+            "-analyzeduration".to_string(), "5000000".to_string(),
         ];
 
         // INJECT HW DECODER BEFORE -i
@@ -592,31 +460,6 @@ impl StreamManager {
         args
     }
 
-    pub async fn stream_direct(
-        &self,
-        input_path: &std::path::Path,
-        start_time_secs: f64,
-    ) -> crate::errors::Result<ChildStream> {
-        let details = crate::scanner::mediainfo::get_media_info(input_path).unwrap_or_default();
-        let normalized_input = crate::paths::normalize_slashes(&input_path.to_string_lossy());
-        
-        let args = self.build_fmp4_args(&normalized_input, &details, start_time_secs);
-
-        let mut child = tokio::process::Command::new(crate::config::get_ffmpeg_path())
-            .args(&args)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .kill_on_drop(true)
-            .spawn()?;
-
-        let stdout = child.stdout.take().ok_or_else(|| crate::errors::CoreError::FfmpegError("Failed to capture stdout".to_string()))?;
-        
-        Ok(ChildStream {
-            reader: ReaderStream::new(stdout),
-            _child: child,
-        })
-    }
-
     pub fn build_fmp4_args(
         &self,
         input_path: &str,
@@ -637,15 +480,17 @@ impl StreamManager {
 
         let mut args = vec!["-loglevel".to_string(), "error".to_string()];
         
+        // Fast-seeking: -ss before -i is CRITICAL for piped streams
+        if start_time_secs > 0.0 {
+            args.extend(vec!["-ss".to_string(), format!("{:.3}", start_time_secs)]);
+        }
+
+        // INJECT HW DECODER BEFORE -i
         if v_codec != "copy" {
             if let Some(hw_decoder) = crate::scanner::ffmpeg::FfmpegEngine::get_hw_decoder(&details.video_codec, &self.hw_decoders) {
                 args.push("-c:v".to_string());
                 args.push(hw_decoder);
             }
-        }
-
-        if start_time_secs > 0.0 {
-            args.extend(vec!["-ss".to_string(), start_time_secs.to_string()]);
         }
 
         args.extend(vec![
@@ -681,6 +526,200 @@ impl StreamManager {
     }
 }
 
+#[async_trait]
+impl StreamingService for StreamManager {
+    async fn start_hls(&self, id: &str, input_path: &Path) -> Result<PathBuf> {
+        self.start_hls_at(id, input_path, 0).await
+    }
+
+    async fn start_hls_at(&self, id: &str, input_path: &Path, start_segment: usize) -> Result<PathBuf> {
+        self.start_stream_at(id, input_path, start_segment, false).await
+    }
+
+    async fn start_dash(&self, id: &str, input_path: &Path) -> Result<PathBuf> {
+        self.start_dash_at(id, input_path, 0).await
+    }
+
+    async fn start_dash_at(&self, id: &str, input_path: &Path, start_segment: usize) -> Result<PathBuf> {
+        self.start_stream_at(id, input_path, start_segment, true).await
+    }
+
+    async fn start_direct_stream(
+        &self,
+        input_path: &Path,
+        start_time: f64,
+    ) -> Result<ChildStream> {
+        let details = crate::scanner::mediainfo::get_media_info(input_path).unwrap_or_default();
+        let normalized_input = crate::paths::normalize_slashes(&input_path.to_string_lossy());
+        
+        let args = self.build_fmp4_args(&normalized_input, &details, start_time);
+
+        let mut child = tokio::process::Command::new(crate::config::get_ffmpeg_path())
+            .args(&args)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .spawn()?;
+
+        let stdout = child.stdout.take().ok_or_else(|| crate::errors::CoreError::FfmpegError("Failed to capture stdout".to_string()))?;
+        
+        Ok(ChildStream {
+            reader: ReaderStream::new(stdout),
+            _child: child,
+        })
+    }
+
+    async fn wait_for_segment(&self, id: &str, segment_index: usize) -> Result<bool> {
+        let mut rx = {
+            if let Some(session) = self.sessions.get(id) {
+                session.latest_segment_rx.clone()
+            } else {
+                return Ok(false);
+            }
+        };
+
+        // Update heartbeat to prevent reaping while waiting
+        self.update_heartbeat(id).await;
+
+        let result = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let current = *rx.borrow();
+                // If current segment being written is > segment_index, then segment_index is READY
+                if let Some(idx) = current {
+                    if idx > segment_index { 
+                        break;
+                    }
+                }
+                if rx.changed().await.is_err() {
+                    break;
+                }
+            }
+        }).await;
+        
+        if result.is_ok() {
+            // Verify file exists on disk (double check for race conditions)
+            let path = self.get_segment_path(id, segment_index);
+            for _ in 0..5 {
+                if path.exists() { return Ok(true); }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        }
+
+        Ok(result.is_ok())
+    }
+
+    async fn request_segment(&self, id: &str, input_path: &Path, segment_index: usize) -> Result<()> {
+        let (needs_restart, is_dash) = if let Some(mut session) = self.sessions.get_mut(id) {
+            session.last_access = std::time::Instant::now();
+            
+            let segment_path = self.get_segment_path(id, segment_index);
+            let temp_path = self.get_temp_segment_path(id, segment_index);
+            
+            // If segment is before current start, too far ahead, or MISSING on disk
+            let needs_restart = segment_index < session.start_segment 
+                || segment_index > session.last_requested_segment + 50 
+                || (!segment_path.exists() && !temp_path.exists());
+
+            if !needs_restart {
+                session.last_requested_segment = segment_index;
+            }
+            (needs_restart, session.is_dash)
+        } else {
+            (true, id.contains("dash"))
+        };
+
+        if needs_restart {
+            // Check if a restart for this id/segment is already in progress
+            if let Some(target) = self.pending_restarts.get(id) {
+                if *target == segment_index {
+                    return Ok(());
+                }
+            }
+            self.pending_restarts.insert(id.to_string(), segment_index);
+
+            let result = self.start_stream_at(id, input_path, segment_index, is_dash).await;
+            
+            // Clear pending restart regardless of success
+            self.pending_restarts.remove(id);
+            
+            return result.map(|_| ());
+        }
+
+        Ok(())
+    }
+
+    async fn stop_stream(&self, id: &str) {
+        if let Some((_, mut session)) = self.sessions.remove(id) {
+            let _ = session.process.kill().await;
+            let _ = std::fs::remove_dir_all(&session.output_dir);
+        }
+    }
+
+    async fn stop_all_streams(&self) {
+        let session_ids: Vec<String> = self.sessions.iter().map(|s| s.key().clone()).collect();
+        for id in session_ids {
+            self.stop_stream(&id).await;
+        }
+    }
+
+    async fn cleanup_stale_streams(&self) {
+        let mut session_ids_to_remove = Vec::new();
+        let mut throttled_session_ids = Vec::new();
+        
+        let now = std::time::Instant::now();
+        let timeout = std::time::Duration::from_secs(120);
+
+        for entry in self.sessions.iter() {
+            let id = entry.key();
+            let session = entry.value();
+            if now.duration_since(session.last_access) > timeout {
+                session_ids_to_remove.push(id.clone());
+                continue;
+            }
+
+            if let Some(latest) = *session.latest_segment_rx.borrow() {
+                if latest > session.last_requested_segment + 30 { 
+                    throttled_session_ids.push(id.clone());
+                    session_ids_to_remove.push(id.clone());
+                }
+            }
+        }
+
+        for id in session_ids_to_remove {
+            if throttled_session_ids.contains(&id) {
+                tracing::info!("Throttling active transcoder: session {} is too far ahead", id);
+            } else {
+                tracing::info!("Cleaning up stale stream session: {}", id);
+            }
+            self.stop_stream(&id).await;
+        }
+    }
+
+    async fn update_heartbeat(&self, id: &str) {
+        if let Some(mut session) = self.sessions.get_mut(id) {
+            session.last_access = std::time::Instant::now();
+        }
+    }
+
+    fn get_segment_path(&self, id: &str, segment_index: usize) -> PathBuf {
+        let hls_path = self.base_output_dir.join(id).join(format!("seg_{:03}.ts", segment_index));
+        if hls_path.exists() {
+            return hls_path;
+        }
+        self.base_output_dir.join(id).join(format!("chunk-stream0-{:05}.webm", segment_index + 1))
+    }
+}
+
+impl StreamManager {
+    fn get_temp_segment_path(&self, id: &str, segment_index: usize) -> PathBuf {
+        let hls_path = self.base_output_dir.join(id).join(format!(".seg_{:03}.ts", segment_index));
+        if hls_path.exists() {
+            return hls_path;
+        }
+        self.base_output_dir.join(id).join(format!(".chunk-stream0-{:05}.webm", segment_index + 1))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -693,9 +732,9 @@ mod tests {
         
         assert!(manifest.contains("#EXTM3U"));
         assert!(manifest.contains("#EXT-X-PLAYLIST-TYPE:VOD"));
-        assert!(manifest.contains("#EXTINF:4.0,\nseg_000.ts"));
-        assert!(manifest.contains("#EXTINF:4.0,\nseg_001.ts"));
-        assert!(manifest.contains("#EXTINF:1.0,\nseg_006.ts"));
+        assert!(manifest.contains("#EXTINF:10.0,\nseg_000.ts"));
+        assert!(manifest.contains("#EXTINF:10.0,\nseg_001.ts"));
+        assert!(manifest.contains("#EXTINF:5.0,\nseg_002.ts"));
         assert!(manifest.contains("#EXT-X-ENDLIST"));
     }
 
@@ -924,7 +963,7 @@ mod tests {
             let path_clone = input_path.clone();
             handles.push(tokio::spawn(async move {
                 // This will fail because input.mp4 doesn't exist, but it should hit pending_restarts
-                let _ = m.get_or_restart_process(&id_clone, &path_clone, 0).await;
+                let _ = m.request_segment(&id_clone, &path_clone, 0).await;
             }));
         }
 

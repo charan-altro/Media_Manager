@@ -18,6 +18,7 @@ tracing-subscriber.workspace = true
 uuid.workspace = true
 futures.workspace = true
 tokio-stream.workspace = true
+tokio-util = { version = "0.7", features = ["io"] }
 async-stream.workspace = true
 dotenvy.workspace = true
 opener = "0.7"

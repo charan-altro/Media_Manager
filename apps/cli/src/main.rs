@@ -1,8 +1,9 @@
 use clap::{Parser, Subcommand};
-use media_core::db;
-use media_core::models::{MovieId, TvShowId, LibraryId};
-use media_core::scanner::worker::scan_library;
+use media_core::db::{self, Repositories, LibraryReader};
+use media_core::models::LibraryId;
 use media_core::task_manager::TaskManager;
+use media_core::scanner::service::{ScannerService, DefaultScannerService};
+use media_core::scraper::service::{ScraperService, DefaultScraperService};
 use std::sync::Arc;
 use std::path::PathBuf;
 use anyhow::Result;
@@ -54,15 +55,19 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     let database_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite:mediavault.db?mode=rwc".to_string());
     let pool = db::init_pool(&database_url).await?;
+    let repos = Arc::new(Repositories::new(pool.clone()));
     let task_manager = Arc::new(TaskManager::new());
+    let scanner_service = DefaultScannerService::new(repos.clone(), task_manager.clone());
+    let scraper_clients = Arc::new(media_core::scraper::ScraperClients::from_settings(&repos).await);
+    let scraper_service = DefaultScraperService::new(repos.clone(), task_manager.clone(), scraper_clients);
 
     match cli.command {
         Commands::Scan { library_id } => {
             println!("Starting scan for library ID: {}", library_id);
-            let libraries = db::queries::get_all_libraries(&pool).await?;
+            let libraries = repos.library.find_all().await?;
             if let Some(lib) = libraries.into_iter().find(|l| l.id == LibraryId(library_id)) {
                 let task_id = uuid::Uuid::new_v4().to_string();
-                scan_library(&pool, &lib, task_id, &task_manager).await?;
+                scanner_service.scan_library(&lib, task_id).await?;
                 println!("Scan completed.");
             } else {
                 println!("Error: Library not found.");
@@ -71,38 +76,14 @@ async fn main() -> Result<()> {
         Commands::Scrape { library_id, media_type } => {
             println!("Starting bulk scrape for library ID: {} (Type: {})", library_id, media_type);
             
-            let clients = Arc::new(media_core::scraper::ScraperClients::from_settings(&pool).await);
-            let settings = db::queries::get_settings(&pool).await.unwrap_or_default();
-
-            let mut all_tasks = Vec::new();
-            if media_type == "movie" {
-                if let Ok(movies) = db::queries::get_all_movies(&pool, Some(LibraryId(library_id)), None, None).await {
-                    let unmatched: Vec<_> = movies.into_iter().filter(|m| m.status == media_core::models::MediaStatus::Unmatched).collect();
-                    all_tasks.extend(unmatched.into_iter().map(|m| (m.id.0, m.title, m.year, "movie")));
-                }
-            } else {
-                if let Ok(shows) = db::queries::get_all_tv_shows(&pool, Some(LibraryId(library_id)), None, None).await {
-                    let unmatched: Vec<_> = shows.into_iter().filter(|s| s.status == media_core::models::MediaStatus::Unmatched).collect();
-                    all_tasks.extend(unmatched.into_iter().map(|s| (s.id.0, s.title, None, "tv")));
-                }
-            }
-
-            let pool_arc = Arc::new(pool);
-            let script_path = settings.get("post_processing_script").map(|s| s.as_str());
-
-            for (id, title, year, m_type) in all_tasks {
-                println!("Scraping: {}", title);
-                if m_type == "movie" {
-                    let _ = media_core::scraper::scrape_movie(media_core::models::MovieId(id), &title, year, &clients, &pool_arc, script_path).await;
-                } else {
-                    let _ = media_core::scraper::scrape_tv_show(media_core::models::TvShowId(id), &title, &clients, &pool_arc, script_path).await;
-                }
-            }
+            let task_id = uuid::Uuid::new_v4().to_string();
+            scraper_service.bulk_scrape_library(LibraryId(library_id), task_id).await?;
+            
             println!("Bulk scrape completed.");
         }
         Commands::Cleanup { library_id } => {
             println!("Starting cleanup for library ID: {}", library_id);
-            let libraries = db::queries::get_all_libraries(&pool).await?;
+            let libraries = repos.library.find_all().await?;
             if let Some(lib) = libraries.into_iter().find(|l| l.id == LibraryId(library_id)) {
                 let cleanup = media_core::cleanup::CleanupService::new(PathBuf::from(lib.path));
                 let dupes = cleanup.remove_duplicate_artwork()?;

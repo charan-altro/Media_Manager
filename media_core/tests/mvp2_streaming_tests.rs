@@ -1,5 +1,5 @@
 // tests/mvp2_streaming_tests.rs
-use media_core::scanner::streaming::StreamManager;
+use media_core::scanner::streaming::{StreamManager, StreamingService};
 use media_core::config;
 use tempfile::tempdir;
 

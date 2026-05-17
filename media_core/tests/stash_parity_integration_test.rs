@@ -2,13 +2,15 @@ use media_core::{db, scanner, models};
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::PathBuf;
-use sqlx::Row;
+use std::sync::Arc;
+use media_core::db::{LibraryReader, LibraryWriter, MovieReader, MediaRepository, Repositories};
 
 #[tokio::test]
 async fn test_stash_parity_integration() -> anyhow::Result<()> {
     // 1. Setup fresh DB
     let db_url = "sqlite::memory:"; 
     let pool = db::init_pool(db_url).await?;
+    let repos = Arc::new(Repositories::new(pool.clone()));
 
     // 2. Setup test media
     let test_dir = PathBuf::from("test_media_stash_parity");
@@ -25,15 +27,15 @@ async fn test_stash_parity_integration() -> anyhow::Result<()> {
     }
 
     // 3. Add library and scan
-    let lib_id = db::queries::insert_library(&pool, "Test Lib", test_dir.to_str().unwrap(), models::MediaType::Movie).await?;
-    let libraries = db::queries::get_all_libraries(&pool).await?;
+    let lib_id = repos.library.insert("Test Lib", test_dir.to_str().unwrap(), models::MediaType::Movie).await?;
+    let libraries = repos.library.find_all().await?;
     let lib = libraries.into_iter().find(|l| l.id == lib_id).unwrap();
 
-    let task_manager = std::sync::Arc::new(media_core::task_manager::TaskManager::new());
-    scanner::worker::scan_library(&pool, &lib, "test_task".into(), &task_manager).await?;
+    let task_manager = Arc::new(media_core::task_manager::TaskManager::new());
+    scanner::worker::scan_library(repos.clone(), &lib, "test_task".into(), &task_manager).await?;
 
     // 4. Verify initial record and fingerprint
-    let movie_file = db::queries::get_movie_file_by_path(&pool, file_name).await?.expect("File should be in DB");
+    let movie_file = repos.movie.find_file_by_path(file_name).await?.expect("File should be in DB");
     let fingerprint = movie_file.fingerprint.expect("Fingerprint should be set");
     println!("Initial Fingerprint: {}", fingerprint);
 
@@ -50,8 +52,8 @@ async fn test_stash_parity_integration() -> anyhow::Result<()> {
         channels: None,
         is_default: true,
     };
-    db::queries::upsert_media_stream(&pool, &stream).await?;
-    db::queries::upsert_generated_asset(&pool, &fingerprint, "preview", "assets/preview.mp4").await?;
+    repos.media.upsert_stream(&stream).await?;
+    repos.media.upsert_generated_asset(&fingerprint, "preview", "assets/preview.mp4").await?;
 
     // 6. Move file (Simulate file rename/move within library)
     let moved_file_name = "moved_test.mp4";
@@ -60,10 +62,10 @@ async fn test_stash_parity_integration() -> anyhow::Result<()> {
 
     // 7. Scan again
     // The scanner should see the old path is gone, see the new path, calculate same fingerprint, and 'heal' the record.
-    scanner::worker::scan_library(&pool, &lib, "test_task_2".into(), &task_manager).await?;
+    scanner::worker::scan_library(repos.clone(), &lib, "test_task_2".into(), &task_manager).await?;
 
     // 8. Verify Identity Resolution (Healing)
-    let movie_file_after = db::queries::get_movie_file_by_fingerprint(&pool, &fingerprint).await?.expect("Should find file by fingerprint");
+    let movie_file_after = repos.movie.find_file_by_fingerprint(&fingerprint).await?.expect("Should find file by fingerprint");
     assert_eq!(movie_file_after.file_path, moved_file_name, "Path should be updated to new location");
     assert_eq!(movie_file_after.fingerprint.unwrap(), fingerprint, "Fingerprint must be the same");
 

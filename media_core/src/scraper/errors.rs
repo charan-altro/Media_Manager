@@ -17,6 +17,9 @@ pub enum ScraperError {
     #[error("Database error: {0}")]
     DatabaseError(#[from] sqlx::Error),
 
+    #[error("Repository error: {0}")]
+    RepoError(#[from] crate::db::DatabaseError),
+
     #[error("Internal error: {0}")]
     Internal(String),
 

@@ -1,5 +1,5 @@
 // core/src/scanner/mod.rs
-pub mod worker;
+pub mod service;
 pub mod mediainfo;
 pub mod ffmpeg;
 pub mod watchdog;

@@ -4,3 +4,6 @@ pub mod library;
 pub mod media;
 pub mod scraper;
 pub mod cleanup;
+pub mod assets;
+pub mod streaming;
+pub mod system;

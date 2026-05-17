@@ -7,23 +7,19 @@ use zip::write::FileOptions;
 use chrono::Local;
 use tracing::info;
 use crate::nfo::writer::NfoWriter;
-use crate::db::queries;
+use crate::db::{Repositories, MovieReader, TvReader};
 use sqlx::SqlitePool;
 
 pub struct MaintenanceEngine;
 
 impl MaintenanceEngine {
-    pub async fn export_all_nfos(pool: &SqlitePool) -> Result<()> {
+    pub async fn export_all_nfos(repos: &Repositories) -> Result<()> {
         info!("Starting bulk NFO export...");
         
         // Export Movies
-        if let Ok(movies) = queries::get_all_movies(pool, None, None, None).await {
+        if let Ok(movies) = repos.movie.find_all(None, None, None).await {
             for movie in movies {
-                if let Ok(Some(file)) = sqlx::query_as::<_, crate::models::MovieFile>("SELECT * FROM movie_files WHERE movie_id = ? LIMIT 1")
-                    .bind(movie.id)
-                    .fetch_optional(pool)
-                    .await 
-                {
+                if let Ok(Some(file)) = repos.movie.find_file_by_movie_id(movie.id).await {
                     let path = PathBuf::from(&file.file_path);
                     let nfo_path = path.with_extension("nfo");
                     let _ = NfoWriter::write_movie_nfo(&movie, &nfo_path).await;
@@ -32,12 +28,12 @@ impl MaintenanceEngine {
         }
 
         // Export TV Shows
-        if let Ok(shows) = queries::get_all_tv_shows(pool, None, None, None).await {
+        if let Ok(shows) = repos.tv.find_all_shows(None, None, None).await {
             for show in shows {
                 let mut show_path = None;
-                if let Ok(seasons) = queries::get_seasons_by_show_id(pool, show.id).await {
+                if let Ok(seasons) = repos.tv.find_seasons_by_show_id(show.id).await {
                     for s in seasons {
-                        if let Ok(eps) = queries::get_episodes_by_season_id(pool, s.id).await {
+                        if let Ok(eps) = repos.tv.find_episodes_by_season_id(s.id).await {
                             for ep in eps {
                                 let ep_path = PathBuf::from(&ep.file_path);
                                 let ep_nfo = ep_path.with_extension("nfo");

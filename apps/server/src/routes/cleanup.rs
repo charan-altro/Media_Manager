@@ -11,9 +11,10 @@ use std::path::PathBuf;
 use crate::state::AppState;
 use crate::utils;
 use crate::routes::scraper::BatchRequest;
-use media_core::db;
 use media_core::models::{MovieId, TvShowId, LibraryId};
 use media_core::cleanup::CleanupService;
+use media_core::task_manager::ProgressSink;
+use media_core::db::{LibraryReader, MovieReader, MovieWriter, TvReader, SettingsRepository};
 
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
@@ -24,7 +25,7 @@ pub fn router() -> Router<Arc<AppState>> {
 }
 
 async fn cleanup_duplicates(State(state): State<Arc<AppState>>, Path(id): Path<i64>) -> Json<Vec<PathBuf>> {
-    let libraries = db::queries::get_all_libraries(&state.pool).await.unwrap_or_default();
+    let libraries = state.repos.library.find_all().await.unwrap_or_default();
     if let Some(lib) = libraries.into_iter().find(|l| l.id == LibraryId(id)) {
         let cleanup = CleanupService::new(PathBuf::from(lib.path));
         Json(cleanup.remove_duplicate_artwork().unwrap_or_default())
@@ -34,7 +35,7 @@ async fn cleanup_duplicates(State(state): State<Arc<AppState>>, Path(id): Path<i
 }
 
 async fn cleanup_empty_folders(State(state): State<Arc<AppState>>, Path(id): Path<i64>) -> Json<Vec<PathBuf>> {
-    let libraries = db::queries::get_all_libraries(&state.pool).await.unwrap_or_default();
+    let libraries = state.repos.library.find_all().await.unwrap_or_default();
     if let Some(lib) = libraries.into_iter().find(|l| l.id == LibraryId(id)) {
         let cleanup = CleanupService::new(PathBuf::from(lib.path));
         Json(cleanup.remove_empty_folders().unwrap_or_default())
@@ -44,7 +45,7 @@ async fn cleanup_empty_folders(State(state): State<Arc<AppState>>, Path(id): Pat
 }
 
 async fn cleanup_batch(State(state): State<Arc<AppState>>, Json(payload): Json<BatchRequest>) -> Json<String> {
-    let pool = state.pool.clone();
+    let repos = state.repos.clone();
     let task_manager = state.task_manager.clone();
     let task_id = uuid::Uuid::new_v4().to_string();
 
@@ -58,17 +59,13 @@ async fn cleanup_batch(State(state): State<Arc<AppState>>, Json(payload): Json<B
             for id in &payload.ids {
                 processed += 1;
                 
-                if let Ok(Some(movie)) = db::queries::get_movie_by_id(&pool, MovieId(*id)).await {
-                    let libraries = db::queries::get_all_libraries(&pool).await.unwrap_or_default();
+                if let Ok(Some(movie)) = repos.movie.find_by_id(MovieId(*id)).await {
+                    let libraries = repos.library.find_all().await.unwrap_or_default();
                     if let Some(lib) = libraries.into_iter().find(|l| l.id == movie.library_id) {
                         let lib_root = PathBuf::from(&lib.path);
                         
                         // Get file details
-                        let file_info: Option<media_core::models::MovieFile> = sqlx::query_as("SELECT * FROM movie_files WHERE movie_id = ? LIMIT 1")
-                            .bind(movie.id)
-                            .fetch_optional(&pool)
-                            .await
-                            .unwrap_or_default();
+                        let file_info = repos.movie.find_file_by_movie_id(movie.id).await.unwrap_or_default();
                         
                         if let Some(mut file) = file_info {
                             let old_path = PathBuf::from(&file.file_path);
@@ -82,28 +79,20 @@ async fn cleanup_batch(State(state): State<Arc<AppState>>, Json(payload): Json<B
                                 }).await.unwrap_or_default().map(|i| media_core::models::Resolution::from_dimensions(i.width, i.height));
                                 
                                 if let Some(r) = res {
-                                    let _ = sqlx::query("UPDATE movie_files SET resolution = ? WHERE id = ?")
-                                        .bind(&r)
-                                        .bind(file.id)
-                                        .execute(&pool)
-                                        .await;
+                                    let _ = repos.movie.update_file_resolution(file.id, r).await;
                                     file.resolution = Some(r);
                                 }
                             }
 
                             // Fetch post processing script
-                            let settings = db::queries::get_settings(&pool).await.unwrap_or_default();
+                            let settings = repos.settings.get_all().await.unwrap_or_default();
                             let script_path = settings.get("post_processing_script").map(|s| s.as_str());
 
                             // 1. Rename File
                             if let Ok(new_path) = renamer.rename_movie(&movie, &old_path, &lib_root, file.resolution, file.codec.as_deref(), script_path) {
                                 let new_path_str = new_path.to_string_lossy().to_string();
                                 if new_path_str != file.file_path {
-                                    let _ = sqlx::query("UPDATE movie_files SET file_path = ? WHERE id = ?")
-                                        .bind(&new_path_str)
-                                        .bind(file.id)
-                                        .execute(&pool)
-                                        .await;
+                                    let _ = repos.movie.update_file_path(file.id, &new_path_str).await;
                                     file.file_path = new_path_str;
                                 }
 
@@ -138,17 +127,16 @@ async fn cleanup_batch(State(state): State<Arc<AppState>>, Json(payload): Json<B
             // TV shows - cleanup library path using episodes
             for id in &payload.ids {
                 processed += 1;
-                let files: Vec<(String,)> = sqlx::query_as(
-                    "SELECT e.file_path FROM episodes e JOIN seasons s ON e.season_id = s.id WHERE s.show_id = ?"
-                )
-                .bind(TvShowId(*id))
-                .fetch_all(&pool)
-                .await
-                .unwrap_or_default();
+                let seasons = repos.tv.find_seasons_by_show_id(TvShowId(*id)).await.unwrap_or_default();
+                let mut files = Vec::new();
+                for s in seasons {
+                    let eps = repos.tv.find_episodes_by_season_id(s.id).await.unwrap_or_default();
+                    files.extend(eps.into_iter().map(|e| e.file_path));
+                }
 
                 // Get unique parent folders
                 let mut parents = Vec::new();
-                for (path_str,) in files {
+                for path_str in files {
                     let p = PathBuf::from(&path_str);
                     if let Some(parent) = p.parent() {
                         // typically season folder, we also want show folder
@@ -203,23 +191,19 @@ async fn cleanup_batch(State(state): State<Arc<AppState>>, Json(payload): Json<B
 }
 
 async fn rename_movie(State(state): State<Arc<AppState>>, Path(id): Path<i64>) -> impl IntoResponse {
-    let pool = state.pool.clone();
+    let repos = state.repos.clone();
     
-    match db::queries::get_movie_by_id(&pool, media_core::models::MovieId(id)).await {
+    match repos.movie.find_by_id(media_core::models::MovieId(id)).await {
         Ok(Some(movie)) => {
             let movie_id = movie.id;
-            let libraries = db::queries::get_all_libraries(&pool).await.unwrap_or_default();
+            let libraries = repos.library.find_all().await.unwrap_or_default();
             
             if let Some(lib) = libraries.into_iter().find(|l| l.id == movie.library_id) {
                 // Get the file path
-                let file_info: Option<media_core::models::MovieFile> = sqlx::query_as("SELECT * FROM movie_files WHERE movie_id = ? LIMIT 1")
-                    .bind(movie_id)
-                    .fetch_optional(&pool)
-                    .await
-                    .unwrap_or_default();
+                let file_info = repos.movie.find_file_by_movie_id(movie_id).await.unwrap_or_default();
                 
                 if let Some(file) = file_info {
-                    let pool_clone = pool.clone();
+                    let repos_clone = repos.clone();
                     let lib_path = lib.path.clone();
                     let old_path_str = file.file_path.clone();
                     
@@ -231,7 +215,7 @@ async fn rename_movie(State(state): State<Arc<AppState>>, Path(id): Path<i64>) -
                         // Fetch script path before starting the blocking operation
                         let rt = tokio::runtime::Handle::current();
                         let script_path = rt.block_on(async {
-                            let settings = db::queries::get_settings(&pool_clone).await.unwrap_or_default();
+                            let settings = repos_clone.settings.get_all().await.unwrap_or_default();
                             settings.get("post_processing_script").cloned()
                         });
 
@@ -240,11 +224,7 @@ async fn rename_movie(State(state): State<Arc<AppState>>, Path(id): Path<i64>) -
                                 let new_path_str = new_path.to_string_lossy().to_string();
                                 // Update DB in a blocking-safe way
                                 tokio::runtime::Handle::current().spawn(async move {
-                                    let _ = sqlx::query("UPDATE movie_files SET file_path = ? WHERE id = ?")
-                                        .bind(new_path_str)
-                                        .bind(file.id)
-                                        .execute(&pool_clone)
-                                        .await;
+                                    let _ = repos_clone.movie.update_file_path(file.id, &new_path_str).await;
                                 });
                                 Ok::<String, String>("Movie renamed successfully".to_string())
                             }

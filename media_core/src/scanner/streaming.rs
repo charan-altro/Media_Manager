@@ -31,11 +31,11 @@ pub trait StreamingService: Send + Sync {
     /// Starts a direct JIT remuxed stream (fMP4) piped to stdout.
     async fn start_direct_stream(&self, input_path: &Path, start_time: f64) -> Result<ChildStream>;
 
-    /// Waits for a specific segment to be generated.
-    async fn wait_for_segment(&self, id: &str, segment_index: usize) -> Result<bool>;
+    /// Waits for a specific segment file to be generated.
+    async fn wait_for_segment(&self, id: &str, segment_index: usize, file: &str) -> Result<bool>;
 
     /// Requests a segment, restarting the process if necessary.
-    async fn request_segment(&self, id: &str, input_path: &Path, segment_index: usize) -> Result<()>;
+    async fn request_segment(&self, id: &str, input_path: &Path, segment_index: usize, file: &str) -> Result<()>;
 
     /// Stops a specific stream session.
     async fn stop_stream(&self, id: &str);
@@ -50,7 +50,7 @@ pub trait StreamingService: Send + Sync {
     async fn cleanup_stale_streams(&self);
 
     /// Generates a path for a segment.
-    fn get_segment_path(&self, id: &str, segment_index: usize) -> PathBuf;
+    fn get_segment_path(&self, id: &str, segment_index: usize, file: &str) -> PathBuf;
 }
 
 pub struct ChildStream {
@@ -96,17 +96,17 @@ pub fn generate_dash_manifest(duration_secs: f64, width: i32, height: i32) -> St
      profiles="urn:mpeg:dash:profile:isoff-live:2011"
      type="static"
      mediaPresentationDuration="PT{duration_secs:.1}S"
-     minBufferTime="PT1.5S">
+     minBufferTime="PT2.0S">
   <Period id="0">
     <AdaptationSet id="0" contentType="video" segmentAlignment="true" bitstreamSwitching="true">
       <Representation id="0" mimeType="video/webm" codecs="vp9" bandwidth="2000000" width="{width}" height="{height}" frameRate="30">
-        <SegmentTemplate timescale="1000" duration="10000" initialization="init-stream$RepresentationID$.webm" media="chunk-stream$RepresentationID$-$Number%05d$.webm" startNumber="1"/>
+        <SegmentTemplate timescale="1000" duration="10000" initialization="init-stream0.webm" media="chunk-stream0-$Number%05d$.webm" startNumber="1"/>
       </Representation>
     </AdaptationSet>
     <AdaptationSet id="1" contentType="audio" segmentAlignment="true" bitstreamSwitching="true">
       <Representation id="1" mimeType="audio/webm" codecs="opus" bandwidth="128000" audioSamplingRate="48000">
         <AudioChannelConfiguration schemeIdUri="urn:mpeg:dash:23003:3:audio_channel_configuration:2011" value="2"/>
-        <SegmentTemplate timescale="1000" duration="10000" initialization="init-stream$RepresentationID$.webm" media="chunk-stream$RepresentationID$-$Number%05d$.webm" startNumber="1"/>
+        <SegmentTemplate timescale="1000" duration="10000" initialization="init-stream1.webm" media="chunk-stream1-$Number%05d$.webm" startNumber="1"/>
       </Representation>
     </AdaptationSet>
   </Period>
@@ -413,8 +413,8 @@ impl StreamManager {
         let start_time = (start_segment * 10).to_string();
         let mut args = vec![
             "-loglevel".to_string(), "info".to_string(),
-            "-probesize".to_string(), "32".to_string(),
-            "-analyzeduration".to_string(), "0".to_string(),
+            "-probesize".to_string(), "5000000".to_string(),
+            "-analyzeduration".to_string(), "5000000".to_string(),
         ];
 
         // HW Decoder for VP9/Opus transcode
@@ -428,7 +428,7 @@ impl StreamManager {
             "-i".to_string(), input_path.to_string(),
         ]);
 
-        // Video stream
+        // Video stream (stream0)
         args.extend(vec![
             "-map".to_string(), "0:v:0".to_string(),
             "-c:v".to_string(), "libvpx-vp9".to_string(),
@@ -439,20 +439,25 @@ impl StreamManager {
             "-frame-parallel".to_string(), "1".to_string(),
             "-crf".to_string(), "30".to_string(),
             "-b:v".to_string(), "2000k".to_string(),
+            "-copyts".to_string(),
+            "-avoid_negative_ts".to_string(), "disabled".to_string(),
             "-f".to_string(), "webm_chunk".to_string(),
-            "-header".to_string(), output_dir.join("init-stream0.webm").to_string_lossy().to_string(),
+            "-header".to_string(), output_dir.join(if start_segment == 0 { "init-stream0.webm" } else { ".init-stream0.webm" }).to_string_lossy().to_string(),
             "-chunk_start_index".to_string(), (start_segment + 1).to_string(),
             output_dir.join(".chunk-stream0-%05d.webm").to_string_lossy().to_string(),
         ]);
 
-        // Audio stream
+        // Audio stream (stream1)
         args.extend(vec![
             "-map".to_string(), "0:a:0?".to_string(),
             "-c:a".to_string(), "libopus".to_string(),
             "-b:a".to_string(), "128k".to_string(),
             "-ac".to_string(), "2".to_string(),
+            "-copyts".to_string(),
+            "-avoid_negative_ts".to_string(), "disabled".to_string(),
             "-f".to_string(), "webm_chunk".to_string(),
-            "-header".to_string(), output_dir.join("init-stream1.webm").to_string_lossy().to_string(),
+            "-audio_chunk_duration".to_string(), "10000".to_string(),
+            "-header".to_string(), output_dir.join(if start_segment == 0 { "init-stream1.webm" } else { ".init-stream1.webm" }).to_string_lossy().to_string(),
             "-chunk_start_index".to_string(), (start_segment + 1).to_string(),
             output_dir.join(".chunk-stream1-%05d.webm").to_string_lossy().to_string(),
         ]);
@@ -569,7 +574,7 @@ impl StreamingService for StreamManager {
         })
     }
 
-    async fn wait_for_segment(&self, id: &str, segment_index: usize) -> Result<bool> {
+    async fn wait_for_segment(&self, id: &str, segment_index: usize, file: &str) -> Result<bool> {
         let mut rx = {
             if let Some(session) = self.sessions.get(id) {
                 session.latest_segment_rx.clone()
@@ -598,7 +603,7 @@ impl StreamingService for StreamManager {
         
         if result.is_ok() {
             // Verify file exists on disk (double check for race conditions)
-            let path = self.get_segment_path(id, segment_index);
+            let path = self.get_segment_path(id, segment_index, file);
             for _ in 0..5 {
                 if path.exists() { return Ok(true); }
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -608,12 +613,12 @@ impl StreamingService for StreamManager {
         Ok(result.is_ok())
     }
 
-    async fn request_segment(&self, id: &str, input_path: &Path, segment_index: usize) -> Result<()> {
+    async fn request_segment(&self, id: &str, input_path: &Path, segment_index: usize, file: &str) -> Result<()> {
         let (needs_restart, is_dash) = if let Some(mut session) = self.sessions.get_mut(id) {
             session.last_access = std::time::Instant::now();
             
-            let segment_path = self.get_segment_path(id, segment_index);
-            let temp_path = self.get_temp_segment_path(id, segment_index);
+            let segment_path = self.get_segment_path(id, segment_index, file);
+            let temp_path = self.get_temp_segment_path(id, segment_index, file);
             
             // If segment is before current start, too far ahead, or MISSING on disk
             let needs_restart = segment_index < session.start_segment 
@@ -701,22 +706,14 @@ impl StreamingService for StreamManager {
         }
     }
 
-    fn get_segment_path(&self, id: &str, segment_index: usize) -> PathBuf {
-        let hls_path = self.base_output_dir.join(id).join(format!("seg_{:03}.ts", segment_index));
-        if hls_path.exists() {
-            return hls_path;
-        }
-        self.base_output_dir.join(id).join(format!("chunk-stream0-{:05}.webm", segment_index + 1))
+    fn get_segment_path(&self, id: &str, _segment_index: usize, file: &str) -> PathBuf {
+        self.base_output_dir.join(id).join(file)
     }
 }
 
 impl StreamManager {
-    fn get_temp_segment_path(&self, id: &str, segment_index: usize) -> PathBuf {
-        let hls_path = self.base_output_dir.join(id).join(format!(".seg_{:03}.ts", segment_index));
-        if hls_path.exists() {
-            return hls_path;
-        }
-        self.base_output_dir.join(id).join(format!(".chunk-stream0-{:05}.webm", segment_index + 1))
+    fn get_temp_segment_path(&self, id: &str, _segment_index: usize, file: &str) -> PathBuf {
+        self.base_output_dir.join(id).join(format!(".{}", file))
     }
 }
 
@@ -859,12 +856,13 @@ mod tests {
             });
         }
 
-        let seg_path = manager.get_segment_path(id, 0);
+        let file = "seg_000.ts";
+        let seg_path = manager.get_segment_path(id, 0, file);
         std::fs::write(&seg_path, "dummy data").unwrap();
-        let result = manager.request_segment(id, Path::new("input.mp4"), 0).await;
+        let result = manager.request_segment(id, Path::new("input.mp4"), 0, file).await;
         assert!(result.is_ok());
 
-        let result = manager.request_segment(id, Path::new("input.mp4"), 1).await;
+        let result = manager.request_segment(id, Path::new("input.mp4"), 1, "seg_001.ts").await;
         assert!(result.is_err());
 
         let process = if cfg!(windows) {
@@ -891,12 +889,12 @@ mod tests {
             });
         }
 
-        let temp_seg_path = manager.get_temp_segment_path(id, 1);
+        let temp_seg_path = manager.get_temp_segment_path(id, 1, "seg_001.ts");
         std::fs::write(&temp_seg_path, "dummy data").unwrap();
-        let result = manager.request_segment(id, Path::new("input.mp4"), 1).await;
+        let result = manager.request_segment(id, Path::new("input.mp4"), 1, "seg_001.ts").await;
         assert!(result.is_ok());
 
-        let result = manager.request_segment(id, Path::new("input.mp4"), 2).await;
+        let result = manager.request_segment(id, Path::new("input.mp4"), 2, "seg_002.ts").await;
         assert!(result.is_err());
     }
 
@@ -963,7 +961,7 @@ mod tests {
             let path_clone = input_path.clone();
             handles.push(tokio::spawn(async move {
                 // This will fail because input.mp4 doesn't exist, but it should hit pending_restarts
-                let _ = m.request_segment(&id_clone, &path_clone, 0).await;
+                let _ = m.request_segment(&id_clone, &path_clone, 0, "seg_000.ts").await;
             }));
         }
 

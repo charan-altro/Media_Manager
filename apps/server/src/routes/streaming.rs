@@ -580,11 +580,11 @@ async fn serve_stream_file(
         };
 
         if let Some(path) = m_path {
-            let _ = state.stream_manager.request_segment(&id, &path, segment_index).await;
+            let _ = state.stream_manager.request_segment(&id, &path, segment_index, &file).await;
         }
 
         // Wait for segment via tokio watch channel
-        let _ = state.stream_manager.wait_for_segment(&id, segment_index).await;
+        let _ = state.stream_manager.wait_for_segment(&id, segment_index, &file).await;
     }
 
     if !file_path.exists() {

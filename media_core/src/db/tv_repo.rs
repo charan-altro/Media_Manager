@@ -163,7 +163,7 @@ impl TvReader for SqliteTvRepository {
     async fn find_episodes_by_season_id(&self, season_id: SeasonId) -> Result<Vec<Episode>> {
         let mut args = sqlx::sqlite::SqliteArguments::default();
         sqlx::Arguments::add(&mut args, season_id);
-        self.base.fetch_all(&*self.base.pool, "SELECT *, codec as video_codec FROM episodes WHERE season_id = ? ORDER BY episode_number ASC", args).await
+        self.base.fetch_all(&*self.base.pool, "SELECT *, codec, codec as video_codec FROM episodes WHERE season_id = ? ORDER BY episode_number ASC", args).await
     }
 
     #[tracing::instrument(skip(self), err)]
@@ -171,21 +171,21 @@ impl TvReader for SqliteTvRepository {
         let normalized = crate::paths::normalize_slashes(path);
         let mut args = sqlx::sqlite::SqliteArguments::default();
         sqlx::Arguments::add(&mut args, normalized);
-        self.base.fetch_optional(&*self.base.pool, "SELECT *, codec as video_codec FROM episodes WHERE file_path = ?", args).await
+        self.base.fetch_optional(&*self.base.pool, "SELECT *, codec, codec as video_codec FROM episodes WHERE file_path = ?", args).await
     }
 
     #[tracing::instrument(skip(self), err)]
     async fn find_episode_by_hash(&self, hash: &str) -> Result<Option<Episode>> {
         let mut args = sqlx::sqlite::SqliteArguments::default();
         sqlx::Arguments::add(&mut args, hash);
-        self.base.fetch_optional(&*self.base.pool, "SELECT *, codec as video_codec FROM episodes WHERE hash = ?", args).await
+        self.base.fetch_optional(&*self.base.pool, "SELECT *, codec, codec as video_codec FROM episodes WHERE hash = ?", args).await
     }
 
     #[tracing::instrument(skip(self), err)]
     async fn find_episode_by_fingerprint(&self, fp: &str) -> Result<Option<Episode>> {
         let mut args = sqlx::sqlite::SqliteArguments::default();
         sqlx::Arguments::add(&mut args, fp);
-        self.base.fetch_optional(&*self.base.pool, "SELECT *, codec as video_codec FROM episodes WHERE fingerprint = ?", args).await
+        self.base.fetch_optional(&*self.base.pool, "SELECT *, codec, codec as video_codec FROM episodes WHERE fingerprint = ?", args).await
     }
 
     #[tracing::instrument(skip(self), err)]

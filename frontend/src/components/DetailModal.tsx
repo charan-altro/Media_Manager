@@ -27,13 +27,15 @@ const DetailModal: React.FC<DetailModalProps> = ({
   const [streamingUrl, setStreamingUrl] = useState<string | null>(null);
   const [activeMediaId, setActiveMediaId] = useState<number | null>(null);
   const [activeMediaType, setActiveMediaType] = useState<'movie' | 'episode' | null>(null);
+  const [activeTitle, setActiveTitle] = useState<string>('');
+  const [activePosterUrl, setActivePosterUrl] = useState<string | undefined>(undefined);
   const [resumePosition, setResumePosition] = useState(0);
   const [showResumeDialog, setShowResumeDialog] = useState(false);
   const [pendingUrl, setPendingUrl] = useState<string | null>(null);
 
   const isShow = 'library_id' in item && !('runtime' in item);
 
-  const handlePlayMedia = async (mediaId: number, mediaType: 'movie' | 'episode') => {
+  const handlePlayMedia = async (mediaId: number, mediaType: 'movie' | 'episode', metadata?: { title: string, posterUrl?: string }) => {
     if (isStartingStream) return;
     setIsStartingStream(true);
     try {
@@ -42,6 +44,15 @@ const DetailModal: React.FC<DetailModalProps> = ({
 
       setActiveMediaId(mediaId);
       setActiveMediaType(mediaType);
+      
+      if (metadata) {
+        setActiveTitle(metadata.title);
+        setActivePosterUrl(metadata.posterUrl);
+      } else {
+        setActiveTitle(item.title);
+        setActivePosterUrl(item.poster_url || item.backdrop_url);
+      }
+
       if (status && status.position_ms > 5000 && !status.is_finished) {
         setResumePosition(status.position_ms);
         setPendingUrl(url);
@@ -314,7 +325,10 @@ const DetailModal: React.FC<DetailModalProps> = ({
                       </div>
                       <div className="grid gap-2">
                         {episodes[season.id]?.map(ep => (
-                          <div key={ep.id} onClick={() => handlePlayMedia(ep.id, 'episode')} className="flex items-center justify-between p-4 bg-zinc-900/30 rounded-xl border border-zinc-800/50 hover:bg-zinc-800/50 transition group cursor-pointer">
+                          <div key={ep.id} onClick={() => handlePlayMedia(ep.id, 'episode', { 
+                            title: `${item.title} - S${ep.season_number.toString().padStart(2, '0')}E${ep.episode_number.toString().padStart(2, '0')} - ${ep.title || 'Episode ' + ep.episode_number}`,
+                            posterUrl: ep.thumbnail_path || item.poster_url || item.backdrop_url
+                          })} className="flex items-center justify-between p-4 bg-zinc-900/30 rounded-xl border border-zinc-800/50 hover:bg-zinc-800/50 transition group cursor-pointer">
                             <div className="flex items-center gap-6">
                               <div className="text-2xl font-black text-zinc-700 italic group-hover:text-red-600 transition">
                                 {ep.episode_number.toString().padStart(2, '0')}
@@ -425,7 +439,7 @@ const DetailModal: React.FC<DetailModalProps> = ({
                   <div className="flex flex-col gap-3">
                     {!isShow && (
                       <button 
-                        onClick={() => handlePlayMedia(item.id, 'movie')}
+                        onClick={() => handlePlayMedia(item.id, 'movie', { title: item.title, posterUrl: item.poster_url || item.backdrop_url })}
                         disabled={isStartingStream}
                         className={`w-full py-4 rounded-xl font-black uppercase tracking-widest text-xs transition active:scale-95 flex items-center justify-center gap-2 shadow-lg ${
                           isStartingStream 
@@ -569,6 +583,8 @@ const DetailModal: React.FC<DetailModalProps> = ({
           url={streamingUrl} 
           mediaId={activeMediaId!}
           mediaType={activeMediaType!}
+          title={activeTitle}
+          posterUrl={activePosterUrl}
           duration={item.duration_secs || (item.runtime ? item.runtime * 60 : 0)}
           initialPosition={resumePosition}
           onClose={async () => {

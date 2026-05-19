@@ -17,7 +17,8 @@
     "react-dom": "^19.2.5",
     "react-hot-toast": "^2.6.0",
     "react-router-dom": "^7.15.0",
-    "video.js": "^8.23.7"
+    "video.js": "^8.23.7",
+    "videojs-abloop": "^1.2.0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

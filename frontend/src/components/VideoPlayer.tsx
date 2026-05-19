@@ -1,33 +1,147 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import videojs from 'video.js';
 import type Player from 'video.js/dist/types/player';
 import 'video.js/dist/video-js.css';
+import 'videojs-abloop';
+import '../plugins/sourceSelector'; // Import the custom plugin
 import { X, Loader2, AlertCircle } from 'lucide-react';
-import { api } from '../api/adapter';
+import { getImageUrl, api } from '../api/adapter';
+import { useVideoPlayer } from '../hooks/useVideoPlayer';
+import VttThumbnails from './VttThumbnails';
+
+type Protocol = 'direct' | 'hls' | 'dash';
+const PROTOCOL_PRIORITY: Protocol[] = ['direct', 'hls', 'dash'];
 
 interface VideoPlayerProps {
   url: string;
   mediaId: number;
   mediaType: 'movie' | 'episode';
+  title: string;
+  posterUrl?: string;
   duration?: number; // in seconds
   initialPosition?: number; // in ms
   onClose: () => void;
 }
 
-const VideoPlayer: React.FC<VideoPlayerProps> = ({ url, mediaId, mediaType, duration = 0, initialPosition = 0, onClose }) => {
+const VideoPlayer: React.FC<VideoPlayerProps> = ({ 
+  url: initialUrl, 
+  mediaId, 
+  mediaType, 
+  title,
+  posterUrl,
+  duration = 0, 
+  initialPosition = 0, 
+  onClose 
+}) => {
   const videoRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<Player | null>(null);
+  const [player, setPlayer] = useState<Player | null>(null);
+  const [currentUrl, setCurrentUrl] = useState<string>(initialUrl);
+  const [currentProtocol, setCurrentProtocol] = useState<Protocol>(() => {
+    if (initialUrl.includes('protocol=hls')) return 'hls';
+    if (initialUrl.includes('protocol=dash')) return 'dash';
+    return 'direct';
+  });
   const [isPreparing, setIsPreparing] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const heartbeatInterval = useRef<any>(null);
+  const heartbeatInterval = useRef<ReturnType<typeof setInterval> | null>(null);
+  const wakeLock = useRef<any>(null);
 
-  const sendHeartbeat = () => {
-    const player = playerRef.current;
-    if (!player || player.isDisposed()) return;
+  const fetchSourceUrl = useCallback(async (protocol: Protocol) => {
+    try {
+      const newUrl = await api.startStreaming(mediaId, mediaType, protocol);
+      return newUrl;
+    } catch (err) {
+      console.error(`Failed to fetch URL for protocol ${protocol}:`, err);
+      return null;
+    }
+  }, [mediaId, mediaType]);
+
+  const getSourceType = useCallback((url: string, protocol: Protocol) => {
+    if (protocol === 'direct') {
+      return url.toLowerCase().endsWith('.mkv') ? 'video/webm' : 'video/mp4';
+    }
+    if (protocol === 'dash') {
+      return 'application/dash+xml';
+    }
+    return 'application/x-mpegURL'; // HLS
+  }, []);
+
+  const switchProtocol = useCallback(async (protocol: Protocol) => {
+    setIsPreparing(true);
+    const newUrl = await fetchSourceUrl(protocol);
+    if (newUrl) {
+      setCurrentUrl(newUrl);
+      setCurrentProtocol(protocol);
+    } else {
+      setIsPreparing(false);
+      setError(`Failed to switch to ${protocol} protocol.`);
+    }
+  }, [fetchSourceUrl]);
+
+  // Surgical update of player source when currentUrl or currentProtocol changes
+  useEffect(() => {
+    const p = playerRef.current;
+    if (!p || !currentUrl) return;
+
+    // Avoid redundant updates
+    if (p.currentSrc() === currentUrl) return;
+
+    const currentTime = p.currentTime() || 0;
+    const isPaused = p.paused();
+
+    p.src({
+      src: currentUrl,
+      type: getSourceType(currentUrl, currentProtocol)
+    });
+
+    p.ready(() => {
+      p.currentTime(currentTime);
+      if (!isPaused) {
+        const playPromise = p.play();
+        if (playPromise !== undefined) {
+          playPromise.catch(() => {});
+        }
+      }
+      p.trigger('protocolChanged', { protocol: currentProtocol });
+      setIsPreparing(false);
+    });
+  }, [currentUrl, currentProtocol, getSourceType]);
+
+  const requestWakeLock = useCallback(async () => {
+    if ('wakeLock' in navigator) {
+      try {
+        wakeLock.current = await (navigator as any).wakeLock.request('screen');
+        console.log('Wake Lock is active');
+      } catch (err: unknown) {
+        if (err instanceof Error) {
+          console.error(`Wake Lock error: ${err.name}, ${err.message}`);
+        }
+      }
+    }
+  }, []);
+
+  const releaseWakeLock = useCallback(async () => {
+    if (wakeLock.current !== null) {
+      try {
+        await wakeLock.current.release();
+        wakeLock.current = null;
+        console.log('Wake Lock released');
+      } catch (err: unknown) {
+        if (err instanceof Error) {
+          console.error(`Wake Lock release error: ${err.name}, ${err.message}`);
+        }
+      }
+    }
+  }, []);
+
+  const sendHeartbeat = useCallback(() => {
+    const p = playerRef.current;
+    if (!p || p.isDisposed()) return;
     
-    const currentTime = player.currentTime() || 0;
-    const totalDuration = player.duration() || duration || 0;
-    const isFinished = player.ended() || (totalDuration > 0 && currentTime / totalDuration > 0.95);
+    const currentTime = p.currentTime() || 0;
+    const totalDuration = p.duration() || duration || 0;
+    const isFinished = p.ended() || (totalDuration > 0 && currentTime / totalDuration > 0.95);
 
     api.updatePlaybackProgress({
       media_id: mediaId,
@@ -36,7 +150,58 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ url, mediaId, mediaType, dura
       duration_ms: Math.round(totalDuration * 1000),
       is_finished: isFinished
     }).catch(err => console.error("Heartbeat failed:", err));
-  };
+  }, [mediaId, mediaType, duration]);
+
+  // Initialize hotkeys and core logic
+  const { seekStep } = useVideoPlayer(player);
+
+  // MediaSession integration
+  useEffect(() => {
+    if (!player || !('mediaSession' in navigator)) return;
+
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: title,
+      artist: 'Media Manager',
+      artwork: [
+        { src: getImageUrl(posterUrl), sizes: '512x512', type: 'image/jpeg' }
+      ]
+    });
+
+    const handlers: [MediaSessionAction, MediaSessionActionHandler][] = [
+      ['play', () => player.play()],
+      ['pause', () => player.pause()],
+      ['seekbackward', (details) => {
+        const skipTime = details.seekOffset || 10;
+        seekStep(-skipTime);
+      }],
+      ['seekforward', (details) => {
+        const skipTime = details.seekOffset || 10;
+        seekStep(skipTime);
+      }],
+      ['previoustrack', () => {
+        player.currentTime(0);
+      }],
+      ['nexttrack', () => {
+        // No-op for single video player
+      }]
+    ];
+
+    for (const [action, handler] of handlers) {
+      try {
+        navigator.mediaSession.setActionHandler(action, handler);
+      } catch (error) {
+        console.warn(`Media session action "${action}" not supported.`);
+      }
+    }
+
+    return () => {
+      for (const [action] of handlers) {
+        try {
+          navigator.mediaSession.setActionHandler(action, null);
+        } catch (error) {}
+      }
+    };
+  }, [player, title, posterUrl, seekStep]);
 
   useEffect(() => {
     if (!videoRef.current) return;
@@ -45,20 +210,41 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ url, mediaId, mediaType, dura
     if (playerRef.current) {
       playerRef.current.dispose();
       playerRef.current = null;
+      setPlayer(null);
     }
 
     const videoElement = document.createElement("video-js");
     videoElement.classList.add('vjs-big-play-centered', 'vjs-fluid');
     videoRef.current.appendChild(videoElement);
 
-    console.log('Initializing Video.js with URL:', url);
-    const player = playerRef.current = videojs(videoElement, {
+    console.log('Initializing Video.js with URL:', initialUrl);
+    const p = playerRef.current = videojs(videoElement, {
       autoplay: true,
       controls: true,
       responsive: true,
       fluid: true,
       preload: 'auto',
       liveui: true,
+      controlBar: {
+        volumePanel: {
+          inline: false,
+          vertical: true
+        }
+      },
+      plugins: {
+        abLoopPlugin: {},
+        sourceSelector: {
+          sources: [
+            { label: 'Direct Play', protocol: 'direct' },
+            { label: 'HLS', protocol: 'hls' },
+            { label: 'DASH', protocol: 'dash' }
+          ],
+          selectedProtocol: currentProtocol,
+          onSelect: (protocol: Protocol) => {
+            switchProtocol(protocol);
+          }
+        }
+      },
       html5: {
         vhs: {
           overrideNative: true,
@@ -70,51 +256,80 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ url, mediaId, mediaType, dura
         }
       },
       sources: [{
-        src: url,
-        type: url.includes('/direct/') 
-          ? (url.toLowerCase().endsWith('.mkv') ? 'video/webm' : 'video/mp4') 
-          : 'application/x-mpegURL'
+        src: initialUrl,
+        type: getSourceType(initialUrl, currentProtocol)
       }]
     });
 
-    player.ready(() => {
+    setPlayer(p);
+
+    p.ready(() => {
       console.log('Video.js player is ready');
       
       if (duration > 0) {
-        player.duration(duration);
+        p.duration(duration);
       }
 
       if (initialPosition > 0) {
-         player.currentTime(initialPosition / 1000);
+         p.currentTime(initialPosition / 1000);
       }
 
       if (heartbeatInterval.current) clearInterval(heartbeatInterval.current);
       heartbeatInterval.current = setInterval(sendHeartbeat, 30000);
     });
 
-    player.on('loadedmetadata', () => {
+    p.on('loadedmetadata', () => {
       if (duration > 0) {
-        player.duration(duration);
+        p.duration(duration);
       }
     });
 
-    player.on('playing', () => setIsPreparing(false));
+    p.on('playing', () => {
+      setIsPreparing(false);
+      requestWakeLock();
+    });
+
+    p.on('pause', () => {
+      releaseWakeLock();
+    });
+
+    p.on('waiting', () => {
+      // Potentially release wake lock if buffering for too long? 
+      // Usually keep it active while "playing" state is intended
+    });
     
-    player.on('error', () => {
-      const playerError = player.error();
+    p.on('error', () => {
+      const playerError = p.error();
       console.error('Video.js Error:', playerError);
+      
+      // Intelligent Fallback Logic
+      if (playerError && playerError.code === 4) { // MEDIA_ERR_SRC_NOT_SUPPORTED
+        // Note: fallback logic will trigger currentProtocol update, which triggers the surgical update effect
+        const currentIndex = PROTOCOL_PRIORITY.indexOf(currentProtocol);
+        if (currentIndex < PROTOCOL_PRIORITY.length - 1) {
+          const nextProtocol = PROTOCOL_PRIORITY[currentIndex + 1];
+          console.log(`Fallback: Switching to ${nextProtocol}`);
+          switchProtocol(nextProtocol);
+          return;
+        }
+      }
+
+      releaseWakeLock();
       if (playerError) {
         setError(`Streaming error: ${playerError.message || 'Unknown error'} (Code: ${playerError.code})`);
       }
     });
 
     return () => {
-      if (player && !player.isDisposed()) {
-        player.dispose();
+      if (heartbeatInterval.current) clearInterval(heartbeatInterval.current);
+      releaseWakeLock();
+      if (p && !p.isDisposed()) {
+        p.dispose();
         playerRef.current = null;
+        setPlayer(null);
       }
     };
-  }, [url]);
+  }, [initialUrl, duration, initialPosition, sendHeartbeat, requestWakeLock, releaseWakeLock, switchProtocol, getSourceType]);
 
   // Dispose the player on unmount
   useEffect(() => {
@@ -122,6 +337,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ url, mediaId, mediaType, dura
 
     return () => {
       if (heartbeatInterval.current) clearInterval(heartbeatInterval.current);
+      releaseWakeLock();
       // Send one final heartbeat before closing
       sendHeartbeat();
 
@@ -130,7 +346,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ url, mediaId, mediaType, dura
         playerRef.current = null;
       }
     };
-  }, [playerRef]);
+  }, [sendHeartbeat, releaseWakeLock]);
 
   return (
     <div className="fixed inset-0 z-[200] bg-black flex flex-col items-center justify-center animate-in fade-in duration-500">
@@ -166,6 +382,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ url, mediaId, mediaType, dura
       
       <div className="w-full h-full max-w-7xl aspect-video relative group overflow-hidden" ref={videoRef}>
       </div>
+      <VttThumbnails player={player} />
     </div>
   );
 };

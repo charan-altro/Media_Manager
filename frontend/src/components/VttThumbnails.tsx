@@ -31,13 +31,17 @@ const formatTime = (seconds: number) => {
 };
 
 /**
- * Mock data moved outside component to avoid re-creation on every render.
+ * Mock data extended to cover more duration.
  */
-const MOCK_THUMBNAILS: ThumbnailData[] = [
-  { startTime: 0, endTime: 10, image: 'https://placehold.co/160x90/000000/FFFFFF/png?text=Preview+1', x: 0, y: 0, w: 160, h: 90 },
-  { startTime: 10, endTime: 20, image: 'https://placehold.co/160x90/111111/FFFFFF/png?text=Preview+2', x: 0, y: 0, w: 160, h: 90 },
-  { startTime: 20, endTime: 30, image: 'https://placehold.co/160x90/222222/FFFFFF/png?text=Preview+3', x: 0, y: 0, w: 160, h: 90 },
-];
+const MOCK_THUMBNAILS: ThumbnailData[] = Array.from({ length: 100 }, (_, i) => ({
+  startTime: i * 10,
+  endTime: (i + 1) * 10,
+  image: `https://placehold.co/160x90/${(i % 10).toString(16).repeat(6)}/FFFFFF/png?text=Preview+${i + 1}`,
+  x: 0,
+  y: 0,
+  w: 160,
+  h: 90
+}));
 
 const FALLBACK_THUMB_IMAGE = 'https://placehold.co/160x90/333333/FFFFFF/png?text=Preview+Unavailable';
 

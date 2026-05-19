@@ -437,7 +437,7 @@ async fn serve_dash_manifest(
     };
 
     if m_id > 0 {
-        let info: Option<(i32, i32, i32)> = if m_type == "movie" {
+        let mut info: Option<(i32, i32, i32)> = if m_type == "movie" {
             sqlx::query_as("SELECT duration_secs, width, height FROM movie_files WHERE movie_id = ?")
                 .bind(m_id)
                 .fetch_optional(&state.pool)
@@ -450,6 +450,43 @@ async fn serve_dash_manifest(
                 .await
                 .unwrap_or(None)
         };
+
+        // Fallback to ffprobe if metadata is missing or incomplete in DB
+        if info.is_none() || info.as_ref().map(|(d, w, h)| *d <= 0 || *w <= 0 || *h <= 0).unwrap_or(true) {
+            tracing::info!("Metadata for {} is incomplete in DB, attempting ffprobe fallback...", id);
+            let path = if m_type == "movie" {
+                state.repos.movie.get_full_path(MovieId(m_id)).await.ok().flatten()
+            } else {
+                state.repos.tv.get_episode_full_path(EpisodeId(m_id)).await.ok().flatten()
+            };
+
+            if let Some(p) = path {
+                match media_core::scanner::mediainfo::get_media_info(&p) {
+                    Ok(details) => {
+                        let dur = details.duration_secs as i32;
+                        let width = details.width;
+                        let height = details.height;
+                        if dur > 0 && width > 0 && height > 0 {
+                            info = Some((dur, width, height));
+                            // Update DB so we don't have to ffprobe every time
+                            let repos = state.repos.clone();
+                            let m_type_clone = m_type.to_string();
+                            tokio::spawn(async move {
+                                if m_type_clone == "movie" {
+                                    let file_info = repos.movie.find_file_by_movie_id(MovieId(m_id)).await.unwrap_or_default();
+                                    if let Some(file) = file_info {
+                                        let _ = repos.movie.update_file_metadata(file.id, dur, width, height).await;
+                                    }
+                                } else {
+                                    let _ = repos.tv.update_episode_metadata(EpisodeId(m_id), dur, width, height).await;
+                                }
+                            });
+                        }
+                    },
+                    Err(e) => tracing::error!("FFprobe fallback failed for DASH manifest: {}", e),
+                }
+            }
+        }
 
         if let Some((dur, width, height)) = info {
             let manifest = media_core::scanner::streaming::generate_dash_manifest(dur as f64, width, height);

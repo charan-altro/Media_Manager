@@ -1,8 +1,15 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import videojs from 'video.js';
-import type Player from 'video.js/dist/types/player';
 import 'video.js/dist/video-js.css';
-import 'videojs-abloop';
+// @ts-ignore - videojs-abloop does not have types
+import abLoopPlugin from 'videojs-abloop';
+import type Player from 'video.js/dist/types/player';
+
+// Register the plugin manually if it hasn't been already
+if (typeof videojs.getPlugin('abLoopPlugin') === 'undefined') {
+  abLoopPlugin(window, videojs);
+}
+
 import '../plugins/sourceSelector'; // Import the custom plugin
 import { X, Loader2, AlertCircle } from 'lucide-react';
 import { getImageUrl, api } from '../api/adapter';

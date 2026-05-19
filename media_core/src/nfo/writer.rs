@@ -158,6 +158,9 @@ mod tests {
             cast_list: None,
             preview_path: None,
             nfo_path: None,
+            codec: None,
+            video_codec: None,
+            audio_codec: None,
             created_at: "2023-01-01".to_string(),
             updated_at: "2023-01-01".to_string(),
         };

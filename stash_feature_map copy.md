@@ -8,47 +8,47 @@
 ## 1. VIDEO PLAYER (Frontend — Video.js + custom plugins)
 
 ### 1.1 Basic Video Player
-| Feature | File | Key code | Video.js v10 Equivalent |
-|---------|------|----------|-------------------------|
-| Video.js player init | `ScenePlayer.tsx:337–446` | `videojs(videoEl, options)` | Native: `createPlayer({ features: videoFeatures })` & `<Player.Provider>` |
-| Responsive portrait/landscape detection | `ScenePlayer.tsx:976–977` | `file.height > file.width` → CSS class | Native: CSS flex/grid layout on `<Player.Container>` |
-| Inline playback on mobile (`playsinline`) | `ScenePlayer.tsx:369` | `playsinline: true` | Native: `<Video playsInline />` prop |
-| Poster / screenshot | `ScenePlayer.tsx:791` | `player.poster(scene.paths.screenshot)` | Native: `<Poster src={scene.paths.screenshot} />` component |
-| Loop control (configurable max duration) | `ScenePlayer.tsx:288–295` | `looping = duration < maxLoopDuration` | Native: `<Video loop />` prop or React conditional ended listener |
-| Playback rates | `ScenePlayer.tsx:366` | `playbackRates: [0.25, 0.5 … 2]` | Native: `<PlaybackRateButton>` component |
-| Inactivity timeout (700ms) | `ScenePlayer.tsx:367` | `inactivityTimeout: 700` | Native: `Controls` feature auto-hide state on `<Player.Container>` |
+| Feature | File | Key code |
+|---------|------|----------|
+| Video.js player init | `ScenePlayer.tsx:337–446` | `videojs(videoEl, options)` |
+| Responsive portrait/landscape detection | `ScenePlayer.tsx:976–977` | `file.height > file.width` → CSS class |
+| Inline playback on mobile (`playsinline`) | `ScenePlayer.tsx:369` | `playsinline: true` |
+| Poster / screenshot | `ScenePlayer.tsx:791` | `player.poster(scene.paths.screenshot)` |
+| Loop control (configurable max duration) | `ScenePlayer.tsx:288–295` | `looping = duration < maxLoopDuration` |
+| Playback rates | `ScenePlayer.tsx:366` | `playbackRates: [0.25, 0.5 … 2]` |
+| Inactivity timeout (700ms) | `ScenePlayer.tsx:367` | `inactivityTimeout: 700` |
 
 ---
 
 ### 1.2 Video Player with Seeking
-| Feature | File | Key code | Video.js v10 Equivalent |
-|---------|------|----------|-------------------------|
-| Arrow-key step seek (10 / 5 / 60 s) | `ScenePlayer.tsx:59–114` | `seekStep(seekFactor)` | Native: `seek(currentTime ± step)` from Time feature |
-| 0–9 hotkeys → jump to % | `ScenePlayer.tsx:164–193` | `seekPercent(0.1 … 0.9)` | Native: Custom key listener calling `seek((pct/100)*duration)` |
-| `[` / `]` hotkeys → ±10% relative | `ScenePlayer.tsx:194–199` | `seekPercentRelative(±0.1)` | Native: Custom key listener calling `seek()` |
-| Programmatic `setTimestamp` API | `ScenePlayer.tsx:320–333` | `player.currentTime(value)` | Native: `seek(value)` action from Time feature |
-| Scrubber bar seek (visual sprite) | `ScenePlayerScrubber.tsx` | `onScrubberSeek(seconds)` | Native: `<TimeSlider>` component |
-| Pause before scrub, resume after | `ScenePlayer.tsx:937–954` | `pausedBeforeScrubber.current` | Native: `<TimeSlider>` pointer events + Playback actions |
-| Resume playback at saved position | `ScenePlayer.tsx:689–700` | `resumeTime = scene.resume_time` | Native: React state / hook calling `seek(resumeTime)` on load |
-| Always-start-from-beginning toggle | `ScenePlayer.tsx:687` | `alwaysStartFromBeginning` | Native: Conditional logic in React initialization hook |
-| A-B Loop plugin | `ScenePlayer.tsx:398–406` | `abLoopPlugin` (videojs-abloop) | Native: Custom React hook tracking `currentTime` and seeking back |
-| Shift+L hotkey to toggle A-B loop | `ScenePlayer.tsx:117–119` | `toggleABLooping()` | Native: React custom hotkey mapping |
-| Shift+L loop toggle in loop control | `ScenePlayer.tsx:116–119` | `player.loop(!player.loop())` | Native: React custom hotkey mapping |
-| MediaSession "prev/next track" keys | `ScenePlayer.tsx:129–140` | `MediaTrackNext` / `MediaTrackPrevious` | Native: Custom hook calling browser's `navigator.mediaSession` |
-| `onComplete` callback on video end | `ScenePlayer.tsx:909–915` | `player.on("ended", onComplete)` | Native: `<Video onEnded={onComplete} />` or store `ended` subscription |
+| Feature | File | Key code |
+|---------|------|----------|
+| Arrow-key step seek (10 / 5 / 60 s) | `ScenePlayer.tsx:59–114` | `seekStep(seekFactor)` |
+| 0–9 hotkeys → jump to % | `ScenePlayer.tsx:164–193` | `seekPercent(0.1 … 0.9)` |
+| `[` / `]` hotkeys → ±10% relative | `ScenePlayer.tsx:194–199` | `seekPercentRelative(±0.1)` |
+| Programmatic `setTimestamp` API | `ScenePlayer.tsx:320–333` | `player.currentTime(value)` |
+| Scrubber bar seek (visual sprite) | `ScenePlayerScrubber.tsx` | `onScrubberSeek(seconds)` |
+| Pause before scrub, resume after | `ScenePlayer.tsx:937–954` | `pausedBeforeScrubber.current` |
+| Resume playback at saved position | `ScenePlayer.tsx:689–700` | `resumeTime = scene.resume_time` |
+| Always-start-from-beginning toggle | `ScenePlayer.tsx:687` | `alwaysStartFromBeginning` |
+| A-B Loop plugin | `ScenePlayer.tsx:398–406` | `abLoopPlugin` (videojs-abloop) |
+| Shift+L hotkey to toggle A-B loop | `ScenePlayer.tsx:117–119` | `toggleABLooping()` |
+| Shift+L loop toggle in loop control | `ScenePlayer.tsx:116–119` | `player.loop(!player.loop())` |
+| MediaSession "prev/next track" keys | `ScenePlayer.tsx:129–140` | `MediaTrackNext` / `MediaTrackPrevious` |
+| `onComplete` callback on video end | `ScenePlayer.tsx:909–915` | `player.on("ended", onComplete)` |
 
 ---
 
 ### 1.3 Smart Streaming Logic (Source Selector)
-| Feature | File | Key code | Video.js v10 Equivalent |
-|---------|------|----------|-------------------------|
-| Multi-source menu in control bar | `source-selector.ts:37–101` | `SourceMenuButton` added to controlBar | Native: Custom component subscribing to Source feature |
-| Auto-advance to next source on error | `source-selector.ts:165–208` | `MEDIA_ERR_SRC_NOT_SUPPORTED` → try next | Native: Subscribing to `Error` feature and calling `setSource()` |
-| Mark errored sources visually | `source-selector.ts:95–100` | `vjs-source-menu-item-error` CSS class | Native: Local state storing error flags mapped to source selector options |
-| Preserve current time on source switch | `source-selector.ts:126–136` | `player.one("canplay", () => player.currentTime(currentTime))` | Native: React `useEffect` seeking back to cached `currentTime` post-source change |
-| Skip Safari file-transcode sources | `ScenePlayer.tsx:625–629` | `!(isFileTranscode && isSafari)` | Native: Standard JS environment/Safari checks during stream setup |
-| Label + MIME type per source | `ScenePlayer.tsx:631–641` | `{ src, type, label, offset, duration }` | Native: Handled declaratively in active `Source` state |
-| Per-scene stream URL building | `scene.go:78–219` | `GetSceneStreamPaths()` produces all endpoints | Native: Same backend Rust design feeding frontend source list |
+| Feature | File | Key code |
+|---------|------|----------|
+| Multi-source menu in control bar | `source-selector.ts:37–101` | `SourceMenuButton` added to controlBar |
+| Auto-advance to next source on error | `source-selector.ts:165–208` | `MEDIA_ERR_SRC_NOT_SUPPORTED` → try next |
+| Mark errored sources visually | `source-selector.ts:95–100` | `vjs-source-menu-item-error` CSS class |
+| Preserve current time on source switch | `source-selector.ts:126–136` | `player.one("canplay", () => player.currentTime(currentTime))` |
+| Skip Safari file-transcode sources | `ScenePlayer.tsx:625–629` | `!(isFileTranscode && isSafari)` |
+| Label + MIME type per source | `ScenePlayer.tsx:631–641` | `{ src, type, label, offset, duration }` |
+| Per-scene stream URL building | `scene.go:78–219` | `GetSceneStreamPaths()` produces all endpoints |
 
 **Available stream types (backend-driven):**
 - `Direct stream` — serve original file  
@@ -62,38 +62,38 @@
 ---
 
 ### 1.4 Video Player with Volume / Sound Bar
-| Feature | File | Key code | Video.js v10 Equivalent |
-|---------|------|----------|-------------------------|
-| Volume panel (vertical, not inline) | `ScenePlayer.tsx:342–344` | `volumePanel: { inline: false }` | Native: Composable `<VolumeSlider>` and `<MuteButton>` components |
-| Up/Down arrow volume ±0.1 | `ScenePlayer.tsx:158–163` | `player.volume(player.volume() ± 0.1)` | Native: Custom key listener calling `setVolume(volume ± 0.1)` |
-| `M` hotkey mute/unmute | `ScenePlayer.tsx:148–150` | `player.muted(!player.muted())` | Native: Custom key listener calling `toggleMuted()` |
-| Persist volume across sessions | `persist-volume.ts` | Custom videojs plugin `persistVolume` | Native: Custom React effect sync with `localStorage` |
+| Feature | File | Key code |
+|---------|------|----------|
+| Volume panel (vertical, not inline) | `ScenePlayer.tsx:342–344` | `volumePanel: { inline: false }` |
+| Up/Down arrow volume ±0.1 | `ScenePlayer.tsx:158–163` | `player.volume(player.volume() ± 0.1)` |
+| `M` hotkey mute/unmute | `ScenePlayer.tsx:148–150` | `player.muted(!player.muted())` |
+| Persist volume across sessions | `persist-volume.ts` | Custom videojs plugin `persistVolume` |
 
 ---
 
 ### 1.5 Video Player with Subtitles / Captions
-| Feature | File | Key code | Video.js v10 Equivalent |
-|---------|------|----------|-------------------------|
-| Caption discovery per scene | `routes_scene.go:458–467` | `GET /caption?lang=&type=` → WebVTT | Native: Mapped to standard backend API route |
-| Multi-language caption loading | `ScenePlayer.tsx:658–685` | `sourceSelector.addTextTrack(...)` | Native: Declarative `<track>` elements nested under `<Video>` component |
-| Auto-detect browser language | `ScenePlayer.tsx:644–655` | `window.navigator.language` | Native: React hook setting `default` flag dynamically on `<track>` items |
-| Track label = language name + type | `ScenePlayer.tsx:663–670` | `languageMap.get(lang)` | Native: Populated as standard `label` attribute on `<track>` |
-| Default track selection | `ScenePlayer.tsx:670–673` | `default: setAsDefault` | Native: Handled dynamically with `<track default />` prop |
-| Convert SRT/ASS → WebVTT on-the-fly | `routes_scene.go:437–455` | `sub.WriteToWebVTT(&buf)` | Native: Handled on backend side (Rust media module conversion) |
-| Background subtitle opacity styling | `ScenePlayer.tsx:422–427` | `textTrackSettings.setValues(...)` | Native: Stylable via CSS target `.vjs-text-track-cue` |
-| Caption backend DB storage | `routes_scene.go:408–466` | `CaptionFinder.GetCaptions(ctx, fileID)` | Native: SQL repository queries mapping subtitle files (Rust backend) |
+| Feature | File | Key code |
+|---------|------|----------|
+| Caption discovery per scene | `routes_scene.go:458–467` | `GET /caption?lang=&type=` → WebVTT |
+| Multi-language caption loading | `ScenePlayer.tsx:658–685` | `sourceSelector.addTextTrack(...)` |
+| Auto-detect browser language | `ScenePlayer.tsx:644–655` | `window.navigator.language` |
+| Track label = language name + type | `ScenePlayer.tsx:663–670` | `languageMap.get(lang)` |
+| Default track selection | `ScenePlayer.tsx:670–673` | `default: setAsDefault` |
+| Convert SRT/ASS → WebVTT on-the-fly | `routes_scene.go:437–455` | `sub.WriteToWebVTT(&buf)` |
+| Background subtitle opacity styling | `ScenePlayer.tsx:422–427` | `textTrackSettings.setValues(...)` |
+| Caption backend DB storage | `routes_scene.go:408–466` | `CaptionFinder.GetCaptions(ctx, fileID)` |
 
 ---
 
 ### 1.6 VTT Thumbnail Scrubber (Sprite Preview on Hover)
-| Feature | File | Key code | Video.js v10 Equivalent |
-|---------|------|----------|-------------------------|
-| Parse sprite VTT → background offset | `vtt-thumbnails.ts:244–259` | `WebVTT.Parser` → `IVTTData[]` | Native: `<Thumbnail>` component handles seek preview parsing natively |
-| Hover on progress bar to show preview | `vtt-thumbnails.ts:158–177` | `onBarPointerEnter/Move/Leave` | Native: Automatic when using `<TimeSlider>` with `<Thumbnail>` |
-| Position clamp at edges | `vtt-thumbnails.ts:219–233` | `marginLeft / marginRight` | Native: Handled internally by `<Thumbnail>` layout |
-| Timestamp display | `vtt-thumbnails.ts:13` | `showTimestamp: boolean` | Native: `<Time>` displayed inside tooltip overlay |
-| VTT file served from backend | `routes_scene.go:352–364` | `GET /vtt/thumbs` → sprite VTT | Native: Rust backend VTT response (same design) |
-| Sprite JPEG served separately | `routes_scene.go:366–377` | `GET /vtt/sprite` → sprite JPEG | Native: Rust backend static asset server (same design) |
+| Feature | File | Key code |
+|---------|------|----------|
+| Parse sprite VTT → background offset | `vtt-thumbnails.ts:244–259` | `WebVTT.Parser` → `IVTTData[]` |
+| Hover on progress bar to show preview | `vtt-thumbnails.ts:158–177` | `onBarPointerEnter/Move/Leave` |
+| Position clamp at edges | `vtt-thumbnails.ts:219–233` | `marginLeft / marginRight` |
+| Timestamp display | `vtt-thumbnails.ts:13` | `showTimestamp: boolean` |
+| VTT file served from backend | `routes_scene.go:352–364` | `GET /vtt/thumbs` → sprite VTT |
+| Sprite JPEG served separately | `routes_scene.go:366–377` | `GET /vtt/sprite` → sprite JPEG |
 
 ---
 
@@ -123,21 +123,21 @@
 ---
 
 ### 1.9 Additional Player Plugins
-| Plugin | File | What it does | Video.js v10 Equivalent |
-|--------|------|--------------|-------------------------|
-| `bigButtons` | `big-buttons.ts` | Large central play/pause buttons | Native: Stylable `<PlayButton>` overlay |
-| `seekButtons` | built-in (videojs-seek-buttons) | ±10s seek buttons in controlbar | Native: `<SeekButton>` component |
-| `skipButtons` | `PlaylistButtons.ts` | Skip to next/previous scene | Native: Custom components using React handlers |
-| `autostartButton` | `autostart-button.ts` | Toggle autostart & persist to DB | Native: Custom UI toggles setting player `autoPlay` |
-| `trackActivity` | `track-activity.ts` | Tracks play time, saves resume time, increments play count | Native: Custom React hook listening to `currentTime` state |
-| `vrMenu` | `vrmode.ts` | 360° VR mode toggle (tag-driven) | Native: WebXR custom controls / 360 viewer plugin |
-| `mediaSession` | `media-session.ts` | Media Notification API (artist / cover) | Native: React hook utilizing browser's MediaSession API |
-| `wakeSentinel` | `wake-sentinel.ts` | Prevents screen sleep during playback | Native: React hook calling navigator Wake Lock API |
-| `chromecast` | `ScenePlayer.tsx:49` | @silvermine/videojs-chromecast | Native: Remote Playback feature integrations |
-| `airPlay` | `ScenePlayer.tsx:47` | @silvermine/videojs-airplay | Native: Remote Playback feature integrations |
-| `mobileUi` | `ScenePlayer.tsx:610` | videojs-mobile-ui (lock-to-landscape) | Native: Responsive CSS layouts / React hooks |
-| `abLoopPlugin` | `ScenePlayer.tsx:50` | videojs-abloop A-B loop region | Native: Custom React hook tracking and resetting `currentTime` |
-| `livePlugin` | `live.ts` | "Live" stream indicator | Native: `Live` feature state indicator |
+| Plugin | File | What it does |
+|--------|------|--------------|
+| `bigButtons` | `big-buttons.ts` | Large central play/pause buttons |
+| `seekButtons` | built-in (videojs-seek-buttons) | ±10s seek buttons in controlbar |
+| `skipButtons` | `PlaylistButtons.ts` | Skip to next/previous scene |
+| `autostartButton` | `autostart-button.ts` | Toggle autostart & persist to DB |
+| `trackActivity` | `track-activity.ts` | Tracks play time, saves resume time, increments play count |
+| `vrMenu` | `vrmode.ts` | 360° VR mode toggle (tag-driven) |
+| `mediaSession` | `media-session.ts` | Media Notification API (artist / cover) |
+| `wakeSentinel` | `wake-sentinel.ts` | Prevents screen sleep during playback |
+| `chromecast` | `ScenePlayer.tsx:49` | @silvermine/videojs-chromecast |
+| `airPlay` | `ScenePlayer.tsx:47` | @silvermine/videojs-airplay |
+| `mobileUi` | `ScenePlayer.tsx:610` | videojs-mobile-ui (lock-to-landscape) |
+| `abLoopPlugin` | `ScenePlayer.tsx:50` | videojs-abloop A-B loop region |
+| `livePlugin` | `live.ts` | "Live" stream indicator |
 
 ---
 
@@ -383,23 +383,23 @@ GraphQL mutations: `resolver_mutation_scene.go` (36 KB)
 
 ## 7. PARITY GAP SUMMARY (for Rust Media Manager)
 
-| Stash Feature | Media Manager Status | Priority | Notes on Video.js v10 Parity |
-|---------------|---------------------|----------|------------------------------|
-| HLS segmented streaming with seek-restart | ✅ Implemented (Parity) | 🔴 High | Backend parity achieved. |
-| DASH segmented streaming | ✅ Implemented (Parity) | 🔴 High | Backend parity achieved. |
-| Hardware codec auto-detection (NVENC/QSV/VAAPI/Rockchip) | ⚠️ Partial | 🔴 High | Backend transcoding optimization. |
-| Sprite VTT thumbnails for scrubber | ❌ Missing | 🟡 Medium | Natively supported via v10 `<Thumbnail>` component. |
-| Scene markers on progress bar | ❌ Missing | 🟡 Medium | Custom overlay divs on `<TimeSlider>` using React. |
-| A-B loop region | ❌ Missing | 🟢 Low | Implement via custom React hook tracking time ranges. |
-| Multi-source fallback (auto next on error) | ❌ Missing | 🔴 High | Handle via v10 `Error` store state hook. |
-| Caption/subtitle multi-language | ❌ Missing | 🟡 Medium | Natively supported via v10 `<track>` and `<CaptionsButton>`. |
-| Resume time persistence | ❌ Missing | 🟡 Medium | Implement via React hook syncing to API on pause/unload. |
-| Play count / activity tracking | ❌ Missing | 🟡 Medium | Hook into `currentTime` updates to report activity. |
-| Funscript / interactive haptic sync | ❌ Missing | 🟢 Low | Subscribe to player state in React to trigger API. |
-| VR mode toggle | ❌ Missing | 🟢 Low | Implement custom WebXR player controls if needed. |
-| Chromecast / AirPlay | ❌ Missing | 🟢 Low | Use v10 Remote Playback state. |
-| Wake lock during playback | ❌ Missing | 🟢 Low | Handled using standard Screen Wake Lock API in React hook. |
-| MediaSession OS notifications | ❌ Missing | 🟢 Low | Implement standard browser navigator hook. |
-| pHash duplicate detection | ❌ Missing | 🟡 Medium | Backend feature. |
-| DLNA server | ❌ Missing | 🟢 Low | Backend feature. |
-| Plugin system | ❌ Missing | 🟢 Low | Core app architecture. |
+| Stash Feature | Media Manager Status | Priority |
+|---------------|---------------------|----------|
+| HLS segmented streaming with seek-restart | ✅ Implemented (Parity) | 🔴 High |
+| DASH segmented streaming | ✅ Implemented (Parity) | 🔴 High |
+| Hardware codec auto-detection (NVENC/QSV/VAAPI/Rockchip) | ⚠️ Partial | 🔴 High |
+| Sprite VTT thumbnails for scrubber | ❌ Missing | 🟡 Medium |
+| Scene markers on progress bar | ❌ Missing | 🟡 Medium |
+| A-B loop region | ❌ Missing | 🟢 Low |
+| Multi-source fallback (auto next on error) | ❌ Missing | 🔴 High |
+| Caption/subtitle multi-language | ❌ Missing | 🟡 Medium |
+| Resume time persistence | ❌ Missing | 🟡 Medium |
+| Play count / activity tracking | ❌ Missing | 🟡 Medium |
+| Funscript / interactive haptic sync | ❌ Missing | 🟢 Low |
+| VR mode toggle | ❌ Missing | 🟢 Low |
+| Chromecast / AirPlay | ❌ Missing | 🟢 Low |
+| Wake lock during playback | ❌ Missing | 🟢 Low |
+| MediaSession OS notifications | ❌ Missing | 🟢 Low |
+| pHash duplicate detection | ❌ Missing | 🟡 Medium |
+| DLNA server | ❌ Missing | 🟢 Low |
+| Plugin system | ❌ Missing | 🟢 Low |

@@ -133,7 +133,11 @@ impl TvReader for SqliteTvRepository {
 
     #[tracing::instrument(skip(self), err)]
     async fn find_show_by_id(&self, id: TvShowId) -> Result<Option<TVShow>> {
-        let sql = "SELECT id, library_id, title, tmdb_id, imdb_id, status, plot, rating, poster_url, backdrop_url, tagline, runtime, genres, language, cast_list, trailer_url, nfo_path, created_at, updated_at FROM tv_shows WHERE id = ?";
+        let sql = r#"
+            SELECT t.*, 
+            (SELECT e.preview_path FROM episodes e JOIN seasons s ON e.season_id = s.id WHERE s.show_id = t.id AND e.preview_path IS NOT NULL LIMIT 1) as preview_path
+            FROM tv_shows t WHERE id = ?
+        "#;
         let mut args = sqlx::sqlite::SqliteArguments::default();
         sqlx::Arguments::add(&mut args, id);
         self.base.fetch_optional(&*self.base.pool, sql, args).await
@@ -143,7 +147,11 @@ impl TvReader for SqliteTvRepository {
     async fn find_shows_by_ids(&self, ids: &[TvShowId]) -> Result<Vec<TVShow>> {
         if ids.is_empty() { return Ok(vec![]); }
         let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-        let query = format!("SELECT id, library_id, title, tmdb_id, imdb_id, status, plot, rating, poster_url, backdrop_url, tagline, runtime, genres, language, cast_list, trailer_url, nfo_path, created_at, updated_at FROM tv_shows WHERE id IN ({})", placeholders);
+        let query = format!(r#"
+            SELECT t.*, 
+            (SELECT e.preview_path FROM episodes e JOIN seasons s ON e.season_id = s.id WHERE s.show_id = t.id AND e.preview_path IS NOT NULL LIMIT 1) as preview_path
+            FROM tv_shows t WHERE id IN ({})
+        "#, placeholders);
         
         let mut args = sqlx::sqlite::SqliteArguments::default();
         for id in ids {

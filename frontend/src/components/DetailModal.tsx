@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { X, Star, Play, Calendar, Clock, Monitor, Cpu, CheckCircle2, RefreshCw, Loader2 } from 'lucide-react';
 import { getImageUrl, api } from '../api/adapter';
 import toast from 'react-hot-toast';
-import VideoPlayer from './VideoPlayer';
+import VidstackPlayer from './VidstackPlayer';
 
 interface DetailModalProps {
   item: any;
@@ -31,13 +31,14 @@ const DetailModal: React.FC<DetailModalProps> = ({
   const [activePosterUrl, setActivePosterUrl] = useState<string | undefined>(undefined);
   const [activeVideoCodec, setActiveVideoCodec] = useState<string | undefined>(undefined);
   const [activeAudioCodec, setActiveAudioCodec] = useState<string | undefined>(undefined);
+  const [activeHash, setActiveHash] = useState<string | undefined>(undefined);
   const [resumePosition, setResumePosition] = useState(0);
   const [showResumeDialog, setShowResumeDialog] = useState(false);
   const [pendingUrl, setPendingUrl] = useState<string | null>(null);
 
   const isShow = 'library_id' in item && !('runtime' in item);
 
-  const handlePlayMedia = async (mediaId: number, mediaType: 'movie' | 'episode', metadata?: { title: string, posterUrl?: string, videoCodec?: string, audioCodec?: string }) => {
+  const handlePlayMedia = async (mediaId: number, mediaType: 'movie' | 'episode', metadata?: { title: string, posterUrl?: string, videoCodec?: string, audioCodec?: string, hash?: string }) => {
     if (isStartingStream) return;
     setIsStartingStream(true);
     try {
@@ -52,11 +53,13 @@ const DetailModal: React.FC<DetailModalProps> = ({
         setActivePosterUrl(metadata.posterUrl);
         setActiveVideoCodec(metadata.videoCodec);
         setActiveAudioCodec(metadata.audioCodec);
+        setActiveHash(metadata.hash);
       } else {
         setActiveTitle(item.title);
         setActivePosterUrl(item.poster_url || item.backdrop_url);
         setActiveVideoCodec(item.video_codec);
         setActiveAudioCodec(item.audio_codec);
+        setActiveHash(item.hash);
       }
 
       if (status && status.position_ms > 5000 && !status.is_finished) {
@@ -335,7 +338,8 @@ const DetailModal: React.FC<DetailModalProps> = ({
                             title: `${item.title} - S${ep.season_number.toString().padStart(2, '0')}E${ep.episode_number.toString().padStart(2, '0')} - ${ep.title || 'Episode ' + ep.episode_number}`,
                             posterUrl: ep.thumbnail_path || item.poster_url || item.backdrop_url,
                             videoCodec: ep.video_codec || ep.codec,
-                            audioCodec: ep.audio_codec
+                            audioCodec: ep.audio_codec,
+                            hash: ep.hash
                           })} className="flex items-center justify-between p-4 bg-zinc-900/30 rounded-xl border border-zinc-800/50 hover:bg-zinc-800/50 transition group cursor-pointer">
                             <div className="flex items-center gap-6">
                               <div className="text-2xl font-black text-zinc-700 italic group-hover:text-red-600 transition">
@@ -451,7 +455,8 @@ const DetailModal: React.FC<DetailModalProps> = ({
                           title: item.title, 
                           posterUrl: item.poster_url || item.backdrop_url,
                           videoCodec: item.video_codec,
-                          audioCodec: item.audio_codec
+                          audioCodec: item.audio_codec,
+                          hash: item.hash
                         })}
                         disabled={isStartingStream}
                         className={`w-full py-4 rounded-xl font-black uppercase tracking-widest text-xs transition active:scale-95 flex items-center justify-center gap-2 shadow-lg ${
@@ -565,9 +570,7 @@ const DetailModal: React.FC<DetailModalProps> = ({
             <div className="flex flex-col gap-2">
               <button 
                 onClick={() => {
-                  if (pendingUrl) {
-                    setStreamingUrl(getStreamingUrlWithSeek(pendingUrl, resumePosition));
-                  }
+                  setStreamingUrl(pendingUrl); // Just set any non-null to open Vidstack
                   setShowResumeDialog(false);
                 }}
                 className="w-full bg-red-600 hover:bg-red-700 py-3 rounded-xl font-black uppercase text-xs tracking-widest text-white transition"
@@ -577,9 +580,7 @@ const DetailModal: React.FC<DetailModalProps> = ({
               <button 
                 onClick={() => {
                   setResumePosition(0);
-                  if (pendingUrl) {
-                    setStreamingUrl(getStreamingUrlWithSeek(pendingUrl, 0));
-                  }
+                  setStreamingUrl(pendingUrl);
                   setShowResumeDialog(false);
                 }}
                 className="w-full bg-zinc-800 hover:bg-zinc-700 py-3 rounded-xl font-black uppercase text-xs tracking-widest text-white transition border border-zinc-700"
@@ -592,16 +593,14 @@ const DetailModal: React.FC<DetailModalProps> = ({
       )}
 
       {streamingUrl && (
-        <VideoPlayer 
-          url={streamingUrl} 
+        <VidstackPlayer 
           mediaId={activeMediaId!}
           mediaType={activeMediaType!}
           title={activeTitle}
           posterUrl={activePosterUrl}
+          hash={activeHash}
           duration={item.duration_secs || (item.runtime ? item.runtime * 60 : 0)}
           initialPosition={resumePosition}
-          videoCodec={activeVideoCodec}
-          audioCodec={activeAudioCodec}
           onClose={async () => {
             setStreamingUrl(null);
             // Refresh playback status for this item

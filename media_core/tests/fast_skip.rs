@@ -1,4 +1,5 @@
 use media_core::{db, scanner, models};
+use media_core::scanner::service::ScannerService;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::PathBuf;
@@ -31,7 +32,8 @@ async fn test_fast_skip_logic() -> anyhow::Result<()> {
     let lib = libraries.into_iter().find(|l| l.id == lib_id).unwrap();
 
     let task_manager = Arc::new(media_core::task_manager::TaskManager::new());
-    scanner::worker::scan_library(repos.clone(), &lib, "initial_scan".into(), &task_manager).await?;
+    let scanner_service = scanner::service::DefaultScannerService::new(repos.clone(), task_manager.clone());
+    scanner_service.scan_library(&lib, "initial_scan".into()).await?;
 
     // 4. Verify mtime is set
     let movie_file: models::MovieFile = sqlx::query_as("SELECT * FROM movie_files LIMIT 1")
@@ -49,7 +51,7 @@ async fn test_fast_skip_logic() -> anyhow::Result<()> {
         .execute(&pool).await?;
 
     // 6. Rescan (Should Skip)
-    scanner::worker::scan_library(repos.clone(), &lib, "rescan_skip".into(), &task_manager).await?;
+    scanner_service.scan_library(&lib, "rescan_skip".into()).await?;
 
     let movie_file_after_skip: models::MovieFile = sqlx::query_as("SELECT * FROM movie_files LIMIT 1")
         .fetch_one(&pool).await?;
@@ -71,7 +73,7 @@ async fn test_fast_skip_logic() -> anyhow::Result<()> {
     assert_ne!(new_mtime, original_mtime);
 
     // 8. Rescan (Should NOT Skip)
-    scanner::worker::scan_library(repos.clone(), &lib, "rescan_full".into(), &task_manager).await?;
+    scanner_service.scan_library(&lib, "rescan_full".into()).await?;
 
     let movie_file_after_full: models::MovieFile = sqlx::query_as("SELECT * FROM movie_files LIMIT 1")
         .fetch_one(&pool).await?;

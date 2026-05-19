@@ -34,6 +34,7 @@ export interface Movie {
   resolution?: string;
   video_codec?: string;
   audio_codec?: string;
+  hash?: string;
 }
 
 export interface TVShow {
@@ -77,6 +78,7 @@ export interface Episode {
   file_path: string;
   video_codec?: string;
   audio_codec?: string;
+  hash?: string;
 }
 
 export interface UpdateCheckResult {

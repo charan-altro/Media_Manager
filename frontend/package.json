@@ -14,11 +14,13 @@
     "@tauri-apps/api": "^2.10.1",
     "@videojs/core": "^10.0.0-beta.23",
     "@videojs/react": "^10.0.0-beta.23",
+    "@vidstack/react": "^1.12.13",
     "lucide-react": "^0.454.0",
     "react": "^19.2.5",
     "react-dom": "^19.2.5",
     "react-hot-toast": "^2.6.0",
-    "react-router-dom": "^7.15.0"
+    "react-router-dom": "^7.15.0",
+    "vidstack": "^1.12.13"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

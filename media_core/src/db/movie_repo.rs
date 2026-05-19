@@ -82,7 +82,7 @@ impl SqliteMovieRepository {
 impl MovieReader for SqliteMovieRepository {
     #[tracing::instrument(skip(self), err)]
     async fn find_all(&self, library_id: Option<LibraryId>, genre: Option<String>, language: Option<String>) -> Result<Vec<Movie>> {
-        let mut query = String::from("SELECT m.*, mf.preview_path, mf.codec, mf.codec as video_codec, mf.audio_codec FROM movies m LEFT JOIN movie_files mf ON m.id = mf.movie_id WHERE 1=1");
+        let mut query = String::from("SELECT m.*, mf.preview_path, mf.codec, mf.codec as video_codec, mf.audio_codec, mf.hash FROM movies m LEFT JOIN movie_files mf ON m.id = mf.movie_id WHERE 1=1");
         if library_id.is_some() {
             query.push_str(" AND m.library_id = ?");
         }
@@ -120,14 +120,14 @@ impl MovieReader for SqliteMovieRepository {
     async fn find_by_id(&self, id: MovieId) -> Result<Option<Movie>> {
         let mut args = sqlx::sqlite::SqliteArguments::default();
         sqlx::Arguments::add(&mut args, id);
-        self.base.fetch_optional(&*self.base.pool, "SELECT m.*, mf.codec, mf.codec as video_codec, mf.audio_codec FROM movies m LEFT JOIN movie_files mf ON m.id = mf.movie_id WHERE m.id = ?", args).await
+        self.base.fetch_optional(&*self.base.pool, "SELECT m.*, mf.preview_path, mf.codec, mf.codec as video_codec, mf.audio_codec, mf.hash FROM movies m LEFT JOIN movie_files mf ON m.id = mf.movie_id WHERE m.id = ? GROUP BY m.id", args).await
     }
 
     #[tracing::instrument(skip(self), err)]
     async fn find_by_ids(&self, ids: &[MovieId]) -> Result<Vec<Movie>> {
         if ids.is_empty() { return Ok(vec![]); }
         let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-        let query = format!("SELECT m.*, mf.preview_path, mf.codec, mf.codec as video_codec, mf.audio_codec FROM movies m LEFT JOIN movie_files mf ON m.id = mf.movie_id WHERE m.id IN ({})", placeholders);
+        let query = format!("SELECT m.*, mf.preview_path, mf.codec, mf.codec as video_codec, mf.audio_codec, mf.hash FROM movies m LEFT JOIN movie_files mf ON m.id = mf.movie_id WHERE m.id IN ({}) GROUP BY m.id", placeholders);
         
         let mut args = sqlx::sqlite::SqliteArguments::default();
         for id in ids {

@@ -1,9 +1,11 @@
-use media_core::db::{init_pool, queries};
+use media_core::db::{init_pool, SqliteMediaRepository, MediaRepository};
 use media_core::models::MediaStream;
+use std::sync::Arc;
 
 #[tokio::test]
 async fn test_stash_parity_db_operations() {
     let pool = init_pool("sqlite::memory:").await.unwrap();
+    let repo = SqliteMediaRepository::new(Arc::new(pool.clone()));
 
     // Test upsert_media_stream
     let stream = MediaStream {
@@ -18,7 +20,7 @@ async fn test_stash_parity_db_operations() {
         is_default: true,
     };
 
-    queries::upsert_media_stream(&pool, &stream).await.unwrap();
+    repo.upsert_stream(&stream).await.unwrap();
 
     // Verify insertion
     let row: (String, String) = sqlx::query_as("SELECT codec, language FROM media_streams WHERE file_hash = ? AND stream_index = ?")
@@ -44,7 +46,7 @@ async fn test_stash_parity_db_operations() {
         is_default: false,
     };
 
-    queries::upsert_media_stream(&pool, &updated_stream).await.unwrap();
+    repo.upsert_stream(&updated_stream).await.unwrap();
 
     let row: (String, String, bool) = sqlx::query_as("SELECT codec, language, is_default FROM media_streams WHERE file_hash = ? AND stream_index = ?")
         .bind("test_hash")
@@ -58,7 +60,7 @@ async fn test_stash_parity_db_operations() {
     assert_eq!(row.2, false);
 
     // Test upsert_generated_asset
-    queries::upsert_generated_asset(&pool, "test_hash", "preview", "/path/to/preview.mp4").await.unwrap();
+    repo.upsert_generated_asset("test_hash", "preview", "/path/to/preview.mp4").await.unwrap();
 
     let path: String = sqlx::query_scalar("SELECT path FROM generated_assets WHERE file_hash = ? AND asset_type = ?")
         .bind("test_hash")
@@ -70,7 +72,7 @@ async fn test_stash_parity_db_operations() {
     assert_eq!(path, "/path/to/preview.mp4");
 
     // Test update on conflict
-    queries::upsert_generated_asset(&pool, "test_hash", "preview", "/new/path.mp4").await.unwrap();
+    repo.upsert_generated_asset("test_hash", "preview", "/new/path.mp4").await.unwrap();
 
     let path: String = sqlx::query_scalar("SELECT path FROM generated_assets WHERE file_hash = ? AND asset_type = ?")
         .bind("test_hash")

@@ -18,7 +18,7 @@ async fn test_request_segment_starts_session() {
     
     // This should start a session. It will likely fail to spawn FFmpeg correctly with a dummy file 
     // but we can check if it attempted to create the session or directory.
-    let _ = stream_manager.request_segment(stream_id, &input_file, 5).await;
+    let _ = stream_manager.request_segment(stream_id, &input_file, 5, "seg_005.ts").await;
     
     // Check if output dir exists for the id
     assert!(transcode_dir.join(stream_id).exists());

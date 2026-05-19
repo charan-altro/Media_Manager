@@ -1,4 +1,5 @@
 use media_core::{db, scanner, models};
+use media_core::scanner::service::ScannerService;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::PathBuf;
@@ -31,7 +32,8 @@ async fn test_identity_healing() -> anyhow::Result<()> {
     let lib = libraries.into_iter().find(|l| l.id == lib_id).unwrap();
 
     let task_manager = Arc::new(media_core::task_manager::TaskManager::new());
-    scanner::worker::scan_library(repos.clone(), &lib, "test_task".into(), &task_manager).await?;
+    let scanner_service = scanner::service::DefaultScannerService::new(repos.clone(), task_manager.clone());
+    scanner_service.scan_library(&lib, "test_task".into()).await?;
 
     // 4. Verify initial fingerprint
     let movies = repos.movie.find_all(Some(lib_id), None, None).await?;
@@ -53,7 +55,7 @@ async fn test_identity_healing() -> anyhow::Result<()> {
     fs::rename(&file_path, &new_file_path)?;
 
     // 6. Scan again
-    scanner::worker::scan_library(repos.clone(), &lib, "test_task_2".into(), &task_manager).await?;
+    scanner_service.scan_library(&lib, "test_task_2".into()).await?;
 
     // 7. Verify Healing (Fingerprint remains same, path updates)
     let movies_after = repos.movie.find_all(Some(lib_id), None, None).await?;

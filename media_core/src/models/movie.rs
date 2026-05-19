@@ -25,6 +25,7 @@ pub struct Movie {
     pub codec: Option<String>,
     pub video_codec: Option<String>,
     pub audio_codec: Option<String>,
+    pub hash: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }

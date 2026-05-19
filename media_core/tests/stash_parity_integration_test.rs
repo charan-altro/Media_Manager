@@ -1,4 +1,5 @@
 use media_core::{db, scanner, models};
+use media_core::scanner::service::ScannerService;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::PathBuf;
@@ -32,7 +33,8 @@ async fn test_stash_parity_integration() -> anyhow::Result<()> {
     let lib = libraries.into_iter().find(|l| l.id == lib_id).unwrap();
 
     let task_manager = Arc::new(media_core::task_manager::TaskManager::new());
-    scanner::worker::scan_library(repos.clone(), &lib, "test_task".into(), &task_manager).await?;
+    let scanner_service = scanner::service::DefaultScannerService::new(repos.clone(), task_manager.clone());
+    scanner_service.scan_library(&lib, "test_task".into()).await?;
 
     // 4. Verify initial record and fingerprint
     let movie_file = repos.movie.find_file_by_path(file_name).await?.expect("File should be in DB");
@@ -62,7 +64,7 @@ async fn test_stash_parity_integration() -> anyhow::Result<()> {
 
     // 7. Scan again
     // The scanner should see the old path is gone, see the new path, calculate same fingerprint, and 'heal' the record.
-    scanner::worker::scan_library(repos.clone(), &lib, "test_task_2".into(), &task_manager).await?;
+    scanner_service.scan_library(&lib, "test_task_2".into()).await?;
 
     // 8. Verify Identity Resolution (Healing)
     let movie_file_after = repos.movie.find_file_by_fingerprint(&fingerprint).await?.expect("Should find file by fingerprint");

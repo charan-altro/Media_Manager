@@ -1,7 +1,6 @@
 import { renderHook, act } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { useVideoPlayer } from '../useVideoPlayer';
-import type Player from 'video.js/dist/types/player';
 
 describe('useVideoPlayer', () => {
   let mockPlayer: any;
@@ -24,7 +23,7 @@ describe('useVideoPlayer', () => {
 
   it('should seek forward/backward correctly', () => {
     mockPlayer.currentTime.mockReturnValue(10);
-    const { result } = renderHook(() => useVideoPlayer(mockPlayer as Player));
+    const { result } = renderHook(() => useVideoPlayer(mockPlayer as any));
 
     act(() => {
       result.current.seekStep(5);
@@ -39,7 +38,7 @@ describe('useVideoPlayer', () => {
 
   it('should seek percentage correctly', () => {
     mockPlayer.duration.mockReturnValue(100);
-    const { result } = renderHook(() => useVideoPlayer(mockPlayer as Player));
+    const { result } = renderHook(() => useVideoPlayer(mockPlayer as any));
 
     act(() => {
       result.current.seekPercent(50);
@@ -53,7 +52,7 @@ describe('useVideoPlayer', () => {
     mockPlayer.paused.mockReturnValue(true);
     mockPlayer.muted.mockReturnValue(false);
 
-    renderHook(() => useVideoPlayer(mockPlayer as Player));
+    renderHook(() => useVideoPlayer(mockPlayer as any));
 
     // Space to play
     window.dispatchEvent(new KeyboardEvent('keydown', { key: ' ' }));
@@ -81,7 +80,7 @@ describe('useVideoPlayer', () => {
   });
 
   it('should not trigger hotkeys when typing in input fields', () => {
-    renderHook(() => useVideoPlayer(mockPlayer as Player));
+    renderHook(() => useVideoPlayer(mockPlayer as any));
 
     const input = document.createElement('input');
     document.body.appendChild(input);

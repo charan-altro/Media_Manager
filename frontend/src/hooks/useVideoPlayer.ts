@@ -1,22 +1,8 @@
 import { useEffect, useCallback } from 'react';
-import type Player from 'video.js/dist/types/player';
+import type { AbLoopControls } from './useAbLoop';
 
-interface AbLoopPlugin {
-  setStart(time?: number): AbLoopPlugin;
-  setEnd(time?: number): AbLoopPlugin;
-  toggle(): AbLoopPlugin;
-  goToStart(): AbLoopPlugin;
-  enable(): AbLoopPlugin;
-  disable(): AbLoopPlugin;
-  getOptions(): { start: number; end: number; enabled: boolean };
-}
-
-interface VideoPlayerWithPlugins extends Player {
-  abLoopPlugin?: AbLoopPlugin;
-}
-
-export const useVideoPlayer = (player: Player | null) => {
-  const p = player as VideoPlayerWithPlugins;
+export const useVideoPlayer = (player: any, abLoop?: AbLoopControls) => {
+  const p = player;
 
   const seekStep = useCallback((seconds: number) => {
     if (!p) return;
@@ -76,15 +62,18 @@ export const useVideoPlayer = (player: Player | null) => {
         break;
       case 'l':
       case 'L':
-        if (p.abLoopPlugin) p.abLoopPlugin.toggle();
+        if (abLoop) abLoop.toggleLoop();
         break;
       case 'a':
       case 'A':
-        if (p.abLoopPlugin) p.abLoopPlugin.setStart().goToStart();
+        if (abLoop) {
+          abLoop.setStart();
+          p.currentTime(p.currentTime()); // Set start and go to start/keep current position
+        }
         break;
       case 'b':
       case 'B':
-        if (p.abLoopPlugin) p.abLoopPlugin.setEnd();
+        if (abLoop) abLoop.setEnd();
         break;
       default:
         if (/^[0-9]$/.test(event.key)) {
@@ -92,7 +81,7 @@ export const useVideoPlayer = (player: Player | null) => {
         }
         break;
     }
-  }, [p, seekStep, seekPercent]);
+  }, [p, seekStep, seekPercent, abLoop]);
 
   useEffect(() => {
     window.addEventListener('keydown', handleKeyDown);
@@ -106,3 +95,4 @@ export const useVideoPlayer = (player: Player | null) => {
     seekPercent,
   };
 };
+

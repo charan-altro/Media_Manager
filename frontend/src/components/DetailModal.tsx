@@ -447,7 +447,12 @@ const DetailModal: React.FC<DetailModalProps> = ({
                   <div className="flex flex-col gap-3">
                     {!isShow && (
                       <button 
-                        onClick={() => handlePlayMedia(item.id, 'movie', { title: item.title, posterUrl: item.poster_url || item.backdrop_url })}
+                        onClick={() => handlePlayMedia(item.id, 'movie', { 
+                          title: item.title, 
+                          posterUrl: item.poster_url || item.backdrop_url,
+                          videoCodec: item.video_codec,
+                          audioCodec: item.audio_codec
+                        })}
                         disabled={isStartingStream}
                         className={`w-full py-4 rounded-xl font-black uppercase tracking-widest text-xs transition active:scale-95 flex items-center justify-center gap-2 shadow-lg ${
                           isStartingStream 

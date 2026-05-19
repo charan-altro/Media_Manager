@@ -1,8 +1,7 @@
-import React, { useEffect, useState, useRef } from 'react';
-import type Player from 'video.js/dist/types/player';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
 
 interface VttThumbnailsProps {
-  player: Player | null;
+  player: any; // Using any for compatibility with v10 for now
   vttUrl?: string;
 }
 
@@ -16,9 +15,6 @@ interface ThumbnailData {
   h: number;
 }
 
-/**
- * Utility to format seconds into HH:MM:SS or MM:SS
- */
 const formatTime = (seconds: number) => {
   const h = Math.floor(seconds / 3600);
   const m = Math.floor((seconds % 3600) / 60);
@@ -30,9 +26,6 @@ const formatTime = (seconds: number) => {
   return `${m}:${s.toString().padStart(2, '0')}`;
 };
 
-/**
- * Mock data extended to cover more duration.
- */
 const MOCK_THUMBNAILS: ThumbnailData[] = Array.from({ length: 100 }, (_, i) => ({
   startTime: i * 10,
   endTime: (i + 1) * 10,
@@ -52,79 +45,85 @@ const VttThumbnails: React.FC<VttThumbnailsProps> = ({ player }) => {
   const [currentThumb, setCurrentThumb] = useState<ThumbnailData | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  /**
-   * Placeholder for future VTT parsing logic
-   */
-  const _parseVtt = async (url: string) => {
-    try {
-      const response = await fetch(url);
-      const text = await response.text();
-      console.log('VTT Content:', text.substring(0, 100));
-    } catch (err) {
-      console.error('Failed to parse VTT:', err);
-    }
-  };
+  const handleMouseMove = useCallback((e: MouseEvent, progressEl: HTMLElement) => {
+    if (!player) return;
+    const rect = progressEl.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const percentage = Math.max(0, Math.min(1, x / rect.width));
+    const duration = player.duration() || 0;
+    const hoverTime = percentage * duration;
+
+    setTime(hoverTime);
+    
+    const thumb = MOCK_THUMBNAILS.find(t => hoverTime >= t.startTime && hoverTime < t.endTime) || {
+      startTime: 0,
+      endTime: 0,
+      image: FALLBACK_THUMB_IMAGE,
+      x: 0, y: 0, w: 160, h: 90
+    };
+    
+    setCurrentThumb(thumb);
+
+    const thumbWidth = thumb.w;
+    const halfWidth = thumbWidth / 2;
+    
+    let posX = e.clientX;
+    if (posX - halfWidth < 10) posX = halfWidth + 10;
+    if (posX + halfWidth > window.innerWidth - 10) posX = window.innerWidth - halfWidth - 10;
+
+    setPosition({
+      x: posX,
+      y: rect.top - 10
+    });
+  }, [player]);
 
   useEffect(() => {
     if (!player) return;
 
-    const controlBar = player.getChild('controlBar');
-    if (!controlBar) return;
-    
-    const progressControl = controlBar.getChild('progressControl');
-    if (!progressControl) return;
-
-    const el = progressControl.el();
-    if (!el) return;
-
-    const handleMouseMove = (e: Event) => {
-      const mouseEvent = e as MouseEvent;
-      const rect = el.getBoundingClientRect();
-      const x = mouseEvent.clientX - rect.left;
-      const percentage = Math.max(0, Math.min(1, x / rect.width));
-      const duration = player.duration() || 0;
-      const hoverTime = percentage * duration;
-
-      setTime(hoverTime);
-      
-      // Find appropriate thumbnail (mock logic)
-      const thumb = MOCK_THUMBNAILS.find(t => hoverTime >= t.startTime && hoverTime < t.endTime) || {
-        startTime: 0,
-        endTime: 0,
-        image: FALLBACK_THUMB_IMAGE,
-        x: 0, y: 0, w: 160, h: 90
-      };
-      
-      setCurrentThumb(thumb);
-
-      // Calculate position for the preview box
-      const thumbWidth = thumb.w;
-      const halfWidth = thumbWidth / 2;
-      
-      // Clamp x position within window
-      let posX = mouseEvent.clientX;
-      if (posX - halfWidth < 10) posX = halfWidth + 10;
-      if (posX + halfWidth > window.innerWidth - 10) posX = window.innerWidth - halfWidth - 10;
-
-      setPosition({
-        x: posX,
-        y: rect.top - 10
-      });
+    // In v10, we might need to wait for the player to be ready and the DOM to be rendered
+    const findProgressEl = () => {
+      const el = player.el();
+      if (!el) return null;
+      return el.querySelector('.vjs-progress-control') as HTMLElement;
     };
 
-    const handleMouseEnter = () => setVisible(true);
-    const handleMouseLeave = () => setVisible(false);
+    let progressEl = findProgressEl();
+    
+    const setupListeners = (el: HTMLElement) => {
+      const onMouseMove = (e: MouseEvent) => handleMouseMove(e, el);
+      const onMouseEnter = () => setVisible(true);
+      const onMouseLeave = () => setVisible(false);
 
-    el.addEventListener('mousemove', handleMouseMove as EventListener);
-    el.addEventListener('mouseenter', handleMouseEnter as EventListener);
-    el.addEventListener('mouseleave', handleMouseLeave as EventListener);
+      el.addEventListener('mousemove', onMouseMove);
+      el.addEventListener('mouseenter', onMouseEnter);
+      el.addEventListener('mouseleave', onMouseLeave);
+
+      return () => {
+        el.removeEventListener('mousemove', onMouseMove);
+        el.removeEventListener('mouseenter', onMouseEnter);
+        el.removeEventListener('mouseleave', onMouseLeave);
+      };
+    };
+
+    let cleanup: (() => void) | undefined;
+
+    if (progressEl) {
+      cleanup = setupListeners(progressEl);
+    } else {
+      // Retry after a short delay if not found immediately (v10 React rendering delay)
+      const timeout = setTimeout(() => {
+        progressEl = findProgressEl();
+        if (progressEl) {
+          cleanup = setupListeners(progressEl);
+        }
+      }, 500);
+      return () => clearTimeout(timeout);
+    }
 
     return () => {
-      el.removeEventListener('mousemove', handleMouseMove as EventListener);
-      el.removeEventListener('mouseenter', handleMouseEnter as EventListener);
-      el.removeEventListener('mouseleave', handleMouseLeave as EventListener);
+      if (cleanup) cleanup();
     };
-  }, [player, _parseVtt]);
+  }, [player, handleMouseMove]);
 
   if (!visible) return null;
 

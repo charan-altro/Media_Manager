@@ -484,6 +484,24 @@ async fn process_movie_advanced(id: i64, state: State<'_, AppState>) -> Result<(
                         };
 
                         if !fingerprint.is_empty() {
+                            // Refresh technical metadata
+                            if let Ok(details) = media_core::scanner::mediainfo::get_media_info(&input_path) {
+                                let res = Resolution::from_dimensions(details.width, details.height);
+                                let _ = repos.movie.upsert_file(
+                                    movie.id, 
+                                    &file.file_path, 
+                                    &file.original_name, 
+                                    file.size_bytes, 
+                                    file.mtime, 
+                                    Some(res), 
+                                    Some(&details.video_codec), 
+                                    Some(&details.audio_codec), 
+                                    Some(details.duration_secs), 
+                                    file.hash.as_deref(), 
+                                    Some(&fingerprint)
+                                ).await;
+                            }
+
                             let duration = file.duration_secs.unwrap_or(0) as f64;
                             let generated_root = std::path::Path::new("data/generated");
                             if let Ok(_) = media_core::scanner::ffmpeg::FfmpegEngine::generate_advanced_assets(&input_path, &fingerprint, generated_root, duration) {
@@ -516,6 +534,25 @@ async fn process_tv_show_advanced(id: i64, state: State<'_, AppState>) -> Result
                 for ep in eps {
                     if let Ok(Some(input_path)) = repos.tv.get_episode_full_path(ep.id).await {
                         if input_path.exists() {
+                            // Refresh technical metadata
+                            if let Ok(details) = media_core::scanner::mediainfo::get_media_info(&input_path) {
+                                let res = Resolution::from_dimensions(details.width, details.height);
+                                let _ = repos.tv.upsert_episode(
+                                    ep.season_id, 
+                                    ep.episode_number, 
+                                    &ep.file_path, 
+                                    &ep.original_name, 
+                                    ep.size_bytes as i64, 
+                                    ep.mtime, 
+                                    Some(res), 
+                                    Some(&details.video_codec), 
+                                    Some(&details.audio_codec), 
+                                    Some(details.duration_secs), 
+                                    ep.hash.as_deref(), 
+                                    ep.fingerprint.as_deref()
+                                ).await;
+                            }
+
                             let fingerprint = match ep.fingerprint {
                                 Some(f) if !f.is_empty() => f,
                                 _ => {

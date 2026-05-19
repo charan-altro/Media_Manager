@@ -49,6 +49,7 @@ pub trait MovieWriter: Send + Sync {
         mtime: Option<i64>, 
         resolution: Option<Resolution>, 
         codec: Option<&'a str>, 
+        audio_codec: Option<&'a str>,
         duration_secs: Option<i32>, 
         hash: Option<&'a str>, 
         fingerprint: Option<&'a str>
@@ -58,6 +59,7 @@ pub trait MovieWriter: Send + Sync {
     async fn update_file_fingerprint(&self, id: MovieFileId, fingerprint: &str) -> Result<()>;
     async fn update_file_resolution(&self, id: MovieFileId, resolution: Resolution) -> Result<()>;
     async fn update_file_duration(&self, id: MovieFileId, duration_secs: i32) -> Result<()>;
+    async fn update_file_metadata(&self, id: MovieFileId, duration_secs: i32, width: i32, height: i32) -> Result<()>;
     async fn mark_missing_in_library(&self, library_id: LibraryId) -> Result<i32>;
 }
 
@@ -80,7 +82,7 @@ impl SqliteMovieRepository {
 impl MovieReader for SqliteMovieRepository {
     #[tracing::instrument(skip(self), err)]
     async fn find_all(&self, library_id: Option<LibraryId>, genre: Option<String>, language: Option<String>) -> Result<Vec<Movie>> {
-        let mut query = String::from("SELECT m.*, mf.preview_path FROM movies m LEFT JOIN movie_files mf ON m.id = mf.movie_id WHERE 1=1");
+        let mut query = String::from("SELECT m.*, mf.preview_path, mf.codec as video_codec, mf.audio_codec FROM movies m LEFT JOIN movie_files mf ON m.id = mf.movie_id WHERE 1=1");
         if library_id.is_some() {
             query.push_str(" AND m.library_id = ?");
         }
@@ -118,14 +120,14 @@ impl MovieReader for SqliteMovieRepository {
     async fn find_by_id(&self, id: MovieId) -> Result<Option<Movie>> {
         let mut args = sqlx::sqlite::SqliteArguments::default();
         sqlx::Arguments::add(&mut args, id);
-        self.base.fetch_optional(&*self.base.pool, "SELECT * FROM movies WHERE id = ?", args).await
+        self.base.fetch_optional(&*self.base.pool, "SELECT m.*, mf.codec as video_codec, mf.audio_codec FROM movies m LEFT JOIN movie_files mf ON m.id = mf.movie_id WHERE m.id = ?", args).await
     }
 
     #[tracing::instrument(skip(self), err)]
     async fn find_by_ids(&self, ids: &[MovieId]) -> Result<Vec<Movie>> {
         if ids.is_empty() { return Ok(vec![]); }
         let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-        let query = format!("SELECT * FROM movies WHERE id IN ({})", placeholders);
+        let query = format!("SELECT m.*, mf.preview_path, mf.codec as video_codec, mf.audio_codec FROM movies m LEFT JOIN movie_files mf ON m.id = mf.movie_id WHERE m.id IN ({})", placeholders);
         
         let mut args = sqlx::sqlite::SqliteArguments::default();
         for id in ids {
@@ -289,6 +291,7 @@ impl MovieWriter for SqliteMovieRepository {
         mtime: Option<i64>, 
         resolution: Option<Resolution>, 
         codec: Option<&str>, 
+        audio_codec: Option<&str>,
         duration_secs: Option<i32>, 
         hash: Option<&str>, 
         fingerprint: Option<&str>
@@ -296,13 +299,14 @@ impl MovieWriter for SqliteMovieRepository {
         let normalized_path = crate::paths::normalize_slashes(file_path);
         let row: (MovieFileId,) = sqlx::query_as(
             r#"
-            INSERT INTO movie_files (movie_id, file_path, original_name, size_bytes, mtime, resolution, codec, duration_secs, hash, fingerprint, is_missing, last_scanned)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, datetime('now'))
+            INSERT INTO movie_files (movie_id, file_path, original_name, size_bytes, mtime, resolution, codec, audio_codec, duration_secs, hash, fingerprint, is_missing, last_scanned)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, datetime('now'))
             ON CONFLICT(file_path) DO UPDATE SET 
                 size_bytes=excluded.size_bytes,
                 mtime=excluded.mtime,
                 resolution=excluded.resolution,
                 codec=excluded.codec,
+                audio_codec=excluded.audio_codec,
                 duration_secs=excluded.duration_secs,
                 hash=excluded.hash,
                 fingerprint=excluded.fingerprint,
@@ -319,6 +323,7 @@ impl MovieWriter for SqliteMovieRepository {
         .bind(mtime)
         .bind(resolution)
         .bind(codec)
+        .bind(audio_codec)
         .bind(duration_secs)
         .bind(hash)
         .bind(fingerprint)
@@ -372,6 +377,18 @@ impl MovieWriter for SqliteMovieRepository {
     async fn update_file_duration(&self, id: MovieFileId, duration_secs: i32) -> Result<()> {
         sqlx::query("UPDATE movie_files SET duration_secs = ? WHERE id = ?")
             .bind(duration_secs)
+            .bind(id)
+            .execute(&*self.base.pool)
+            .await?;
+        Ok(())
+    }
+
+    #[tracing::instrument(skip(self), err)]
+    async fn update_file_metadata(&self, id: MovieFileId, duration_secs: i32, width: i32, height: i32) -> Result<()> {
+        let res = Resolution::from_dimensions(width, height);
+        sqlx::query("UPDATE movie_files SET duration_secs = ?, resolution = ?, updated_at = datetime('now') WHERE id = ?")
+            .bind(duration_secs)
+            .bind(res)
             .bind(id)
             .execute(&*self.base.pool)
             .await?;

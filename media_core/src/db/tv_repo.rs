@@ -61,6 +61,7 @@ pub trait TvWriter: Send + Sync {
         mtime: Option<i64>,
         resolution: Option<Resolution>,
         codec: Option<&'a str>,
+        audio_codec: Option<&'a str>,
         duration_secs: Option<i32>,
         hash: Option<&'a str>,
         fingerprint: Option<&'a str>
@@ -69,6 +70,7 @@ pub trait TvWriter: Send + Sync {
     async fn update_episode_last_scanned(&self, id: EpisodeId) -> Result<()>;
     async fn update_episode_fingerprint(&self, id: EpisodeId, fingerprint: &str) -> Result<()>;
     async fn update_episode_duration(&self, id: EpisodeId, duration_secs: i32) -> Result<()>;
+    async fn update_episode_metadata(&self, id: EpisodeId, duration_secs: i32, width: i32, height: i32) -> Result<()>;
     async fn mark_missing_in_library(&self, library_id: LibraryId) -> Result<i32>;
 }
 
@@ -161,7 +163,7 @@ impl TvReader for SqliteTvRepository {
     async fn find_episodes_by_season_id(&self, season_id: SeasonId) -> Result<Vec<Episode>> {
         let mut args = sqlx::sqlite::SqliteArguments::default();
         sqlx::Arguments::add(&mut args, season_id);
-        self.base.fetch_all(&*self.base.pool, "SELECT * FROM episodes WHERE season_id = ? ORDER BY episode_number ASC", args).await
+        self.base.fetch_all(&*self.base.pool, "SELECT *, codec as video_codec FROM episodes WHERE season_id = ? ORDER BY episode_number ASC", args).await
     }
 
     #[tracing::instrument(skip(self), err)]
@@ -169,21 +171,21 @@ impl TvReader for SqliteTvRepository {
         let normalized = crate::paths::normalize_slashes(path);
         let mut args = sqlx::sqlite::SqliteArguments::default();
         sqlx::Arguments::add(&mut args, normalized);
-        self.base.fetch_optional(&*self.base.pool, "SELECT * FROM episodes WHERE file_path = ?", args).await
+        self.base.fetch_optional(&*self.base.pool, "SELECT *, codec as video_codec FROM episodes WHERE file_path = ?", args).await
     }
 
     #[tracing::instrument(skip(self), err)]
     async fn find_episode_by_hash(&self, hash: &str) -> Result<Option<Episode>> {
         let mut args = sqlx::sqlite::SqliteArguments::default();
         sqlx::Arguments::add(&mut args, hash);
-        self.base.fetch_optional(&*self.base.pool, "SELECT * FROM episodes WHERE hash = ?", args).await
+        self.base.fetch_optional(&*self.base.pool, "SELECT *, codec as video_codec FROM episodes WHERE hash = ?", args).await
     }
 
     #[tracing::instrument(skip(self), err)]
     async fn find_episode_by_fingerprint(&self, fp: &str) -> Result<Option<Episode>> {
         let mut args = sqlx::sqlite::SqliteArguments::default();
         sqlx::Arguments::add(&mut args, fp);
-        self.base.fetch_optional(&*self.base.pool, "SELECT * FROM episodes WHERE fingerprint = ?", args).await
+        self.base.fetch_optional(&*self.base.pool, "SELECT *, codec as video_codec FROM episodes WHERE fingerprint = ?", args).await
     }
 
     #[tracing::instrument(skip(self), err)]
@@ -337,6 +339,7 @@ impl TvWriter for SqliteTvRepository {
         mtime: Option<i64>,
         resolution: Option<Resolution>,
         codec: Option<&str>,
+        audio_codec: Option<&str>,
         duration_secs: Option<i32>,
         hash: Option<&str>,
         fingerprint: Option<&str>
@@ -344,13 +347,14 @@ impl TvWriter for SqliteTvRepository {
         let normalized_path = crate::paths::normalize_slashes(file_path);
         let row: (EpisodeId,) = sqlx::query_as(
             r#"
-            INSERT INTO episodes (season_id, episode_number, file_path, original_name, size_bytes, mtime, resolution, codec, duration_secs, hash, fingerprint, is_missing, last_scanned)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, datetime('now'))
+            INSERT INTO episodes (season_id, episode_number, file_path, original_name, size_bytes, mtime, resolution, codec, audio_codec, duration_secs, hash, fingerprint, is_missing, last_scanned)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, datetime('now'))
             ON CONFLICT(file_path) DO UPDATE SET 
                 size_bytes = excluded.size_bytes,
                 mtime = excluded.mtime,
                 resolution = excluded.resolution,
                 codec = excluded.codec,
+                audio_codec = excluded.audio_codec,
                 duration_secs = excluded.duration_secs,
                 hash = excluded.hash,
                 fingerprint = excluded.fingerprint,
@@ -368,6 +372,7 @@ impl TvWriter for SqliteTvRepository {
         .bind(mtime)
         .bind(resolution)
         .bind(codec)
+        .bind(audio_codec)
         .bind(duration_secs)
         .bind(hash)
         .bind(fingerprint)
@@ -411,6 +416,18 @@ impl TvWriter for SqliteTvRepository {
     async fn update_episode_duration(&self, id: EpisodeId, duration_secs: i32) -> Result<()> {
         sqlx::query("UPDATE episodes SET duration_secs = ? WHERE id = ?")
             .bind(duration_secs)
+            .bind(id)
+            .execute(&*self.base.pool)
+            .await?;
+        Ok(())
+    }
+
+    #[tracing::instrument(skip(self), err)]
+    async fn update_episode_metadata(&self, id: EpisodeId, duration_secs: i32, width: i32, height: i32) -> Result<()> {
+        let res = Resolution::from_dimensions(width, height);
+        sqlx::query("UPDATE episodes SET duration_secs = ?, resolution = ?, updated_at = datetime('now') WHERE id = ?")
+            .bind(duration_secs)
+            .bind(res)
             .bind(id)
             .execute(&*self.base.pool)
             .await?;

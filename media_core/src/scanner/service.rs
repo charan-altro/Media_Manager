@@ -140,10 +140,11 @@ impl DefaultScannerService {
 
             let res = item.media_info.as_ref().map(|i| Resolution::from_dimensions(i.width, i.height));
             let codec = item.media_info.as_ref().map(|i| i.video_codec.as_str());
+            let audio_codec = item.media_info.as_ref().map(|i| i.audio_codec.as_str());
             let duration = item.media_info.as_ref().map(|i| i.duration_secs);
 
             let movie_id = self.repos.movie.upsert(library.id, &title, year).await?;
-            self.repos.movie.upsert_file(movie_id, &relative_path, filename, item.size, Some(item.mtime), res, codec, duration, None, item.fingerprint.as_deref()).await?;
+            self.repos.movie.upsert_file(movie_id, &relative_path, filename, item.size, Some(item.mtime), res, codec, audio_codec, duration, None, item.fingerprint.as_deref()).await?;
 
             // Metadata from NFO
             let mut tmdb_id: Option<i32> = None;
@@ -267,9 +268,10 @@ impl DefaultScannerService {
             
             let res = item.media_info.as_ref().map(|i| Resolution::from_dimensions(i.width, i.height));
             let codec = item.media_info.as_ref().map(|i| i.video_codec.as_str());
+            let audio_codec = item.media_info.as_ref().map(|i| i.audio_codec.as_str());
             let duration = item.media_info.as_ref().map(|i| i.duration_secs);
 
-            self.repos.tv.upsert_episode(season_id, extracted_episode, &relative_path, filename, item.size, Some(item.mtime), res, codec, duration, None, item.fingerprint.as_deref()).await?;
+            self.repos.tv.upsert_episode(season_id, extracted_episode, &relative_path, filename, item.size, Some(item.mtime), res, codec, audio_codec, duration, None, item.fingerprint.as_deref()).await?;
 
             if let Some(ref nfo) = item.metadata.tv_nfo {
                 let tmdb_id = nfo.tmdb_id.as_ref().and_then(|s| s.trim().parse::<i32>().ok());

@@ -27,8 +27,12 @@ interface VideoPlayerProps {
   posterUrl?: string;
   duration?: number; // in seconds
   initialPosition?: number; // in ms
+  videoCodec?: string;
+  audioCodec?: string;
   onClose: () => void;
 }
+
+const SUPPORTED_AUDIO_CODECS = ['aac', 'mp3', 'opus', 'vorbis', 'flac'];
 
 const VideoPlayer: React.FC<VideoPlayerProps> = ({ 
   url: initialUrl, 
@@ -38,6 +42,8 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
   posterUrl,
   duration = 0, 
   initialPosition = 0, 
+  videoCodec,
+  audioCodec,
   onClose 
 }) => {
   const videoRef = useRef<HTMLDivElement>(null);
@@ -45,10 +51,32 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
   const [player, setPlayer] = useState<Player | null>(null);
   const [currentUrl, setCurrentUrl] = useState<string>(initialUrl);
   const [currentProtocol, setCurrentProtocol] = useState<Protocol>(() => {
+    // Smart protocol selection based on codec compatibility
     if (initialUrl.includes('protocol=hls')) return 'hls';
     if (initialUrl.includes('protocol=dash')) return 'dash';
+    
+    // If we have audio codec info, check if it's supported by the browser for direct play
+    if (audioCodec) {
+      const codec = audioCodec.toLowerCase();
+      const isSupported = SUPPORTED_AUDIO_CODECS.some(c => codec.includes(c));
+      if (!isSupported) {
+        console.log(`Audio codec ${audioCodec} may not be supported for direct play, defaulting to HLS`);
+        return 'hls';
+      }
+    }
+
     return 'direct';
   });
+
+  // Re-fetch URL if the default protocol was changed from the initial one
+  useEffect(() => {
+    const initialProtocol = initialUrl.includes('protocol=hls') ? 'hls' : (initialUrl.includes('protocol=dash') ? 'dash' : 'direct');
+    if (currentProtocol !== initialProtocol) {
+      fetchSourceUrl(currentProtocol).then(newUrl => {
+        if (newUrl) setCurrentUrl(newUrl);
+      });
+    }
+  }, [currentProtocol, initialUrl]);
   const [isPreparing, setIsPreparing] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const heartbeatInterval = useRef<ReturnType<typeof setInterval> | null>(null);

@@ -29,13 +29,15 @@ const DetailModal: React.FC<DetailModalProps> = ({
   const [activeMediaType, setActiveMediaType] = useState<'movie' | 'episode' | null>(null);
   const [activeTitle, setActiveTitle] = useState<string>('');
   const [activePosterUrl, setActivePosterUrl] = useState<string | undefined>(undefined);
+  const [activeVideoCodec, setActiveVideoCodec] = useState<string | undefined>(undefined);
+  const [activeAudioCodec, setActiveAudioCodec] = useState<string | undefined>(undefined);
   const [resumePosition, setResumePosition] = useState(0);
   const [showResumeDialog, setShowResumeDialog] = useState(false);
   const [pendingUrl, setPendingUrl] = useState<string | null>(null);
 
   const isShow = 'library_id' in item && !('runtime' in item);
 
-  const handlePlayMedia = async (mediaId: number, mediaType: 'movie' | 'episode', metadata?: { title: string, posterUrl?: string }) => {
+  const handlePlayMedia = async (mediaId: number, mediaType: 'movie' | 'episode', metadata?: { title: string, posterUrl?: string, videoCodec?: string, audioCodec?: string }) => {
     if (isStartingStream) return;
     setIsStartingStream(true);
     try {
@@ -48,9 +50,13 @@ const DetailModal: React.FC<DetailModalProps> = ({
       if (metadata) {
         setActiveTitle(metadata.title);
         setActivePosterUrl(metadata.posterUrl);
+        setActiveVideoCodec(metadata.videoCodec);
+        setActiveAudioCodec(metadata.audioCodec);
       } else {
         setActiveTitle(item.title);
         setActivePosterUrl(item.poster_url || item.backdrop_url);
+        setActiveVideoCodec(item.video_codec);
+        setActiveAudioCodec(item.audio_codec);
       }
 
       if (status && status.position_ms > 5000 && !status.is_finished) {
@@ -327,7 +333,9 @@ const DetailModal: React.FC<DetailModalProps> = ({
                         {episodes[season.id]?.map(ep => (
                           <div key={ep.id} onClick={() => handlePlayMedia(ep.id, 'episode', { 
                             title: `${item.title} - S${ep.season_number.toString().padStart(2, '0')}E${ep.episode_number.toString().padStart(2, '0')} - ${ep.title || 'Episode ' + ep.episode_number}`,
-                            posterUrl: ep.thumbnail_path || item.poster_url || item.backdrop_url
+                            posterUrl: ep.thumbnail_path || item.poster_url || item.backdrop_url,
+                            videoCodec: ep.video_codec || ep.codec,
+                            audioCodec: ep.audio_codec
                           })} className="flex items-center justify-between p-4 bg-zinc-900/30 rounded-xl border border-zinc-800/50 hover:bg-zinc-800/50 transition group cursor-pointer">
                             <div className="flex items-center gap-6">
                               <div className="text-2xl font-black text-zinc-700 italic group-hover:text-red-600 transition">
@@ -587,6 +595,8 @@ const DetailModal: React.FC<DetailModalProps> = ({
           posterUrl={activePosterUrl}
           duration={item.duration_secs || (item.runtime ? item.runtime * 60 : 0)}
           initialPosition={resumePosition}
+          videoCodec={activeVideoCodec}
+          audioCodec={activeAudioCodec}
           onClose={async () => {
             setStreamingUrl(null);
             // Refresh playback status for this item

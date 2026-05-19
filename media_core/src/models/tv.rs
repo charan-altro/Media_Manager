@@ -44,6 +44,8 @@ pub struct Episode {
     pub size_bytes: i64,
     pub resolution: Option<crate::models::Resolution>,
     pub codec: Option<String>,
+    pub audio_codec: Option<String>,
+    pub video_codec: Option<String>,
     pub hash: Option<String>,
     pub fingerprint: Option<String>,
     pub is_missing: bool,

@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::collections::{HashMap, HashSet};
 use walkdir::WalkDir;
 use rayon::prelude::*;
-use anyhow::Result;
+use crate::errors::Result;
 use std::io::Read;
 use std::fs;
 

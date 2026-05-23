@@ -1,14 +1,20 @@
 // media_core/tests/continuous_streaming.rs
 use media_core::scanner::streaming::{StreamManager, StreamingService};
+use media_core::AppConfig;
 use tempfile::tempdir;
-use std::path::PathBuf;
 
 #[tokio::test]
 async fn test_request_segment_starts_session() {
     let tmp_dir = tempdir().expect("Failed to create temp dir");
     let transcode_dir = tmp_dir.path().to_path_buf();
     
-    let stream_manager = StreamManager::new(transcode_dir.clone());
+    let config = AppConfig {
+        ffmpeg_path: "ffmpeg".to_string(),
+        ffprobe_path: "ffprobe".to_string(),
+        hls_transcode_dir: transcode_dir.to_string_lossy().to_string(),
+    };
+    
+    let stream_manager = StreamManager::new(config);
     
     let input_dir = tempdir().expect("Failed to create input temp dir");
     let input_file = input_dir.path().join("test_video.mp4");

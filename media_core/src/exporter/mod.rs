@@ -1,6 +1,6 @@
 // core/src/exporter/mod.rs
 use crate::models::{Movie, TVShow};
-use anyhow::Result;
+use crate::errors::Result;
 use serde_json;
 use std::fmt::Write;
 

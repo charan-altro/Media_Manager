@@ -1,7 +1,7 @@
 // core/src/notifications.rs
 use serde::{Deserialize, Serialize};
 use reqwest::Client;
-use anyhow::Result;
+use crate::errors::{CoreError, Result};
 use crate::models::TaskUpdate;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -50,7 +50,7 @@ impl Notifier {
             .await?;
 
         if !resp.status().is_success() {
-            return Err(anyhow::anyhow!("Webhook failed: {}", resp.status()));
+            return Err(CoreError::NotificationError(format!("Webhook failed: {}", resp.status())));
         }
 
         Ok(())

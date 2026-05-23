@@ -159,7 +159,7 @@ Source: `routes_scene.go:55–91`
 
 ---
 
-### 2.2 HLS Segmented Streaming — Smart Seek Logic
+## 2.2 HLS Segmented Streaming — Smart Seek Logic
 | Feature | File | Detail |
 |---------|------|--------|
 | 2-second segments | `stream_segmented.go:33` | `segmentLength = 2` |

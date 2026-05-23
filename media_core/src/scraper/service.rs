@@ -1,7 +1,7 @@
 // media_core/src/scraper/service.rs
 #![allow(async_fn_in_trait)]
 use std::sync::Arc;
-use anyhow::{Result, Context};
+use crate::errors::{CoreError, Result};
 use crate::models::{MovieId, TvShowId, LibraryId, MediaStatus, CastMember, TaskUpdate, now_ms};
 use crate::db::{Repositories, MovieReader, MovieWriter, TvReader, TvWriter, SettingsRepository};
 use crate::task_manager::ProgressSink;
@@ -55,14 +55,14 @@ impl ScraperService for DefaultScraperService {
         _task_id: String,
     ) -> Result<()> {
         let movie = self.repos.movie.find_by_id(movie_id).await?
-            .ok_or_else(|| anyhow::anyhow!("Movie with ID {} not found", movie_id.0))?;
+            .ok_or_else(|| CoreError::Internal(format!("Movie with ID {} not found", movie_id.0)))?;
 
         let title = &movie.title;
         let year = movie.year;
 
         // Acquire rate limit permit
         let _permit = self.clients.rate_limiter.acquire().await
-            .context("Failed to acquire rate limiter permit")?;
+            .map_err(|e| CoreError::Internal(format!("Failed to acquire rate limiter permit: {}", e)))?;
 
         // Fetch settings for scraper selection
         let settings_map = self.repos.settings.get_all().await.unwrap_or_default();
@@ -75,7 +75,7 @@ impl ScraperService for DefaultScraperService {
         let results = self.clients.tmdb.search_movie(title, year)
             .instrument(tracing::info_span!("tmdb_search_movie", title = title, year = year))
             .await
-            .context("TMDB movie search failed")?;
+            .map_err(|e| CoreError::Internal(format!("TMDB movie search failed: {}", e)))?;
 
         let best_match = find_best_movie_match(title, year, &results);
 
@@ -92,12 +92,13 @@ impl ScraperService for DefaultScraperService {
         }
 
         let tmdb_id = tmdb_id.unwrap();
+        let tmdb_id_i32 = tmdb_id.parse::<i32>().unwrap_or(0);
 
         // 2. Fetch full details
-        let details = self.clients.tmdb.get_movie_details(tmdb_id)
+        let details = self.clients.tmdb.get_movie_details(&tmdb_id)
             .instrument(tracing::info_span!("tmdb_get_movie_details", tmdb_id = tmdb_id))
             .await
-            .context("Failed to fetch TMDB movie details")?;
+            .map_err(|e| CoreError::Internal(format!("Failed to fetch TMDB movie details: {}", e)))?;
         
         // Artwork: Start with TMDB, then try Fanart.tv for higher quality
         let mut poster_url = details.poster_path.as_ref().map(|p| format!("https://image.tmdb.org/t/p/original{}", p));
@@ -105,7 +106,7 @@ impl ScraperService for DefaultScraperService {
 
         // Fanart.tv upgrade
         if settings.movie_artwork_source == "fanart" {
-            if let Ok(fanart_data) = self.clients.fanart.get_movie_images(tmdb_id)
+            if let Ok(fanart_data) = self.clients.fanart.get_movie_images(tmdb_id_i32)
                 .instrument(tracing::info_span!("fanart_get_movie_images", tmdb_id = tmdb_id))
                 .await 
             {
@@ -137,11 +138,9 @@ impl ScraperService for DefaultScraperService {
             }
         }
 
-        let language = details.spoken_languages.first()
-            .map(|l| l.english_name.as_ref().unwrap_or(&l.name).clone())
-            .or(details.original_language.clone());
+        let language = details.original_language.clone();
 
-        let genres_json = serde_json::to_string(&details.genres.iter().map(|g| &g.name).collect::<Vec<_>>()).ok();
+        let genres_json = serde_json::to_string(&details.genres).ok();
 
         // 3. Localize Artwork if movie folder is known
         let movie_file_path = self.repos.movie.get_full_path(movie_id).await.unwrap_or_default();
@@ -150,12 +149,12 @@ impl ScraperService for DefaultScraperService {
 
         if let Some(path) = movie_file_path {
             if let Some(folder) = path.parent() {
-                if let Some(ref url) = poster_url {
+                if let Some(url) = poster_url.as_deref() {
                     let dest = folder.join("poster.jpg");
                     let _ = download_to_file(url, &dest).await;
                     poster_url = Some(dest.to_string_lossy().to_string());
                 }
-                if let Some(ref url) = backdrop_url {
+                if let Some(url) = backdrop_url.as_deref() {
                     let dest = folder.join("fanart.jpg");
                     let _ = download_to_file(url, &dest).await;
                     backdrop_url = Some(dest.to_string_lossy().to_string());
@@ -164,7 +163,7 @@ impl ScraperService for DefaultScraperService {
                 // Cast Images
                 let actors_dir = folder.join(".actors");
                 let _ = std::fs::create_dir_all(&actors_dir);
-                for member in details.credits.cast.iter().take(15) {
+                for member in details.cast.iter().take(15) {
                     let mut member_image = None;
                     if let Some(ref p_path) = member.profile_path {
                         let clean_name = member.name.replace(|c: char| !c.is_alphanumeric(), "_");
@@ -188,7 +187,7 @@ impl ScraperService for DefaultScraperService {
         {
             self.repos.movie.update_metadata(
                 movie_id,
-                Some(tmdb_id),
+                Some(tmdb_id_i32),
                 final_imdb_id.clone(),
                 MediaStatus::Matched,
                 final_plot,
@@ -200,7 +199,7 @@ impl ScraperService for DefaultScraperService {
                 cast_json,
                 poster_url,
                 backdrop_url,
-            ).await.context("Failed to update movie metadata in database")?;
+            ).await.map_err(|e| CoreError::Internal(format!("Failed to update movie metadata in database: {}", e)))?;
         }
 
         // Fire post-processing hook
@@ -227,13 +226,13 @@ impl ScraperService for DefaultScraperService {
         _task_id: String,
     ) -> Result<()> {
         let existing = self.repos.tv.find_show_by_id(show_id).await?
-            .ok_or_else(|| anyhow::anyhow!("TV show with ID {} not found", show_id.0))?;
+            .ok_or_else(|| CoreError::Internal(format!("TV show with ID {} not found", show_id.0)))?;
 
         let title = &existing.title;
 
         // Acquire rate limit permit
         let _permit = self.clients.rate_limiter.acquire().await
-            .context("Failed to acquire rate limiter permit")?;
+            .map_err(|e| CoreError::Internal(format!("Failed to acquire rate limiter permit: {}", e)))?;
 
         // Fetch settings for scraper selection
         let settings_map = self.repos.settings.get_all().await.unwrap_or_default();
@@ -243,7 +242,7 @@ impl ScraperService for DefaultScraperService {
         let script_path = settings_map.get("post_processing_script").cloned();
 
         let tmdb_id = if let Some(id) = existing.tmdb_id {
-            Some(id)
+            Some(id.to_string())
         } else {
             // 1. Try TMDB first (default)
             let results = self.clients.tmdb.search_tv_show(title)
@@ -254,7 +253,7 @@ impl ScraperService for DefaultScraperService {
             let best_match = find_best_tv_match(title, &results);
             
             if let Some(result) = best_match {
-                Some(result.id)
+                Some(result.id.clone())
             } else {
                 // 2. Fallback: Try TVDB if TMDB returned no results
                 tracing::info!("TMDB returned no results for '{}', trying TVDB fallback...", title);
@@ -268,7 +267,7 @@ impl ScraperService for DefaultScraperService {
                                 tracing::info!("TVDB found match: {} (ID: {})", first.name, first.id);
                                 // Try to find this show on TMDB using the TVDB name for better metadata
                                 let retry = self.clients.tmdb.search_tv_show(&first.name).await.unwrap_or_default();
-                                find_best_tv_match(&first.name, &retry).map(|r| r.id)
+                                find_best_tv_match(&first.name, &retry).map(|r| r.id.clone())
                             } else {
                                 None
                             }
@@ -291,7 +290,7 @@ impl ScraperService for DefaultScraperService {
                             if let Some(best) = tvmaze_results.first() {
                                 // Try to find this show on TMDB using the TVMaze name
                                 let retry = self.clients.tmdb.search_tv_show(&best.show.name).await.unwrap_or_default();
-                                find_best_tv_match(&best.show.name, &retry).map(|r| r.id)
+                                find_best_tv_match(&best.show.name, &retry).map(|r| r.id.clone())
                             } else {
                                 None
                             }
@@ -314,7 +313,7 @@ impl ScraperService for DefaultScraperService {
                 Ok(trakt_results) => {
                     trakt_results.iter()
                         .filter_map(|r| r.show.as_ref())
-                        .find_map(|s| s.ids.tmdb)
+                        .find_map(|s| s.ids.tmdb.map(|id| id.to_string()))
                 }
                 Err(_) => None,
             }
@@ -330,10 +329,12 @@ impl ScraperService for DefaultScraperService {
             }
         };
 
-        let details = self.clients.tmdb.get_tv_details(tmdb_id)
+        let tmdb_id_i32 = tmdb_id.parse::<i32>().unwrap_or(0);
+
+        let details = self.clients.tmdb.get_tv_details(&tmdb_id)
             .instrument(tracing::info_span!("tmdb_get_tv_details", tmdb_id = tmdb_id))
             .await
-            .context("Failed to fetch TMDB TV details")?;
+            .map_err(|e| CoreError::Internal(format!("Failed to fetch TMDB TV details: {}", e)))?;
         
         // Artwork: Start with TMDB, then try Fanart.tv for higher quality
         let mut poster_url = details.poster_path.as_ref().map(|p| format!("https://image.tmdb.org/t/p/original{}", p));
@@ -341,8 +342,8 @@ impl ScraperService for DefaultScraperService {
 
         // Fanart.tv artwork upgrade for TV shows
         if settings.movie_artwork_source == "fanart" {
-            if let Ok(fanart_data) = self.clients.fanart.get_movie_images(tmdb_id)
-                .instrument(tracing::info_span!("fanart_get_tv_images", tmdb_id = tmdb_id))
+            if let Ok(fanart_data) = self.clients.fanart.get_movie_images(tmdb_id_i32)
+                .instrument(tracing::info_span!("fanart_get_tv_images", tmdb_id = tmdb_id_i32))
                 .await 
             {
                 if let Some(p) = fanart_data.movieposter.and_then(|v| v.first().map(|i| i.url.clone())) {
@@ -371,12 +372,12 @@ impl ScraperService for DefaultScraperService {
             if let Some(season_folder) = ep_path.parent() {
                 let show_root = season_folder.parent().unwrap_or(season_folder);
 
-                if let Some(ref url) = poster_url {
+                if let Some(url) = poster_url.as_deref() {
                     let dest = show_root.join("poster.jpg");
                     let _ = download_to_file(url, &dest).await;
                     poster_url = Some(dest.to_string_lossy().to_string());
                 }
-                if let Some(ref url) = backdrop_url {
+                if let Some(url) = backdrop_url.as_deref() {
                     let dest = show_root.join("fanart.jpg");
                     let _ = download_to_file(url, &dest).await;
                     backdrop_url = Some(dest.to_string_lossy().to_string());
@@ -384,7 +385,7 @@ impl ScraperService for DefaultScraperService {
 
                 let actors_dir = show_root.join(".actors");
                 let _ = std::fs::create_dir_all(&actors_dir);
-                for member in details.credits.cast.iter().take(10) {
+                for member in details.cast.iter().take(10) {
                     let mut member_image = None;
                     if let Some(ref p_path) = member.profile_path {
                         let clean_name = member.name.replace(|c: char| !c.is_alphanumeric(), "_");
@@ -404,18 +405,16 @@ impl ScraperService for DefaultScraperService {
         }
 
         let cast_json = serde_json::to_string(&final_cast).ok();
-        let trailer_url = details.videos.results.iter()
+        let trailer_url = details.videos.iter()
             .find(|v| v.site == "YouTube" && v.video_type == "Trailer")
             .map(|v| format!("https://www.youtube.com/watch?v={}", v.key));
-        let genres_json = serde_json::to_string(&details.genres.iter().map(|g| &g.name).collect::<Vec<_>>()).ok();
-        let language = details.spoken_languages.first()
-            .map(|l| l.english_name.as_ref().unwrap_or(&l.name).clone())
-            .or(details.original_language.clone());
+        let genres_json = serde_json::to_string(&details.genres).ok();
+        let language = details.original_language.clone();
 
         {
             self.repos.tv.update_show_metadata(
                 show_id,
-                Some(tmdb_id),
+                Some(tmdb_id_i32),
                 details.overview.clone(),
                 Some(details.vote_average as f32),
                 genres_json,
@@ -425,7 +424,7 @@ impl ScraperService for DefaultScraperService {
                 backdrop_url,
                 trailer_url,
                 MediaStatus::Matched,
-            ).await.context("Failed to update TV show metadata in database")?;
+            ).await.map_err(|e| CoreError::Internal(format!("Failed to update TV show metadata in database: {}", e)))?;
         }
 
         // Fire post-processing hook
@@ -542,8 +541,8 @@ fn clean_for_matching(s: &str) -> String {
 fn find_best_movie_match(
     search_title: &str,
     search_year: Option<i32>,
-    results: &[crate::scraper::tmdb::TmdbSearchResult],
-) -> Option<crate::scraper::tmdb::TmdbSearchResult> {
+    results: &[crate::scraper::provider::ScrapedMovieSearchResult],
+) -> Option<crate::scraper::provider::ScrapedMovieSearchResult> {
     let clean_search = clean_for_matching(search_title);
     results.iter().max_by_key(|res| {
         let clean_res = clean_for_matching(&res.title);
@@ -568,8 +567,8 @@ fn find_best_movie_match(
 
 fn find_best_tv_match(
     search_title: &str,
-    results: &[crate::scraper::tmdb::TmdbTvSearchResult],
-) -> Option<crate::scraper::tmdb::TmdbTvSearchResult> {
+    results: &[crate::scraper::provider::ScrapedTvSearchResult],
+) -> Option<crate::scraper::provider::ScrapedTvSearchResult> {
     let clean_search = clean_for_matching(search_title);
     results.iter().max_by_key(|res| {
         let clean_res = clean_for_matching(&res.name);

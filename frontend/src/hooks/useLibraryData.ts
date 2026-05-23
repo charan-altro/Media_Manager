@@ -1,10 +1,10 @@
 import { useState, useEffect, useCallback } from 'react';
-import { api } from '../api/adapter';
+import { api, type Library, type Movie, type TVShow } from '../api/adapter';
 
 export function useLibraryData() {
-  const [libraries, setLibraries] = useState<any[]>([]);
-  const [movies, setMovies] = useState<any[]>([]);
-  const [tvShows, setTvShows] = useState<any[]>([]);
+  const [libraries, setLibraries] = useState<Library[]>([]);
+  const [movies, setMovies] = useState<Movie[]>([]);
+  const [tvShows, setTvShows] = useState<TVShow[]>([]);
   const [loading, setLoading] = useState(true);
   
   const [selectedLibrary, setSelectedLibrary] = useState<number | null>(null);
@@ -14,7 +14,53 @@ export function useLibraryData() {
   const [allGenres, setAllGenres] = useState<string[]>([]);
   const [allLanguages, setAllLanguages] = useState<string[]>([]);
 
+  // Load static resources only once on mount
+  useEffect(() => {
+    let active = true;
+    const loadStatic = async () => {
+      try {
+        const [libs, genres, langs] = await Promise.all([
+          api.getLibraries(),
+          api.getGenres(),
+          api.getLanguages()
+        ]);
+        if (active) {
+          setLibraries(libs);
+          setAllGenres(genres);
+          setAllLanguages(langs);
+        }
+      } catch (err) {
+        console.error('Failed to load static library resources', err);
+      }
+    };
+    loadStatic();
+    return () => { active = false; };
+  }, []);
+
+  // Fetch movies/shows when selections/filters change
+  const loadMedia = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [movs, shows] = await Promise.all([
+        api.getMovies(selectedLibrary || undefined, genreFilter, languageFilter),
+        api.getTvShows(selectedLibrary || undefined, genreFilter, languageFilter),
+      ]);
+      setMovies(movs);
+      setTvShows(shows);
+    } catch (err) {
+      console.error('Failed to load media items', err);
+    } finally {
+      setLoading(false);
+    }
+  }, [selectedLibrary, genreFilter, languageFilter]);
+
+  useEffect(() => {
+    loadMedia();
+  }, [loadMedia]);
+
+  // Keep loadData function signature for App.tsx manual updates
   const loadData = useCallback(async () => {
+    setLoading(true);
     try {
       const [libs, movs, shows, genres, langs] = await Promise.all([
         api.getLibraries(),
@@ -30,15 +76,11 @@ export function useLibraryData() {
       setAllGenres(genres);
       setAllLanguages(langs);
     } catch (err) {
-      console.error('Failed to load data', err);
+      console.error('Failed to reload all library data', err);
     } finally {
       setLoading(false);
     }
   }, [selectedLibrary, genreFilter, languageFilter]);
-
-  useEffect(() => {
-    loadData();
-  }, [loadData]);
 
   return {
     libraries,

@@ -23,6 +23,10 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/episodes/:id/play", post(play_episode))
         .route("/stream/movie/:id", post(start_movie_stream))
         .route("/stream/episode/:id", post(start_episode_stream))
+        .route("/stream/direct/:id/playlist.m3u8", get(serve_direct_hls_manifest))
+        .route("/stream/direct/:id/stream.:ext", get(serve_direct_stream_generic))
+        .route("/stream/jit/movie/:id", get(serve_jit_movie))
+        .route("/stream/jit/episode/:id", get(serve_jit_episode))
         .route("/stream/direct/movie/:id", get(serve_direct_movie))
         .route("/stream/direct/episode/:id", get(serve_direct_episode))
         .route("/stream/hls/:id/:file", get(serve_stream_file))
@@ -237,7 +241,7 @@ pub struct PlaybackHeartbeat {
     pub media_id: i64,
     pub media_type: String,
     pub position_ms: i32,
-    pub duration_ms: i32,
+    pub duration_ms: Option<i32>,
     pub is_finished: bool,
 }
 
@@ -249,6 +253,8 @@ async fn update_playback_progress(State(state): State<Arc<AppState>>, Json(paylo
         format!("episode_{}", payload.media_id)
     };
     state.stream_manager.update_heartbeat(&stream_id).await;
+
+    let duration_ms = payload.duration_ms.unwrap_or(0);
 
     match sqlx::query(
         r#"
@@ -264,7 +270,7 @@ async fn update_playback_progress(State(state): State<Arc<AppState>>, Json(paylo
     .bind(payload.media_id)
     .bind(&payload.media_type)
     .bind(payload.position_ms)
-    .bind(payload.duration_ms)
+    .bind(duration_ms)
     .bind(payload.is_finished)
     .execute(&state.pool)
     .await {
@@ -299,26 +305,42 @@ async fn start_movie_stream(
 ) -> impl IntoResponse {
     tracing::info!("Stream requested for movie ID: {}", id);
     
-    let is_dash = query.protocol.as_deref() == Some("dash");
-    let is_hls = query.protocol.as_deref() == Some("hls");
+    let protocol = query.protocol.as_deref().unwrap_or("direct");
+    let stream_id = format!("movie_{}", id);
 
-    if is_dash || is_hls {
-        let file_info: Option<(String, Option<String>)> = sqlx::query_as("SELECT file_path, codec FROM movie_files WHERE movie_id = ? LIMIT 1")
-            .bind(id)
-            .fetch_optional(&state.pool)
-            .await
-            .unwrap_or_default();
+    let file_info: Option<(String, Option<String>)> = sqlx::query_as("SELECT file_path, codec FROM movie_files WHERE movie_id = ? LIMIT 1")
+        .bind(id)
+        .fetch_optional(&state.pool)
+        .await
+        .unwrap_or_default();
 
-        if let Some((path_str, _)) = file_info {
-            let path = if let Ok(Some(full_path)) = state.repos.movie.get_full_path(MovieId(id)).await {
-                full_path
+    if let Some((path_str, _codec)) = file_info {
+        let path = if let Ok(Some(full_path)) = state.repos.movie.get_full_path(MovieId(id)).await {
+            full_path
+        } else {
+            PathBuf::from(&path_str)
+        };
+
+        // Tier 2: Direct Streaming (Static File Range Serving or Piped Remux)
+        if protocol == "direct" || protocol == "jit" {
+            let mut playable = false;
+            if let Ok(details) = media_core::scanner::mediainfo::get_media_info(&path) {
+                playable = media_core::scanner::streaming::is_direct_playable(&path, &details);
+            }
+
+            if playable {
+                tracing::info!("Tier 2: File is browser-compatible, enabling native static direct play for movie ID: {}", id);
+                return (StatusCode::OK, Json(format!("/api/stream/direct/movie/{}", id))).into_response();
             } else {
-                PathBuf::from(&path_str)
-            };
-            
-            tracing::info!("Tier 3: {} streaming enabled for movie ID: {} (requested)", if is_dash { "DASH" } else { "HLS" }, id);
-            let stream_id = format!("movie_{}", id);
-            let result = if is_dash {
+                let ext = "mp4";
+                tracing::info!("Tier 2: File is browser-incompatible, enabling piped {} remux/transcode for movie ID: {}", ext, id);
+                return (StatusCode::OK, Json(format!("/api/stream/direct/{}/stream.{}", stream_id, ext))).into_response();
+            }
+        }
+
+        if protocol == "hls" || protocol == "dash" {
+            tracing::info!("Tier 3: {} streaming enabled for movie ID: {} (requested)", protocol.to_uppercase(), id);
+            let result = if protocol == "dash" {
                 state.stream_manager.start_dash(&stream_id, &path).await
             } else {
                 state.stream_manager.start_hls(&stream_id, &path).await
@@ -326,7 +348,7 @@ async fn start_movie_stream(
 
             match result {
                 Ok(_) => {
-                    let url = if is_dash {
+                    let url = if protocol == "dash" {
                         format!("/api/stream/dash/{}/manifest.mpd", stream_id)
                     } else {
                         format!("/api/stream/hls/{}/playlist.m3u8", stream_id)
@@ -335,14 +357,13 @@ async fn start_movie_stream(
                 },
                 Err(e) => {
                     tracing::error!("Stream failed to start: {}", e);
+                    return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
                 },
             }
         }
     }
 
-    // Default: Direct Play via ServeFile
-    tracing::info!("Defaulting to Direct Play for movie ID: {}", id);
-    (StatusCode::OK, Json(format!("/api/stream/direct/movie/{}", id))).into_response()
+    (StatusCode::NOT_FOUND, "Movie not found").into_response()
 }
 
 async fn start_episode_stream(
@@ -352,26 +373,42 @@ async fn start_episode_stream(
 ) -> impl IntoResponse {
     tracing::info!("Stream requested for episode ID: {}", id);
 
-    let is_dash = query.protocol.as_deref() == Some("dash");
-    let is_hls = query.protocol.as_deref() == Some("hls");
+    let protocol = query.protocol.as_deref().unwrap_or("direct");
+    let stream_id = format!("episode_{}", id);
 
-    if is_dash || is_hls {
-        let file_info: Option<(String, Option<String>)> = sqlx::query_as("SELECT file_path, codec FROM episodes WHERE id = ? LIMIT 1")
-            .bind(id)
-            .fetch_optional(&state.pool)
-            .await
-            .unwrap_or_default();
+    let file_info: Option<(String, Option<String>)> = sqlx::query_as("SELECT file_path, codec FROM episodes WHERE id = ? LIMIT 1")
+        .bind(id)
+        .fetch_optional(&state.pool)
+        .await
+        .unwrap_or_default();
 
-        if let Some((path_str, _)) = file_info {
-            let path = if let Ok(Some(full_path)) = state.repos.tv.get_episode_full_path(EpisodeId(id)).await {
-                full_path
+    if let Some((path_str, _)) = file_info {
+        let path = if let Ok(Some(full_path)) = state.repos.tv.get_episode_full_path(EpisodeId(id)).await {
+            full_path
+        } else {
+            PathBuf::from(&path_str)
+        };
+
+        // Tier 2: Direct Streaming (Static File Range Serving or Piped Remux)
+        if protocol == "direct" || protocol == "jit" {
+            let mut playable = false;
+            if let Ok(details) = media_core::scanner::mediainfo::get_media_info(&path) {
+                playable = media_core::scanner::streaming::is_direct_playable(&path, &details);
+            }
+
+            if playable {
+                tracing::info!("Tier 2: File is browser-compatible, enabling native static direct play for episode ID: {}", id);
+                return (StatusCode::OK, Json(format!("/api/stream/direct/episode/{}", id))).into_response();
             } else {
-                PathBuf::from(&path_str)
-            };
-            
-            tracing::info!("Tier 3: {} streaming requested for episode ID: {}", if is_dash { "DASH" } else { "HLS" }, id);
-            let stream_id = format!("episode_{}", id);
-            let result = if is_dash {
+                let ext = "mp4";
+                tracing::info!("Tier 2: File is browser-incompatible, enabling piped {} remux/transcode for episode ID: {}", ext, id);
+                return (StatusCode::OK, Json(format!("/api/stream/direct/{}/stream.{}", stream_id, ext))).into_response();
+            }
+        }
+
+        if protocol == "hls" || protocol == "dash" {
+            tracing::info!("Tier 3: {} streaming requested for episode ID: {}", protocol.to_uppercase(), id);
+            let result = if protocol == "dash" {
                 state.stream_manager.start_dash(&stream_id, &path).await
             } else {
                 state.stream_manager.start_hls(&stream_id, &path).await
@@ -379,7 +416,7 @@ async fn start_episode_stream(
 
             match result {
                 Ok(_) => {
-                    let url = if is_dash {
+                    let url = if protocol == "dash" {
                         format!("/api/stream/dash/{}/manifest.mpd", stream_id)
                     } else {
                         format!("/api/stream/hls/{}/playlist.m3u8", stream_id)
@@ -388,14 +425,183 @@ async fn start_episode_stream(
                 },
                 Err(e) => {
                     tracing::error!("Stream failed to start: {}", e);
+                    return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
                 },
             }
         }
     }
 
-    // Default: Direct Play via ServeFile
-    tracing::info!("Defaulting to Direct Play for episode ID: {}", id);
-    (StatusCode::OK, Json(format!("/api/stream/direct/episode/{}", id))).into_response()
+    (StatusCode::NOT_FOUND, "Episode not found").into_response()
+}
+
+async fn serve_direct_hls_manifest(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let (m_type, m_id) = if id.starts_with("movie_") {
+        ("movie", id.strip_prefix("movie_").unwrap().parse::<i64>().unwrap_or(0))
+    } else if id.starts_with("episode_") {
+        ("episode", id.strip_prefix("episode_").unwrap().parse::<i64>().unwrap_or(0))
+    } else {
+        ("", 0)
+    };
+
+    if m_id > 0 {
+        let duration: Option<i32> = if m_type == "movie" {
+            sqlx::query_scalar("SELECT duration_secs FROM movie_files WHERE movie_id = ?")
+                .bind(m_id)
+                .fetch_optional(&state.pool)
+                .await
+                .unwrap_or(None)
+        } else {
+            sqlx::query_scalar("SELECT duration_secs FROM episodes WHERE id = ?")
+                .bind(m_id)
+                .fetch_optional(&state.pool)
+                .await
+                .unwrap_or(None)
+        };
+
+        if let Some(dur) = duration {
+            let path_str: Option<String> = if m_type == "movie" {
+                sqlx::query_scalar("SELECT file_path FROM movie_files WHERE movie_id = ?")
+                    .bind(m_id)
+                    .fetch_optional(&state.pool)
+                    .await
+                    .unwrap_or(None)
+            } else {
+                sqlx::query_scalar("SELECT file_path FROM episodes WHERE id = ?")
+                    .bind(m_id)
+                    .fetch_optional(&state.pool)
+                    .await
+                    .unwrap_or(None)
+            };
+
+            if let Some(_path) = path_str {
+                // We ALWAYS use MP4 (fMP4) for the internal HLS segment because it's the most 
+                // compatible format for piped streaming in modern browsers.
+                // Video will still be 'copied' (zero CPU) if it's already H264.
+                let stream_url = format!("/api/stream/direct/{}/stream.mp4?start=0", id);
+                let manifest = media_core::scanner::streaming::generate_direct_hls_manifest(dur as f64, &stream_url);
+                return (
+                    [(header::CONTENT_TYPE, "application/vnd.apple.mpegurl")],
+                    manifest,
+                ).into_response();
+            }
+        }
+    }
+
+    (StatusCode::NOT_FOUND, "Media info not found for Custom HLS manifest").into_response()
+}
+
+#[derive(serde::Deserialize)]
+pub struct JitStreamQuery {
+    pub start: Option<f64>,
+}
+
+async fn serve_direct_stream_generic(
+    State(state): State<Arc<AppState>>,
+    Path((id, ext)): Path<(String, String)>,
+    Query(query): Query<JitStreamQuery>,
+) -> impl IntoResponse {
+    let start_time = query.start.unwrap_or(0.0);
+    
+    let path = if id.starts_with("movie_") {
+        let m_id = id.strip_prefix("movie_").unwrap().parse::<i64>().unwrap_or(0);
+        state.repos.movie.get_full_path(MovieId(m_id)).await.ok().flatten()
+    } else if id.starts_with("episode_") {
+        let e_id = id.strip_prefix("episode_").unwrap().parse::<i64>().unwrap_or(0);
+        state.repos.tv.get_episode_full_path(EpisodeId(e_id)).await.ok().flatten()
+    } else {
+        None
+    };
+
+    if let Some(path) = path {
+        tracing::info!("Direct {} stream requested for {} at {}s", ext, id, start_time);
+        
+        let mime = match ext.as_str() {
+            "mp4" => "video/mp4",
+            "webm" => "video/webm",
+            _ => "video/x-matroska",
+        };
+
+        match state.stream_manager.start_direct_stream(&path, start_time, &ext).await {
+            Ok(stream) => {
+                (
+                    [
+                        (header::CONTENT_TYPE, mime),
+                        (header::CACHE_CONTROL, "no-store"),
+                        (header::ACCEPT_RANGES, "none"),
+                        (header::CONNECTION, "keep-alive"),
+                    ],
+                    axum::body::Body::from_stream(stream),
+                ).into_response()
+            },
+            Err(e) => {
+                tracing::error!("Direct stream failed: {}", e);
+                (StatusCode::INTERNAL_SERVER_ERROR, format!("FFmpeg error: {}", e)).into_response()
+            }
+        }
+    } else {
+        (StatusCode::NOT_FOUND, "Media not found").into_response()
+    }
+}
+
+async fn serve_jit_movie(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    Query(query): Query<JitStreamQuery>,
+) -> impl IntoResponse {
+    let start_time = query.start.unwrap_or(0.0);
+    if let Ok(Some(path)) = state.repos.movie.get_full_path(MovieId(id)).await {
+        tracing::info!("JIT stream requested for movie {} at {}s", id, start_time);
+        match state.stream_manager.start_direct_stream(&path, start_time, "mp4").await {
+            Ok(stream) => {
+                (
+                    [
+                        (header::CONTENT_TYPE, "video/mp4"),
+                        (header::CACHE_CONTROL, "no-store"),
+                        (header::CONNECTION, "close"),
+                    ],
+                    axum::body::Body::from_stream(stream),
+                ).into_response()
+            },
+            Err(e) => {
+                tracing::error!("JIT stream failed: {}", e);
+                (StatusCode::INTERNAL_SERVER_ERROR, format!("FFmpeg error: {}", e)).into_response()
+            }
+        }
+    } else {
+        (StatusCode::NOT_FOUND, "Movie not found").into_response()
+    }
+}
+
+async fn serve_jit_episode(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    Query(query): Query<JitStreamQuery>,
+) -> impl IntoResponse {
+    let start_time = query.start.unwrap_or(0.0);
+    if let Ok(Some(path)) = state.repos.tv.get_episode_full_path(EpisodeId(id)).await {
+        tracing::info!("JIT stream requested for episode {} at {}s", id, start_time);
+        match state.stream_manager.start_direct_stream(&path, start_time, "mp4").await {
+            Ok(stream) => {
+                (
+                    [
+                        (header::CONTENT_TYPE, "video/mp4"),
+                        (header::CACHE_CONTROL, "no-store"),
+                        (header::CONNECTION, "close"),
+                    ],
+                    axum::body::Body::from_stream(stream),
+                ).into_response()
+            },
+            Err(e) => {
+                tracing::error!("JIT stream failed: {}", e);
+                (StatusCode::INTERNAL_SERVER_ERROR, format!("FFmpeg error: {}", e)).into_response()
+            }
+        }
+    } else {
+        (StatusCode::NOT_FOUND, "Episode not found").into_response()
+    }
 }
 
 async fn serve_direct_movie(
@@ -585,8 +791,8 @@ async fn serve_stream_file(
     }
 
     // Use configured transcode directory
-    let transcode_dir = media_core::config::get_hls_transcode_dir();
-    let base_dir = PathBuf::from(&transcode_dir).join(&id);
+    let transcode_dir = state.playback_service.transcode_dir();
+    let base_dir = PathBuf::from(transcode_dir).join(&id);
     let file_path = base_dir.join(&file);
 
     if file.ends_with(".ts") || file.ends_with(".webm") {
@@ -617,14 +823,27 @@ async fn serve_stream_file(
         };
 
         if let Some(path) = m_path {
-            let _ = state.stream_manager.request_segment(&id, &path, segment_index, &file).await;
+            if let Err(e) = state.stream_manager.request_segment(&id, &path, segment_index, &file).await {
+                tracing::error!("Failed to request segment {} for {}: {}", segment_index, id, e);
+            }
         }
 
         // Wait for segment via tokio watch channel
-        let _ = state.stream_manager.wait_for_segment(&id, segment_index, &file).await;
+        match state.stream_manager.wait_for_segment(&id, segment_index, &file).await {
+            Ok(true) => {
+                // Segment ready
+            },
+            Ok(false) => {
+                tracing::warn!("Timeout waiting for segment {} of {}", segment_index, id);
+            },
+            Err(e) => {
+                tracing::error!("Error waiting for segment {} of {}: {}", segment_index, id, e);
+            }
+        }
     }
 
     if !file_path.exists() {
+        tracing::warn!("Stream file not found on disk: {:?}", file_path);
         return (StatusCode::NOT_FOUND, "Stream file not found").into_response();
     }
 

@@ -221,18 +221,19 @@ impl TvReader for SqliteTvRepository {
 impl TvWriter for SqliteTvRepository {
     #[tracing::instrument(skip(self), err)]
     async fn upsert_show(&self, library_id: LibraryId, title: &str) -> Result<TvShowId> {
-        let row: (TvShowId,) = sqlx::query_as(
-            r#"
-            INSERT INTO tv_shows (library_id, title) 
-            VALUES (?, ?) 
-            ON CONFLICT(library_id, title) DO UPDATE SET updated_at = datetime('now')
-            RETURNING id
-            "#
-        )
-        .bind(library_id)
-        .bind(title)
-        .fetch_one(&*self.base.pool)
-        .await?;
+        let row: (TvShowId,) = crate::fetch_one_db!(
+            &*self.base.pool,
+            sqlx::query_as(
+                r#"
+                INSERT INTO tv_shows (library_id, title) 
+                VALUES (?, ?) 
+                ON CONFLICT(library_id, title) DO UPDATE SET updated_at = datetime('now')
+                RETURNING id
+                "#
+            )
+            .bind(library_id)
+            .bind(title)
+        ).await?;
 
         Ok(row.0)
     }
@@ -250,24 +251,25 @@ impl TvWriter for SqliteTvRepository {
         language: Option<&str>,
         trailer_url: Option<&str>,
     ) -> Result<()> {
-        sqlx::query(
-            r#"
-            UPDATE tv_shows 
-            SET title = ?, plot = ?, rating = ?, genres = ?, tagline = ?, runtime = ?, language = ?, trailer_url = ?, updated_at = datetime('now')
-            WHERE id = ?
-            "#
-        )
-        .bind(title)
-        .bind(plot)
-        .bind(rating)
-        .bind(genres)
-        .bind(tagline)
-        .bind(runtime)
-        .bind(language)
-        .bind(trailer_url)
-        .bind(id)
-        .execute(&*self.base.pool)
-        .await?;
+        crate::execute_db!(
+            &*self.base.pool,
+            sqlx::query(
+                r#"
+                UPDATE tv_shows 
+                SET title = ?, plot = ?, rating = ?, genres = ?, tagline = ?, runtime = ?, language = ?, trailer_url = ?, updated_at = datetime('now')
+                WHERE id = ?
+                "#
+            )
+            .bind(title)
+            .bind(plot)
+            .bind(rating)
+            .bind(genres)
+            .bind(tagline)
+            .bind(runtime)
+            .bind(language)
+            .bind(trailer_url)
+            .bind(id)
+        ).await?;
         Ok(())
     }
 
@@ -286,52 +288,54 @@ impl TvWriter for SqliteTvRepository {
         trailer_url: Option<String>,
         status: MediaStatus,
     ) -> Result<()> {
-        sqlx::query(
-            r#"
-            UPDATE tv_shows
-            SET tmdb_id = COALESCE(?, tmdb_id),
-                plot = COALESCE(?, plot),
-                rating = COALESCE(?, rating),
-                genres = COALESCE(?, genres),
-                language = COALESCE(?, language),
-                cast_list = COALESCE(?, cast_list),
-                poster_url = COALESCE(?, poster_url),
-                backdrop_url = COALESCE(?, backdrop_url),
-                trailer_url = COALESCE(?, trailer_url),
-                status = ?
-            WHERE id = ?
-            "#
-        )
-        .bind(tmdb_id)
-        .bind(plot)
-        .bind(rating)
-        .bind(genres)
-        .bind(language)
-        .bind(cast_list)
-        .bind(poster_url)
-        .bind(backdrop_url)
-        .bind(trailer_url)
-        .bind(status)
-        .bind(id)
-        .execute(&*self.base.pool)
-        .await?;
+        crate::execute_db!(
+            &*self.base.pool,
+            sqlx::query(
+                r#"
+                UPDATE tv_shows
+                SET tmdb_id = COALESCE(?, tmdb_id),
+                    plot = COALESCE(?, plot),
+                    rating = COALESCE(?, rating),
+                    genres = COALESCE(?, genres),
+                    language = COALESCE(?, language),
+                    cast_list = COALESCE(?, cast_list),
+                    poster_url = COALESCE(?, poster_url),
+                    backdrop_url = COALESCE(?, backdrop_url),
+                    trailer_url = COALESCE(?, trailer_url),
+                    status = ?
+                WHERE id = ?
+                "#
+            )
+            .bind(tmdb_id)
+            .bind(plot)
+            .bind(rating)
+            .bind(genres)
+            .bind(language)
+            .bind(cast_list)
+            .bind(poster_url)
+            .bind(backdrop_url)
+            .bind(trailer_url)
+            .bind(status)
+            .bind(id)
+        ).await?;
         Ok(())
     }
 
     #[tracing::instrument(skip(self), err)]
     async fn upsert_season(&self, show_id: TvShowId, season_number: i32) -> Result<SeasonId> {
-        let row: (SeasonId,) = sqlx::query_as(
-            r#"
-            INSERT INTO seasons (show_id, season_number) 
-            VALUES (?, ?) 
-            ON CONFLICT(show_id, season_number) DO UPDATE SET updated_at = datetime('now')
-            RETURNING id
-            "#
-        )
-        .bind(show_id)
-        .bind(season_number)
-        .fetch_one(&*self.base.pool)
-        .await?;
+        let row: (SeasonId,) = crate::fetch_one_db!(
+            &*self.base.pool,
+            sqlx::query_as(
+                r#"
+                INSERT INTO seasons (show_id, season_number) 
+                VALUES (?, ?) 
+                ON CONFLICT(show_id, season_number) DO UPDATE SET updated_at = datetime('now')
+                RETURNING id
+                "#
+            )
+            .bind(show_id)
+            .bind(season_number)
+        ).await?;
 
         Ok(row.0)
     }
@@ -353,39 +357,40 @@ impl TvWriter for SqliteTvRepository {
         fingerprint: Option<&str>
     ) -> Result<EpisodeId> {
         let normalized_path = crate::paths::normalize_slashes(file_path);
-        let row: (EpisodeId,) = sqlx::query_as(
-            r#"
-            INSERT INTO episodes (season_id, episode_number, file_path, original_name, size_bytes, mtime, resolution, codec, audio_codec, duration_secs, hash, fingerprint, is_missing, last_scanned)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, datetime('now'))
-            ON CONFLICT(file_path) DO UPDATE SET 
-                size_bytes = excluded.size_bytes,
-                mtime = excluded.mtime,
-                resolution = excluded.resolution,
-                codec = excluded.codec,
-                audio_codec = excluded.audio_codec,
-                duration_secs = excluded.duration_secs,
-                hash = excluded.hash,
-                fingerprint = excluded.fingerprint,
-                is_missing = 0,
-                last_scanned = datetime('now'),
-                updated_at = datetime('now')
-            RETURNING id
-            "#
-        )
-        .bind(season_id)
-        .bind(episode_number)
-        .bind(&normalized_path)
-        .bind(original_name)
-        .bind(size_bytes)
-        .bind(mtime)
-        .bind(resolution)
-        .bind(codec)
-        .bind(audio_codec)
-        .bind(duration_secs)
-        .bind(hash)
-        .bind(fingerprint)
-        .fetch_one(&*self.base.pool)
-        .await?;
+        let row: (EpisodeId,) = crate::fetch_one_db!(
+            &*self.base.pool,
+            sqlx::query_as(
+                r#"
+                INSERT INTO episodes (season_id, episode_number, file_path, original_name, size_bytes, mtime, resolution, codec, audio_codec, duration_secs, hash, fingerprint, is_missing, last_scanned)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, datetime('now'))
+                ON CONFLICT(file_path) DO UPDATE SET 
+                    size_bytes = excluded.size_bytes,
+                    mtime = excluded.mtime,
+                    resolution = excluded.resolution,
+                    codec = excluded.codec,
+                    audio_codec = excluded.audio_codec,
+                    duration_secs = excluded.duration_secs,
+                    hash = excluded.hash,
+                    fingerprint = excluded.fingerprint,
+                    is_missing = 0,
+                    last_scanned = datetime('now'),
+                    updated_at = datetime('now')
+                RETURNING id
+                "#
+            )
+            .bind(season_id)
+            .bind(episode_number)
+            .bind(&normalized_path)
+            .bind(original_name)
+            .bind(size_bytes)
+            .bind(mtime)
+            .bind(resolution)
+            .bind(codec)
+            .bind(audio_codec)
+            .bind(duration_secs)
+            .bind(hash)
+            .bind(fingerprint)
+        ).await?;
 
         Ok(row.0)
     }
@@ -393,69 +398,75 @@ impl TvWriter for SqliteTvRepository {
     #[tracing::instrument(skip(self), err)]
     async fn update_episode_path(&self, id: EpisodeId, new_path: &str) -> Result<()> {
         let normalized = crate::paths::normalize_slashes(new_path);
-        sqlx::query("UPDATE episodes SET file_path = ?, updated_at = datetime('now') WHERE id = ?")
-            .bind(normalized)
-            .bind(id)
-            .execute(&*self.base.pool)
-            .await?;
+        crate::execute_db!(
+            &*self.base.pool,
+            sqlx::query("UPDATE episodes SET file_path = ?, updated_at = datetime('now') WHERE id = ?")
+                .bind(normalized)
+                .bind(id)
+        ).await?;
         Ok(())
     }
 
     #[tracing::instrument(skip(self), err)]
     async fn update_episode_last_scanned(&self, id: EpisodeId) -> Result<()> {
-        sqlx::query("UPDATE episodes SET last_scanned = datetime('now'), is_missing = 0 WHERE id = ?")
-            .bind(id)
-            .execute(&*self.base.pool)
-            .await?;
+        crate::execute_db!(
+            &*self.base.pool,
+            sqlx::query("UPDATE episodes SET last_scanned = datetime('now'), is_missing = 0 WHERE id = ?")
+                .bind(id)
+        ).await?;
         Ok(())
     }
 
     #[tracing::instrument(skip(self), err)]
     async fn update_episode_fingerprint(&self, id: EpisodeId, fingerprint: &str) -> Result<()> {
-        sqlx::query("UPDATE episodes SET fingerprint = ? WHERE id = ?")
-            .bind(fingerprint)
-            .bind(id)
-            .execute(&*self.base.pool)
-            .await?;
+        crate::execute_db!(
+            &*self.base.pool,
+            sqlx::query("UPDATE episodes SET fingerprint = ? WHERE id = ?")
+                .bind(fingerprint)
+                .bind(id)
+        ).await?;
         Ok(())
     }
 
     #[tracing::instrument(skip(self), err)]
     async fn update_episode_duration(&self, id: EpisodeId, duration_secs: i32) -> Result<()> {
-        sqlx::query("UPDATE episodes SET duration_secs = ? WHERE id = ?")
-            .bind(duration_secs)
-            .bind(id)
-            .execute(&*self.base.pool)
-            .await?;
+        crate::execute_db!(
+            &*self.base.pool,
+            sqlx::query("UPDATE episodes SET duration_secs = ? WHERE id = ?")
+                .bind(duration_secs)
+                .bind(id)
+        ).await?;
         Ok(())
     }
 
     #[tracing::instrument(skip(self), err)]
     async fn update_episode_metadata(&self, id: EpisodeId, duration_secs: i32, width: i32, height: i32) -> Result<()> {
         let res = Resolution::from_dimensions(width, height);
-        sqlx::query("UPDATE episodes SET duration_secs = ?, resolution = ?, updated_at = datetime('now') WHERE id = ?")
-            .bind(duration_secs)
-            .bind(res)
-            .bind(id)
-            .execute(&*self.base.pool)
-            .await?;
+        crate::execute_db!(
+            &*self.base.pool,
+            sqlx::query("UPDATE episodes SET duration_secs = ?, resolution = ?, updated_at = datetime('now') WHERE id = ?")
+                .bind(duration_secs)
+                .bind(res)
+                .bind(id)
+        ).await?;
         Ok(())
     }
 
     #[tracing::instrument(skip(self), err)]
     async fn mark_missing_in_library(&self, library_id: LibraryId) -> Result<i32> {
-        let rows = sqlx::query(
-            r#"
-            UPDATE episodes
-            SET is_missing = 1
-            WHERE season_id IN (SELECT s.id FROM seasons s JOIN tv_shows t ON s.show_id = t.id WHERE t.library_id = ?)
-            AND last_scanned < datetime('now', '-1 minute')
-            RETURNING id
-            "#
-        )
-        .bind(library_id)
-        .fetch_all(&*self.base.pool)
-        .await?;
+        let rows: Vec<(EpisodeId,)> = crate::fetch_all_db!(
+            &*self.base.pool,
+            sqlx::query_as(
+                r#"
+                UPDATE episodes
+                SET is_missing = 1
+                WHERE season_id IN (SELECT s.id FROM seasons s JOIN tv_shows t ON s.show_id = t.id WHERE t.library_id = ?)
+                AND last_scanned < datetime('now', '-1 minute')
+                RETURNING id
+                "#
+            )
+            .bind(library_id)
+        ).await?;
         Ok(rows.len() as i32)
     }
 }

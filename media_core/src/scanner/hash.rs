@@ -2,7 +2,7 @@
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
-use anyhow::Result;
+use crate::errors::Result;
 
 /// Calculates a fingerprint for a video file.
 /// For large files, it uses the fast OSHash (Size + First/Last 64KB).

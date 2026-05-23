@@ -40,6 +40,18 @@ pub enum CoreError {
 
     #[error("Runtime error: {0}")]
     RuntimeError(String),
+
+    #[error("HTTP error: {0}")]
+    HttpError(#[from] reqwest::Error),
+
+    #[error("Zip error: {0}")]
+    ZipError(#[from] zip::result::ZipError),
+
+    #[error("XLSX error: {0}")]
+    XlsxError(#[from] rust_xlsxwriter::XlsxError),
+
+    #[error("XML error: {0}")]
+    XmlError(#[from] quick_xml::DeError),
 }
 
 pub type Result<T> = std::result::Result<T, CoreError>;

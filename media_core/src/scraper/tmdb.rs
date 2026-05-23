@@ -211,3 +211,97 @@ impl crate::scraper::MediaScraper for TmdbClient {
         })
     }
 }
+
+impl crate::scraper::provider::ScraperProvider for TmdbClient {
+    fn name(&self) -> &str {
+        "tmdb"
+    }
+
+    fn search_movie<'a>(&'a self, title: &'a str, year: Option<i32>) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<crate::scraper::provider::ScrapedMovieSearchResult>>> + Send + 'a>> {
+        Box::pin(async move {
+            let results = crate::scraper::MediaScraper::search_movie(self, title, year).await?;
+            Ok(results.into_iter().map(|r| crate::scraper::provider::ScrapedMovieSearchResult {
+                id: r.id.to_string(),
+                title: r.title,
+                release_date: r.release_date,
+                poster_path: r.poster_path,
+                backdrop_path: r.backdrop_path,
+                vote_average: r.vote_average,
+                original_language: r.original_language,
+            }).collect())
+        })
+    }
+
+    fn get_movie_details<'a>(&'a self, id: &'a str) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<crate::scraper::provider::ScrapedMovie>> + Send + 'a>> {
+        Box::pin(async move {
+            let tmdb_id = id.parse::<i32>().map_err(|e| ScraperError::Internal(e.to_string()))?;
+            let details = crate::scraper::MediaScraper::get_movie_details(self, tmdb_id).await?;
+            Ok(crate::scraper::provider::ScrapedMovie {
+                id: details.id.to_string(),
+                imdb_id: details.imdb_id,
+                title: details.title,
+                overview: details.overview,
+                tagline: details.tagline,
+                runtime: details.runtime,
+                release_date: details.release_date,
+                vote_average: details.vote_average,
+                poster_path: details.poster_path,
+                backdrop_path: details.backdrop_path,
+                genres: details.genres.into_iter().map(|g| g.name).collect(),
+                cast: details.credits.cast.into_iter().map(|c| crate::scraper::provider::ScrapedCastMember {
+                    name: c.name,
+                    character: c.character,
+                    profile_path: c.profile_path,
+                }).collect(),
+                videos: details.videos.results.into_iter().map(|v| crate::scraper::provider::ScrapedVideo {
+                    key: v.key,
+                    site: v.site,
+                    video_type: v.video_type,
+                }).collect(),
+                original_language: details.original_language,
+            })
+        })
+    }
+
+    fn search_tv_show<'a>(&'a self, title: &'a str) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<crate::scraper::provider::ScrapedTvSearchResult>>> + Send + 'a>> {
+        Box::pin(async move {
+            let results = crate::scraper::MediaScraper::search_tv_show(self, title).await?;
+            Ok(results.into_iter().map(|r| crate::scraper::provider::ScrapedTvSearchResult {
+                id: r.id.to_string(),
+                name: r.name,
+                first_air_date: r.first_air_date,
+                poster_path: r.poster_path,
+                backdrop_path: r.backdrop_path,
+                vote_average: r.vote_average,
+                original_language: r.original_language,
+            }).collect())
+        })
+    }
+
+    fn get_tv_details<'a>(&'a self, id: &'a str) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<crate::scraper::provider::ScrapedTvShow>> + Send + 'a>> {
+        Box::pin(async move {
+            let tmdb_id = id.parse::<i32>().map_err(|e| ScraperError::Internal(e.to_string()))?;
+            let details = crate::scraper::MediaScraper::get_tv_details(self, tmdb_id).await?;
+            Ok(crate::scraper::provider::ScrapedTvShow {
+                id: details.id.to_string(),
+                name: details.name,
+                overview: details.overview,
+                poster_path: details.poster_path,
+                backdrop_path: details.backdrop_path,
+                vote_average: details.vote_average,
+                genres: details.genres.into_iter().map(|g| g.name).collect(),
+                cast: details.credits.cast.into_iter().map(|c| crate::scraper::provider::ScrapedCastMember {
+                    name: c.name,
+                    character: c.character,
+                    profile_path: c.profile_path,
+                }).collect(),
+                videos: details.videos.results.into_iter().map(|v| crate::scraper::provider::ScrapedVideo {
+                    key: v.key,
+                    site: v.site,
+                    video_type: v.video_type,
+                }).collect(),
+                original_language: details.original_language,
+            })
+        })
+    }
+}

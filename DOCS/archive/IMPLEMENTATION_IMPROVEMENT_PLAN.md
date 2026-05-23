@@ -1,4 +1,5 @@
 # 🔬 Media Manager — Full Code Review & Implementation Plan
+
 > **Reviewer Role**: Senior Rust Engineer + Senior UI Engineer  
 > **Date**: 2026-05-07  
 > **Scope**: All Rust crates (`media_core`, `apps/server`, `apps/desktop`, `apps/cli`), React frontend (`frontend/`), and all DOCS markdown files.
@@ -178,7 +179,7 @@ let movies = db::queries::get_all_movies(&pool_clone, Some(id), None, None).awai
 // Only fetches movies! TV shows in the library are never scraped.
 ```
 
-The server-side `bulk_scrape` correctly handles both movies and TV shows (Lines 356–364 in `main.rs`), but the **Tauri desktop command** only processes movies from the library. This is a bug that causes the desktop app to miss all TV shows during library-level bulk scraping.
+**Problem**: The server-side `bulk_scrape` correctly handles both movies and TV shows (Lines 356–364 in `main.rs`), but the **Tauri desktop command** only processes movies from the library. This is a bug that causes the desktop app to miss all TV shows during library-level bulk scraping.
 
 **Fix Plan**: Mirror the server implementation — fetch both movies and TV shows, combine into `all_tasks`, and run concurrently.
 
@@ -432,7 +433,7 @@ CorsLayer::new().allow_origin(allowed_origin.parse::<HeaderValue>().unwrap())
 - ✅ **H4**: Desktop `bulk_scrape` now fetches and processes both movies and TV shows
 - ✅ **H5/H2**: N/A — FFmpeg already uses `.spawn()` (non-blocking)
 - ✅ **H7**: Added notification monitor to desktop app's `.setup()` closure
-- ✅ **C1**: Implemented full TV show artwork download + cast image caching (`scraper/mod.rs`)
+- ✅ **C1**: Implemented TV show artwork download + cast image caching (`scraper/mod.rs`)
 - ✅ **Build**: `cargo check --workspace` passes — zero errors, 11 pre-existing warnings only
 
 ### Sprint 2 — Fill Feature Gaps ✅ COMPLETE

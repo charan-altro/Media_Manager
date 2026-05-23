@@ -23,6 +23,8 @@ pub struct MediaDetails {
     pub audio_channels: i32,
     pub size_bytes: i64,
     pub duration_secs: i32,
+    pub stream_duration_secs: i32,
+    pub start_time: f64,
     pub rotation: i32,
     pub bit_depth: i32,
     pub streams: Vec<MediaStreamInfo>,
@@ -38,6 +40,8 @@ impl Default for MediaDetails {
             audio_channels: 0,
             size_bytes: 0,
             duration_secs: 0,
+            stream_duration_secs: 0,
+            start_time: 0.0,
             rotation: 0,
             bit_depth: 0,
             streams: Vec::new(),
@@ -45,9 +49,13 @@ impl Default for MediaDetails {
     }
 }
 
+#[allow(dead_code)]
 fn check_ffprobe() -> Result<()> {
-    let ffprobe_path = crate::config::get_ffprobe_path();
-    let output = Command::new(&ffprobe_path)
+    check_ffprobe_with_path("ffprobe")
+}
+
+pub fn check_ffprobe_with_path(ffprobe_path: &str) -> Result<()> {
+    let output = Command::new(ffprobe_path)
         .arg("-version")
         .output();
 
@@ -61,8 +69,12 @@ fn check_ffprobe() -> Result<()> {
 }
 
 pub fn get_media_info(path: &Path) -> Result<MediaDetails> {
-    check_ffprobe()?;
-    let output = Command::new(crate::config::get_ffprobe_path())
+    get_media_info_with_path(path, "ffprobe")
+}
+
+pub fn get_media_info_with_path(path: &Path, ffprobe_path: &str) -> Result<MediaDetails> {
+    check_ffprobe_with_path(ffprobe_path)?;
+    let output = Command::new(ffprobe_path)
         .args(&[
             "-v", "quiet",
             "-print_format", "json",
@@ -118,6 +130,10 @@ pub(crate) fn parse_media_info_from_json(json: &serde_json::Value) -> Result<Med
     let height = video["height"].as_i64().unwrap_or(0) as i32;
     let video_codec = video["codec_name"].as_str().unwrap_or("unknown").to_string();
     
+    // Parse video stream duration and start time
+    let stream_duration_secs = video["duration"].as_str().and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0) as i32;
+    let start_time = video["start_time"].as_str().and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
+
     // Parse rotation
     let mut rotation = 0;
     if let Some(rotate_val) = video["tags"]["rotate"].as_str() {
@@ -170,7 +186,14 @@ pub(crate) fn parse_media_info_from_json(json: &serde_json::Value) -> Result<Med
     let audio_channels = audio_stream.map(|s| s["channels"].as_i64().unwrap_or(0) as i32).unwrap_or(0);
     
     let size_bytes = json["format"]["size"].as_str().and_then(|s| s.parse().ok()).unwrap_or(0);
-    let duration_secs = json["format"]["duration"].as_str().and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0) as i32;
+    let format_duration_secs = json["format"]["duration"].as_str().and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0) as i32;
+    
+    // Prefer stream duration if format duration is zero or significantly different
+    let duration_secs = if stream_duration_secs > 0 && (format_duration_secs == 0 || (stream_duration_secs - format_duration_secs).abs() > 2) {
+        stream_duration_secs
+    } else {
+        format_duration_secs
+    };
 
     Ok(MediaDetails {
         width,
@@ -180,6 +203,8 @@ pub(crate) fn parse_media_info_from_json(json: &serde_json::Value) -> Result<Med
         audio_channels,
         size_bytes,
         duration_secs,
+        stream_duration_secs,
+        start_time,
         rotation,
         bit_depth,
         streams,
@@ -201,6 +226,8 @@ mod tests {
                     "codec_type": "video",
                     "width": 1920,
                     "height": 1080,
+                    "duration": "7200.0",
+                    "start_time": "0.5",
                     "bits_per_raw_sample": "10",
                     "tags": {
                         "rotate": "90"
@@ -241,6 +268,8 @@ mod tests {
         assert_eq!(details.audio_channels, 6);
         assert_eq!(details.size_bytes, 1500000000);
         assert_eq!(details.duration_secs, 7200);
+        assert_eq!(details.stream_duration_secs, 7200);
+        assert_eq!(details.start_time, 0.5);
         assert_eq!(details.rotation, 90);
         assert_eq!(details.bit_depth, 10);
         

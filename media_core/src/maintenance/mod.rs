@@ -2,7 +2,7 @@
 use std::path::{Path, PathBuf};
 use std::fs::{self, File};
 use std::io::{Read, Write};
-use anyhow::{Result, anyhow};
+use crate::errors::{CoreError, Result};
 use zip::write::FileOptions;
 use chrono::Local;
 use tracing::info;
@@ -99,7 +99,7 @@ impl MaintenanceEngine {
 
     pub fn restore_backup(backup_zip: &Path, db_path: &Path) -> Result<()> {
         if !backup_zip.exists() {
-            return Err(anyhow!("Backup zip not found at {:?}", backup_zip));
+            return Err(CoreError::PathError(format!("Backup zip not found at {:?}", backup_zip)));
         }
 
         info!("Restoring backup from {:?}", backup_zip);

@@ -3,10 +3,9 @@ import {
   MediaPlayer, 
   MediaProvider, 
   Poster, 
-  Track, 
-  useMediaRemote, 
-  useMediaState,
-  type MediaSource
+  Gesture,
+  type MediaSrc,
+  type MediaPlayerInstance
 } from '@vidstack/react';
 import { 
   DefaultVideoLayout, 
@@ -18,7 +17,7 @@ import '@vidstack/react/player/styles/default/layouts/video.css';
 
 import { X, Loader2, AlertCircle } from 'lucide-react';
 import { getImageUrl, api, API_BASE } from '../api/adapter';
-import { useVidstackAbLoop } from '../hooks/useVidstackAbLoop';
+import { useVidstackAbLoop, type AbLoopManager } from '../hooks/useVidstackAbLoop';
 import { AbLoopControls } from './AbLoopControls';
 
 interface VidstackPlayerProps {
@@ -32,53 +31,24 @@ interface VidstackPlayerProps {
   onClose: () => void;
 }
 
-const PlayerContent: React.FC<VidstackPlayerProps & { sources: MediaSource[] }> = ({
-  mediaId,
-  mediaType,
+// Inner component that HAS access to MediaPlayer context
+const InnerPlayer: React.FC<VidstackPlayerProps & { sources: any[], isBuffering: boolean, abLoop: AbLoopManager }> = ({
   title,
-  posterUrl,
   hash,
-  initialPosition = 0,
-  sources,
-  onClose
+  isBuffering,
+  abLoop
 }) => {
-  const remote = useMediaRemote();
-  const abLoop = useVidstackAbLoop();
-  const heartbeatInterval = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  // Heartbeat for progress tracking
-  const sendHeartbeat = useCallback((currentTime: number, duration: number, ended: boolean) => {
-    const isFinished = ended || (duration > 0 && currentTime / duration > 0.95);
-
-    api.updatePlaybackProgress({
-      media_id: mediaId,
-      media_type: mediaType,
-      position_ms: Math.round(currentTime * 1000),
-      duration_ms: Math.round(duration * 1000),
-      is_finished: isFinished
-    }).catch(err => console.error("[VidstackPlayer] Heartbeat failed:", err));
-  }, [mediaId, mediaType]);
-
   // Handle keyboard hotkeys for A-B Loop
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Ignore if typing in an input
       const target = e.target as HTMLElement;
       if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) return;
 
       switch (e.key.toLowerCase()) {
-        case 'a':
-          abLoop.setStart();
-          break;
-        case 'b':
-          abLoop.setEnd();
-          break;
-        case 'l':
-          abLoop.toggleLoop();
-          break;
-        case 'c':
-          abLoop.clearLoop();
-          break;
+        case 'a': abLoop.setStart(); break;
+        case 'b': abLoop.setEnd(); break;
+        case 'l': abLoop.toggleLoop(); break;
+        case 'c': abLoop.clearLoop(); break;
       }
     };
 
@@ -92,99 +62,232 @@ const PlayerContent: React.FC<VidstackPlayerProps & { sources: MediaSource[] }> 
   }, [hash]);
 
   return (
-    <div className="w-full h-full relative group">
-      <MediaPlayer
-        title={title}
-        src={sources}
-        poster={getImageUrl(posterUrl)}
-        className="w-full h-full bg-black overflow-hidden"
-        style={{ '--video-volume-slider-orientation': 'vertical' } as React.CSSProperties}
-        onCanPlay={() => {
-          if (initialPosition > 0) {
-            remote.seek(initialPosition / 1000);
-          }
+    <>
+      <MediaProvider>
+        <Poster className="vds-poster" />
+        <Gesture className="vds-gesture" event="pointerup" action="toggle:paused" />
+        <Gesture className="vds-gesture" event="dblpointerup" action="toggle:fullscreen" />
+        <Gesture className="vds-gesture" event="dblpointerup" action="seek:-10" />
+        <Gesture className="vds-gesture" event="dblpointerup" action="seek:10" />
+      </MediaProvider>
+      
+      <DefaultVideoLayout 
+        icons={defaultLayoutIcons}
+        thumbnails={vttUrl}
+        slots={{
+          beforeTitle: (
+            <div className="flex flex-col mb-4">
+              <span className="text-white/60 text-[10px] font-black uppercase tracking-[0.3em]">Now Playing</span>
+              <h2 className="text-white text-xl font-black uppercase tracking-tight leading-none">{title}</h2>
+            </div>
+          )
         }}
-        onTimeUpdate={(e) => {
-          // We can't easily get the duration from the event here without more hooks, 
-          // but we'll use a local interval or simpler approach for heartbeat
-        }}
-        onEnded={() => {
-          sendHeartbeat(0, 0, true); // Final heartbeat
-        }}
-      >
-        <MediaProvider>
-          <Poster className="vds-poster" />
-        </MediaProvider>
-        
-        <DefaultVideoLayout 
-          icons={defaultLayoutIcons}
-          thumbnails={vttUrl}
-        />
+      />
 
-        <AbLoopControls abLoop={abLoop} />
-        
-        {/* Custom Heartbeat logic using Media State */}
-        <Heartbeat mediaId={mediaId} mediaType={mediaType} />
-      </MediaPlayer>
-    </div>
+      <AbLoopControls abLoop={abLoop} />
+      
+      {isBuffering && (
+        <div className="absolute inset-0 flex items-center justify-center z-[50] pointer-events-none">
+          <div className="relative">
+            <div className="w-20 h-20 border-4 border-red-600/20 border-t-red-600 rounded-full animate-spin" />
+            <div className="absolute inset-0 flex items-center justify-center">
+              <div className="w-12 h-12 bg-red-600/10 rounded-full blur-xl animate-pulse" />
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 };
 
-// Internal component to handle heartbeat without re-rendering the whole player
-const Heartbeat: React.FC<{ mediaId: number, mediaType: string }> = ({ mediaId, mediaType }) => {
-  const currentTime = useMediaState('currentTime');
-  const duration = useMediaState('duration');
-  const ended = useMediaState('ended');
+const PlayerContent: React.FC<VidstackPlayerProps & { 
+  sources: any[], 
+  onSeek: (time: number) => void, 
+  duration: number,
+  startOffset: number,
+  isPiped: boolean
+}> = (props) => {
+  const { title, sources, posterUrl, mediaId, mediaType, initialPosition = 0, onSeek, duration, startOffset, isPiped } = props;
+  const [isBuffering, setIsBuffering] = useState(false);
+  const playerRef = useRef<MediaPlayerInstance>(null);
+  const abLoop = useVidstackAbLoop();
+  
   const lastHeartbeatTime = useRef(0);
+  const durationRef = useRef(0);
+  const hasSeeked = useRef(false);
+  const seekTimeoutRef = useRef<any>(null);
+  const isRewritingSourceRef = useRef(false);
+  const loadedSourceRef = useRef<string>('');
 
-  useEffect(() => {
+  const seek = useCallback((time: number) => {
+    if (playerRef.current) {
+      if (isPiped) {
+        onSeek(time);
+      } else {
+        playerRef.current.currentTime = time;
+      }
+    }
+  }, [isPiped, onSeek]);
+
+  const handleTimeUpdate = useCallback((event: any) => {
+    const currentTime = event?.detail?.currentTime ?? playerRef.current?.currentTime ?? 0;
+    const durationVal = durationRef.current || playerRef.current?.duration || 0;
+    
+    // Manage A-B Loop
+    abLoop.checkLoop(currentTime, seek);
+    
+    // Heartbeat logic
     const now = Date.now();
     if (now - lastHeartbeatTime.current > 30000) { // Every 30 seconds
       lastHeartbeatTime.current = now;
-      const isFinished = ended || (duration > 0 && currentTime / duration > 0.95);
+      const isFinished = durationVal > 0 && currentTime / durationVal > 0.95;
 
       api.updatePlaybackProgress({
         media_id: mediaId,
         media_type: mediaType,
         position_ms: Math.round(currentTime * 1000),
-        duration_ms: Math.round(duration * 1000),
+        duration_ms: Math.round(durationVal * 1000),
         is_finished: isFinished
       }).catch(err => console.error("[VidstackPlayer] Heartbeat failed:", err));
     }
-  }, [currentTime, duration, ended, mediaId, mediaType]);
+  }, [mediaId, mediaType, abLoop, seek]);
 
-  return null;
+  const handleEnded = useCallback(() => {
+    api.updatePlaybackProgress({
+      media_id: mediaId,
+      media_type: mediaType,
+      position_ms: 0,
+      duration_ms: Math.round((durationRef.current || playerRef.current?.duration || 0) * 1000),
+      is_finished: true
+    }).catch(err => console.error("[VidstackPlayer] Final heartbeat failed:", err));
+  }, [mediaId, mediaType]);
+
+  // Handle initial seek / source reloads
+  const handleCanPlay = useCallback((e: any) => {
+    setIsBuffering(false);
+    const playerDuration = e?.detail?.duration ?? playerRef.current?.duration ?? 0;
+    durationRef.current = duration || playerDuration;
+    
+    const player = playerRef.current;
+    if (!player) return;
+
+    // Use current source URL or path to identify source changes
+    const currentSrc = (sources[0]?.src as string) ?? '';
+    if (currentSrc !== loadedSourceRef.current) {
+      loadedSourceRef.current = currentSrc;
+      if (isPiped) {
+        // Piped stream is seeked by backend starting at startOffset,
+        // so we must seek the video element to startOffset to align with the stream
+        player.currentTime = startOffset;
+      } else if (!hasSeeked.current && initialPosition > 0) {
+        player.currentTime = initialPosition / 1000;
+        hasSeeked.current = true;
+      }
+    }
+  }, [initialPosition, duration, isPiped, startOffset, sources]);
+
+  const handleSeeking = useCallback(() => {
+    const player = playerRef.current;
+    if (!player) return;
+
+    // For static files (native range seeks), browser handles seeks natively without reloading source URL
+    if (!isPiped) {
+      return;
+    }
+
+    const targetTime = player.currentTime;
+
+    // If we're reloading the source, ignore the temporary seeked events caused by browser source resets
+    if (isRewritingSourceRef.current) {
+      isRewritingSourceRef.current = false;
+      return;
+    }
+
+    // Ignore seek triggers that are close to our target offset to prevent loops
+    if (Math.abs(targetTime - startOffset) < 2.0) {
+      return;
+    }
+
+    // Debounce stream restarts to prevent backend hammering during scrubbing
+    if (seekTimeoutRef.current) {
+      clearTimeout(seekTimeoutRef.current);
+    }
+
+    seekTimeoutRef.current = setTimeout(() => {
+      isRewritingSourceRef.current = true;
+      onSeek(targetTime);
+    }, 250);
+  }, [onSeek, startOffset, isPiped]);
+
+  useEffect(() => {
+    return () => {
+      if (seekTimeoutRef.current) {
+        clearTimeout(seekTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  // Netflix/YouTube style styling
+  const playerStyles: any = {
+    '--video-brand': '#E50914', // Netflix Red
+    '--video-loader-size': '80px',
+    '--video-volume-slider-orientation': 'vertical',
+  };
+
+  return (
+    <div className="w-full h-full relative group">
+      <MediaPlayer
+        ref={playerRef}
+        title={title}
+        src={sources}
+        poster={getImageUrl(posterUrl)}
+        className="w-full h-full bg-black overflow-hidden"
+        style={playerStyles}
+        crossOrigin
+        playsInline
+        onWaiting={() => setIsBuffering(true)}
+        onPlaying={() => setIsBuffering(false)}
+        onCanPlay={handleCanPlay}
+        onTimeUpdate={handleTimeUpdate}
+        onEnded={handleEnded}
+        onSeeking={handleSeeking}
+        streamType="on-demand"
+        duration={duration}
+      >
+        <InnerPlayer {...props} isBuffering={isBuffering} abLoop={abLoop} />
+      </MediaPlayer>
+    </div>
+  );
 };
 
 const VidstackPlayer: React.FC<VidstackPlayerProps> = (props) => {
-  const { mediaId, mediaType, onClose } = props;
-  const [sources, setSources] = useState<MediaSource[]>([]);
+  const { mediaId, mediaType, onClose, initialPosition = 0 } = props;
+  const [directUrl, setDirectUrl] = useState<string | null>(null);
+  const [startOffset, setStartOffset] = useState<number>(initialPosition / 1000);
+  const [duration, setDuration] = useState<number>(props.duration || 0);
   const [isPreparing, setIsPreparing] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const isFirstLoad = useRef(true);
 
+  // Fetch direct playback/remux URL once
   useEffect(() => {
     const loadSources = async () => {
       try {
-        setIsPreparing(true);
-        // Fetch both Direct and HLS sources in parallel
-        const [directUrl, hlsUrl] = await Promise.all([
-          api.startStreaming(mediaId, mediaType, 'direct').catch(() => null),
-          api.startStreaming(mediaId, mediaType, 'hls').catch(() => null)
-        ]);
-
-        const newSources: MediaSource[] = [];
-        if (directUrl) {
-          newSources.push({ src: directUrl, type: 'video/mp4' });
-        }
-        if (hlsUrl) {
-          newSources.push({ src: hlsUrl, type: 'application/x-mpegURL' });
+        if (isFirstLoad.current) {
+          setIsPreparing(true);
         }
 
-        if (newSources.length === 0) {
-          throw new Error("No playable sources found.");
+        // Fetch playback status to get accurate duration
+        if (isFirstLoad.current) {
+          const status = await api.getPlaybackStatus(mediaType, mediaId).catch(() => null);
+          if (status && status.duration_ms > 0) {
+            setDuration(status.duration_ms / 1000);
+          }
         }
 
-        setSources(newSources);
+        const url = await api.startStreaming(mediaId, mediaType, 'direct');
+        setDirectUrl(url || null);
+        isFirstLoad.current = false;
         setIsPreparing(false);
       } catch (err: any) {
         setError(err.message || "Failed to prepare stream.");
@@ -194,6 +297,29 @@ const VidstackPlayer: React.FC<VidstackPlayerProps> = (props) => {
 
     loadSources();
   }, [mediaId, mediaType]);
+
+  const isPiped = useMemo(() => {
+    if (!directUrl) return false;
+    return (
+      directUrl.includes('/stream.mp4') ||
+      directUrl.includes('/stream.webm') ||
+      directUrl.includes('/stream.mkv')
+    );
+  }, [directUrl]);
+
+  const sources = useMemo<any[]>(() => {
+    if (!directUrl) return [];
+
+    const url = new URL(directUrl, window.location.origin);
+    // Only append start parameter for piped streams
+    if (isPiped && startOffset > 0) {
+      url.searchParams.set("start", startOffset.toString());
+    }
+
+    const finalSrc = url.pathname + url.search;
+    const type = directUrl.includes('.mkv') ? 'video/x-matroska' : 'video/mp4';
+    return [{ src: finalSrc, type }];
+  }, [directUrl, isPiped, isPiped ? startOffset : undefined]);
 
   return (
     <div className="fixed inset-0 z-[200] bg-black flex flex-col items-center justify-center animate-in fade-in duration-500">
@@ -227,7 +353,14 @@ const VidstackPlayer: React.FC<VidstackPlayerProps> = (props) => {
       )}
       
       {!isPreparing && !error && (
-        <PlayerContent {...props} sources={sources} />
+        <PlayerContent 
+          {...props} 
+          sources={sources} 
+          onSeek={setStartOffset} 
+          duration={duration} 
+          startOffset={startOffset}
+          isPiped={isPiped}
+        />
       )}
     </div>
   );

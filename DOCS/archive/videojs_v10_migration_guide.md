@@ -1,4 +1,7 @@
-# Migration Plan: Video.js v8 to v10
+# Migration Plan: Video.js v8 to v10 (DEFERRED)
+
+> [!NOTE]
+> **Deferred / Archived**: This migration proposal was deferred. The project continues to use the **Vidstack** player library, which is fully implemented and optimized.
 
 **Status:** Draft  
 **Target Version:** Video.js `v10.0.0-beta.23`  

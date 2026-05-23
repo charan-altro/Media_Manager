@@ -1,6 +1,6 @@
 // core/src/nfo/writer.rs
 use crate::models::{Movie, TVShow, Episode};
-use anyhow::Result;
+use crate::errors::Result;
 use quick_xml::se::to_string;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -161,6 +161,7 @@ mod tests {
             codec: None,
             video_codec: None,
             audio_codec: None,
+            hash: None,
             created_at: "2023-01-01".to_string(),
             updated_at: "2023-01-01".to_string(),
         };

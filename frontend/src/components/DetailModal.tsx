@@ -1,11 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { X, Star, Play, Calendar, Clock, Monitor, Cpu, CheckCircle2, RefreshCw, Loader2 } from 'lucide-react';
-import { getImageUrl, api } from '../api/adapter';
+import { getImageUrl, api, type Movie, type TVShow } from '../api/adapter';
 import toast from 'react-hot-toast';
 import VidstackPlayer from './VidstackPlayer';
 
 interface DetailModalProps {
-  item: any;
+  item: Movie | TVShow;
   onClose: () => void;
   onRefresh: (id: number) => void;
   onAdvanced: (id: number) => void;
@@ -18,7 +18,7 @@ const DetailModal: React.FC<DetailModalProps> = ({
   item, onClose, onRefresh, onAdvanced, onDownload, refreshingIds, loadData 
 }) => {
   const [isEditing, setIsEditing] = useState(false);
-  const [editForm, setEditForm] = useState<any>(null);
+  const [editForm, setEditForm] = useState<Partial<Movie & TVShow>>({});
   const [seasons, setSeasons] = useState<any[]>([]);
   const [episodes, setEpisodes] = useState<Record<number, any[]>>({});
   const [playbackStatus, setPlaybackStatus] = useState<any>(null);

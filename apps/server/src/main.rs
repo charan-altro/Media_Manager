@@ -2,7 +2,7 @@
 use axum::Router;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use media_core::db::{self, SettingsRepository};
+use media_core::db;
 use media_core::task_manager::TaskManager;
 use tower_http::cors::CorsLayer;
 
@@ -40,8 +40,15 @@ async fn main() {
             std::env::temp_dir().join("media_manager_transcodes").to_string_lossy().to_string()
         }
     });
-    media_core::config::set_hls_transcode_dir(transcode_dir.clone());
-    let stream_manager: Arc<dyn StreamingService> = Arc::new(StreamManager::new(std::path::PathBuf::from(&transcode_dir)));
+
+    let config = media_core::AppConfig {
+        ffmpeg_path: std::env::var("FFMPEG_PATH").unwrap_or_else(|_| "ffmpeg".to_string()),
+        ffprobe_path: std::env::var("FFPROBE_PATH").unwrap_or_else(|_| "ffprobe".to_string()),
+        hls_transcode_dir: transcode_dir.clone(),
+    };
+    let ctx = media_core::CoreContext::new(config, repos.clone(), task_manager.clone());
+
+    let stream_manager: Arc<dyn StreamingService> = Arc::new(StreamManager::new(ctx.config.clone()));
 
     let clients = Arc::new(media_core::scraper::ScraperClients::from_settings(&repos).await);
     let scraper_service = Arc::new(media_core::scraper::service::DefaultScraperService::new(
@@ -50,8 +57,18 @@ async fn main() {
         clients,
     ));
     let scanner_service = Arc::new(media_core::scanner::service::DefaultScannerService::new(
-        repos.clone(),
+        ctx.clone(),
         task_manager.clone(),
+    ));
+
+    let library_service = Arc::new(media_core::services::LibraryService::new(
+        ctx.clone(),
+        scanner_service.clone(),
+        scraper_service.clone(),
+    ));
+    let playback_service = Arc::new(media_core::services::PlaybackService::new(
+        ctx.clone(),
+        stream_manager.clone(),
     ));
 
     let app_state = Arc::new(AppState {
@@ -61,49 +78,25 @@ async fn main() {
         stream_manager: stream_manager.clone(),
         scraper_service: scraper_service.clone(),
         scanner_service: scanner_service.clone(),
+        library_service: library_service.clone(),
+        playback_service: playback_service.clone(),
     });
 
     // Start background stream cleanup
-    let sm_for_cleanup = stream_manager.clone();
+    let playback_service_for_cleanup = playback_service.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
         loop {
             interval.tick().await;
-            sm_for_cleanup.cleanup_stale_streams().await;
+            playback_service_for_cleanup.cleanup_stale_streams().await;
         }
     });
 
     // Start background notification monitor
-    let task_manager_for_notifications = task_manager.clone();
-    let repos_for_notifications = app_state.repos.clone();
-    tokio::spawn(async move {
-        let mut rx = task_manager_for_notifications.subscribe();
-        let notifier = media_core::notifications::Notifier::new();
-        
-        while let Ok(update) = rx.recv().await {
-            // Only notify on completion or error
-            if update.status == "completed" || update.status == "error" {
-                // Check settings for webhook URL
-                if let Ok(settings) = repos_for_notifications.settings.get_all().await {
-                    if let Some(url) = settings.get("discord_webhook_url") {
-                        if !url.is_empty() {
-                            let _ = notifier.send_discord_webhook(url, &update).await;
-                        }
-                    }
-                }
-            }
-        }
-    });
+    library_service.start_notification_monitor();
 
     // Start Real-time Watchdog
-    let repos_for_watchdog = repos.clone();
-    let scanner_service_for_watchdog = scanner_service.clone();
-    tokio::spawn(async move {
-        let watchdog = media_core::scanner::watchdog::Watchdog::new(repos_for_watchdog, scanner_service_for_watchdog);
-        if let Err(e) = watchdog.start().await {
-            tracing::error!("Watchdog failed: {}", e);
-        }
-    });
+    library_service.start_watchdog();
 
     let allowed_origin = std::env::var("ALLOWED_ORIGIN").unwrap_or_else(|_| "http://localhost:5173".to_string());
     let cors = if allowed_origin == "*" {

@@ -16,10 +16,12 @@ pub mod tvmaze;
 pub mod imdbapi;
 pub mod service;
 
+pub mod provider;
 pub mod errors;
 pub use errors::{ScraperError, Result};
 
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use crate::db::{Repositories, SettingsRepository};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -57,7 +59,7 @@ pub trait MediaScraper: Send + Sync {
 }
 
 pub struct ScraperClients {
-    pub tmdb: Box<dyn MediaScraper>,
+    pub tmdb: Arc<dyn provider::ScraperProvider>,
     pub omdb: omdb::OmdbClient,
     pub fanart: fanart::FanartClient,
     pub trakt: trakt::TraktClient,
@@ -104,7 +106,7 @@ impl ScraperClients {
         imdbapi_key: String,
     ) -> Self {
         Self {
-            tmdb: Box::new(tmdb::TmdbClient::new(tmdb_key)),
+            tmdb: Arc::new(tmdb::TmdbClient::new(tmdb_key)),
             omdb: omdb::OmdbClient::new(omdb_key),
             fanart: fanart::FanartClient::new(fanart_key),
             trakt: trakt::TraktClient::new(trakt_key),

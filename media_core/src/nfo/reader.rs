@@ -1,7 +1,7 @@
 // media_core/src/nfo/reader.rs
 use serde::Deserialize;
 use quick_xml::de::from_str;
-use anyhow::Result;
+use crate::errors::Result;
 use std::path::Path;
 use regex::Regex;
 use once_cell::sync::Lazy;

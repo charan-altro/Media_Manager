@@ -4,12 +4,12 @@ use std::path::{Path, PathBuf};
 use std::collections::HashSet;
 use std::sync::Arc;
 use walkdir::WalkDir;
-use anyhow::Result;
+use crate::errors::Result;
 use sqlx::Row;
 use crate::models::{Library, MediaType, TaskUpdate, MediaStatus, Resolution, CastMember, MediaStream};
 use crate::db::{Repositories, MovieReader, MovieWriter, TvReader, TvWriter, MediaRepository};
 use crate::task_manager::ProgressSink;
-use crate::{parser, nfo, paths};
+use crate::{parser, nfo, paths, CoreContext};
 use crate::scanner::mediainfo;
 use crate::scanner::hash;
 
@@ -54,13 +54,15 @@ pub trait ScannerService: Send + Sync {
 }
 
 pub struct DefaultScannerService {
+    pub ctx: CoreContext,
     pub repos: Arc<Repositories>,
     pub progress: Arc<dyn ProgressSink>,
 }
 
 impl DefaultScannerService {
-    pub fn new(repos: Arc<Repositories>, progress: Arc<dyn ProgressSink>) -> Self {
-        Self { repos, progress }
+    pub fn new(ctx: CoreContext, progress: Arc<dyn ProgressSink>) -> Self {
+        let repos = ctx.repos.clone();
+        Self { ctx, repos, progress }
     }
 
     fn is_video_file(&self, path: &Path) -> bool {
@@ -424,6 +426,7 @@ impl ScannerService for DefaultScannerService {
                 .collect()
         };
 
+        let ffprobe_path = self.ctx.config.ffprobe_path.clone();
         let parsed_items: Vec<ParsedFile> = {
             use rayon::prelude::*;
             files.par_iter().map(|path| {
@@ -457,37 +460,53 @@ impl ScannerService for DefaultScannerService {
                     is_skipped: false,
                     metadata: nfo::reader::detect_metadata(path),
                     fingerprint: hash::calculate_oshash(path).ok(),
-                    media_info: mediainfo::get_media_info(path).ok(),
+                    media_info: mediainfo::get_media_info_with_path(path, &ffprobe_path).ok(),
                 }
             }).collect()
         };
 
-        for (i, item) in parsed_items.iter().enumerate() {
-            let relative_path = paths::make_relative(&item.path, library_root).unwrap_or_default();
-            let is_known = existing_files.contains_key(&relative_path);
+        let mut progress_count = 0;
+        for chunk in parsed_items.chunks(100) {
+            let mut txn = self.repos.pool.begin().await?;
+            let tx_ptr = crate::db::base::TxPointer(&mut *txn as *mut sqlx::SqliteConnection);
 
-            match self.process_file(library, item, is_known).await {
-                Ok(ProcessAction::Added) => files_new += 1,
-                Ok(ProcessAction::Healed) => files_healed += 1,
-                _ => {}
-            }
+            let mut chunk_new = 0;
+            let mut chunk_healed = 0;
 
-            let progress = (i + 1) as i32;
-            if progress % 10 == 0 || progress == total {
-                self.progress.broadcast(TaskUpdate {
-                    task_id: task_id.clone(),
-                    status: "running".to_string(),
-                    progress,
-                    total,
-                    message: format!("Scanned {}/{}: {}", progress, total,
-                        item.path.file_name().and_then(|s| s.to_str()).unwrap_or("")),
-                    started_at: start_time,
-                    files_new: Some(files_new),
-                    files_healed: Some(files_healed),
-                    files_missing: Some(files_missing),
-                    ..Default::default()
-                });
-            }
+            let chunk_res: crate::errors::Result<()> = crate::db::base::ACTIVE_TX.scope(Some(tx_ptr), async {
+                for item in chunk {
+                    let relative_path = paths::make_relative(&item.path, library_root).unwrap_or_default();
+                    let is_known = existing_files.contains_key(&relative_path);
+
+                    match self.process_file(library, item, is_known).await {
+                        Ok(ProcessAction::Added) => chunk_new += 1,
+                        Ok(ProcessAction::Healed) => chunk_healed += 1,
+                        _ => {}
+                    }
+                }
+                Ok(())
+            }).await;
+
+            chunk_res?;
+            txn.commit().await?;
+
+            files_new += chunk_new;
+            files_healed += chunk_healed;
+
+            progress_count += chunk.len() as i32;
+            self.progress.broadcast(TaskUpdate {
+                task_id: task_id.clone(),
+                status: "running".to_string(),
+                progress: progress_count,
+                total,
+                message: format!("Scanned {}/{}: {}", progress_count, total,
+                    chunk.last().and_then(|item| item.path.file_name()).and_then(|s| s.to_str()).unwrap_or("")),
+                started_at: start_time,
+                files_new: Some(files_new),
+                files_healed: Some(files_healed),
+                files_missing: Some(files_missing),
+                ..Default::default()
+            });
         }
 
         if library.media_type == MediaType::Movie {
@@ -539,7 +558,7 @@ impl ScannerService for DefaultScannerService {
             is_skipped: false,
             metadata: nfo::reader::detect_metadata(&path),
             fingerprint: hash::calculate_oshash(&path).ok(),
-            media_info: mediainfo::get_media_info(&path).ok(),
+            media_info: mediainfo::get_media_info_with_path(&path, &self.ctx.config.ffprobe_path).ok(),
         };
 
         let library_root = Path::new(&library.path);

@@ -1,4 +1,4 @@
-use media_core::{db, scanner, models};
+use media_core::{db, scanner, models, AppConfig, CoreContext};
 use media_core::scanner::service::ScannerService;
 use std::fs::{self, File};
 use std::io::Write;
@@ -32,7 +32,14 @@ async fn test_identity_healing() -> anyhow::Result<()> {
     let lib = libraries.into_iter().find(|l| l.id == lib_id).unwrap();
 
     let task_manager = Arc::new(media_core::task_manager::TaskManager::new());
-    let scanner_service = scanner::service::DefaultScannerService::new(repos.clone(), task_manager.clone());
+    let config = AppConfig {
+        ffmpeg_path: "ffmpeg".to_string(),
+        ffprobe_path: "ffprobe".to_string(),
+        hls_transcode_dir: "tmp".to_string(),
+    };
+    let ctx = CoreContext::new(config, repos.clone(), task_manager.clone());
+    
+    let scanner_service = scanner::service::DefaultScannerService::new(ctx, task_manager.clone());
     scanner_service.scan_library(&lib, "test_task".into()).await?;
 
     // 4. Verify initial fingerprint

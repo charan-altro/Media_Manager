@@ -1,6 +1,6 @@
 // media_core/src/paths.rs
 use std::path::{Path, PathBuf};
-use anyhow::{Result, anyhow};
+use crate::errors::{CoreError, Result};
 use unicode_normalization::UnicodeNormalization;
 
 /// Normalizes a path string to use forward slashes (/) as separators
@@ -16,7 +16,7 @@ pub fn normalize_slashes(path: &str) -> String {
 pub fn make_relative(full_path: &Path, library_root: &Path) -> Result<String> {
     let full_str = normalize_slashes(&full_path.to_string_lossy());
     let root_str = normalize_slashes(&library_root.to_string_lossy());
-    
+
     let relative = if full_str.starts_with(&root_str) {
         let mut rel = &full_str[root_str.len()..];
         if rel.starts_with('/') {
@@ -24,7 +24,10 @@ pub fn make_relative(full_path: &Path, library_root: &Path) -> Result<String> {
         }
         rel.to_string()
     } else {
-        return Err(anyhow!("Path {} is not within library root {}", full_str, root_str));
+        return Err(CoreError::PathError(format!(
+            "Path {} is not within library root {}",
+            full_str, root_str
+        )));
     };
     
     Ok(relative)

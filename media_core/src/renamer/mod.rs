@@ -2,7 +2,7 @@
 use std::path::{Path, PathBuf};
 use std::fs;
 use regex::Regex;
-use anyhow::{Result, anyhow};
+use crate::errors::{CoreError, Result};
 use crate::models::Movie;
 
 pub struct Renamer {
@@ -64,7 +64,7 @@ impl Renamer {
 
     pub fn rename_movie(&self, movie: &Movie, current_path: &Path, library_root: &Path, resolution: Option<crate::models::Resolution>, codec: Option<&str>, script_path: Option<&str>) -> Result<PathBuf> {
         if !current_path.exists() {
-            return Err(anyhow!("File not found: {:?}", current_path));
+            return Err(CoreError::PathError(format!("File not found: {:?}", current_path)));
         }
 
         let (folder_name, file_name) = self.generate_paths(movie, current_path, resolution, codec);
@@ -77,7 +77,7 @@ impl Renamer {
 
         fs::create_dir_all(&dest_folder)?;
 
-        let old_dir = current_path.parent().ok_or_else(|| anyhow!("No parent dir"))?;
+        let old_dir = current_path.parent().ok_or_else(|| CoreError::PathError("No parent dir".to_string()))?;
         let old_stem = current_path.file_stem().and_then(|s| s.to_str()).unwrap_or_default();
         let new_stem = dest_path.file_stem().and_then(|s| s.to_str()).unwrap_or_default();
 
@@ -129,7 +129,7 @@ impl Renamer {
                 // Fallback for cross-device moves
                 let options = fs_extra::file::CopyOptions::new();
                 fs_extra::file::move_file(from, to, &options)
-                    .map_err(|e| anyhow!("Failed cross-device move: {}", e))?;
+                    .map_err(|e| CoreError::IoError(std::io::Error::new(std::io::ErrorKind::Other, format!("Failed cross-device move: {}", e))))?;
                 Ok(())
             }
             Err(e) => Err(e.into()),

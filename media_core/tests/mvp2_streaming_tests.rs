@@ -1,15 +1,21 @@
 // tests/mvp2_streaming_tests.rs
 use media_core::scanner::streaming::{StreamManager, StreamingService};
-use media_core::config;
+use media_core::AppConfig;
 use tempfile::tempdir;
+use std::path::PathBuf;
 
 #[tokio::test]
 async fn test_mvp2_streaming_lifecycle() {
     let tmp_dir = tempdir().expect("Failed to create temp dir");
     let transcode_dir = tmp_dir.path().to_path_buf();
-    config::set_hls_transcode_dir(transcode_dir.to_string_lossy().to_string());
     
-    let stream_manager = StreamManager::new(transcode_dir.clone());
+    let config = AppConfig {
+        ffmpeg_path: "ffmpeg".to_string(),
+        ffprobe_path: "ffprobe".to_string(),
+        hls_transcode_dir: transcode_dir.to_string_lossy().to_string(),
+    };
+    
+    let stream_manager = StreamManager::new(config);
     
     let input_dir = tempdir().expect("Failed to create input temp dir");
     let input_file = input_dir.path().join("test_video.mp4");
@@ -30,18 +36,16 @@ async fn test_mvp2_streaming_lifecycle() {
         std::fs::create_dir_all(&session_dir).unwrap();
     }
     
-    // Since start_hls failed, there is no session in the map. 
-    // stop_stream only cleans up if it's in the sessions map.
-    // So we test the cleanup by ensuring stop_stream works when a session *is* there.
-    // But we can't easily insert into the private map.
-    
-    // Let's just verify the config and base functionality.
     assert!(transcode_dir.exists());
 }
 
 #[tokio::test]
 async fn test_hls_transcode_dir_config() {
     let custom_dir = "custom_transcodes_dir";
-    config::set_hls_transcode_dir(custom_dir.to_string());
-    assert_eq!(config::get_hls_transcode_dir(), custom_dir);
+    let config = AppConfig {
+        ffmpeg_path: "ffmpeg".to_string(),
+        ffprobe_path: "ffprobe".to_string(),
+        hls_transcode_dir: custom_dir.to_string(),
+    };
+    assert_eq!(config.hls_transcode_dir, custom_dir);
 }

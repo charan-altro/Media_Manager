@@ -19,7 +19,7 @@ impl Watchdog {
         Self { repos, scanner_service }
     }
 
-    pub async fn start(&self) -> anyhow::Result<()> {
+    pub async fn start(&self) -> crate::errors::Result<()> {
         let (tx, mut rx) = mpsc::channel(100);
 
         let mut watcher = notify::RecommendedWatcher::new(move |res| {

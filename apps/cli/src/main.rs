@@ -57,7 +57,15 @@ async fn main() -> Result<()> {
     let pool = db::init_pool(&database_url).await?;
     let repos = Arc::new(Repositories::new(pool.clone()));
     let task_manager = Arc::new(TaskManager::new());
-    let scanner_service = DefaultScannerService::new(repos.clone(), task_manager.clone());
+    let config = media_core::AppConfig {
+        ffmpeg_path: std::env::var("FFMPEG_PATH").unwrap_or_else(|_| "ffmpeg".to_string()),
+        ffprobe_path: std::env::var("FFPROBE_PATH").unwrap_or_else(|_| "ffprobe".to_string()),
+        hls_transcode_dir: std::env::var("HLS_TRANSCODE_DIR").unwrap_or_else(|_| {
+            std::env::temp_dir().join("media_manager_transcodes").to_string_lossy().to_string()
+        }),
+    };
+    let ctx = media_core::CoreContext::new(config, repos.clone(), task_manager.clone());
+    let scanner_service = DefaultScannerService::new(ctx, task_manager.clone());
     let scraper_clients = Arc::new(media_core::scraper::ScraperClients::from_settings(&repos).await);
     let scraper_service = DefaultScraperService::new(repos.clone(), task_manager.clone(), scraper_clients);
 

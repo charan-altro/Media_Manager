@@ -1,7 +1,7 @@
 // core/src/subtitles/mod.rs
 use serde::{Deserialize, Serialize};
 use reqwest::Client;
-use anyhow::{Result, anyhow};
+use crate::errors::{CoreError, Result};
 use std::path::Path;
 use tokio::fs;
 use std::fs::File;
@@ -50,7 +50,7 @@ pub fn compute_opensubtitles_hash(path: &Path) -> Result<String> {
     let chunk_size = 65536;
 
     if size < chunk_size {
-        return Err(anyhow!("File too small"));
+        return Err(CoreError::PathError("File too small".to_string()));
     }
 
     let mut hash = size;
@@ -154,9 +154,9 @@ mod tests {
         let mut file = File::create(&path).unwrap();
         // Write exactly 10 bytes, smaller than the 65536 threshold
         file.write_all(&[0; 10]).unwrap();
-        let hash = compute_opensubtitles_hash(&path);
-        assert!(hash.is_err());
-        assert_eq!(hash.unwrap_err().to_string(), "File too small");
+        let res = compute_opensubtitles_hash(&path);
+        assert!(res.is_err());
+        assert_eq!(res.unwrap_err().to_string(), "Path error: File too small");
         let _ = std::fs::remove_file(path);
     }
 

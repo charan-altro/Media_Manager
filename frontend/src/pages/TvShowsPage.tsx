@@ -3,80 +3,81 @@ import { Tv } from 'lucide-react';
 import Hero from '../components/Hero';
 import Sidebar from '../components/Sidebar';
 import MediaGrid from '../components/MediaGrid';
+import { useMediaStore } from '../context/MediaStoreContext';
 
-interface TvShowsPageProps {
-  tvShows: any[];
-  libraries: any[];
-  selectedLibrary: number | null;
-  setSelectedLibrary: (id: number | null) => void;
-  moviesCount: number;
-  searchQuery: string;
-  onItemClick: (item: any, e: React.MouseEvent) => void;
-  onPlayClick: (item: any, e: React.MouseEvent) => void;
-  selectedIds: number[];
-  selectionMode: boolean;
-  setSelectionMode: (mode: boolean) => void;
-  setSelectedIds: (ids: number[] | ((prev: number[]) => number[])) => void;
-  genreFilter: string;
-  setGenreFilter: (genre: string) => void;
-  languageFilter: string;
-  setLanguageFilter: (lang: string) => void;
-  allGenres: string[];
-  allLanguages: string[];
-  showFilterMenu: boolean;
-  setShowFilterMenu: (show: boolean) => void;
-}
+const TvShowsPage: React.FC = () => {
+  const {
+    tvShows,
+    movies,
+    libraries,
+    selectedLibrary,
+    setSelectedLibrary,
+    searchQuery,
+    genreFilter,
+    setGenreFilter,
+    languageFilter,
+    setLanguageFilter,
+    allGenres,
+    allLanguages,
+    showFilterMenu,
+    setShowFilterMenu,
+    selectedIds,
+    setSelectedIds,
+    selectionMode,
+    setSelectionMode,
+    handleItemClick,
+    handlePlayClick,
+  } = useMediaStore();
 
-const TvShowsPage: React.FC<TvShowsPageProps> = (props) => {
   const filteredShows = useMemo(() => {
-    return props.tvShows.filter(s => 
-      s.title.toLowerCase().includes(props.searchQuery.toLowerCase()) ||
-      (s.genres && s.genres.toLowerCase().includes(props.searchQuery.toLowerCase()))
+    return tvShows.filter(s =>
+      s.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (s.genres && s.genres.toLowerCase().includes(searchQuery.toLowerCase()))
     );
-  }, [props.tvShows, props.searchQuery]);
+  }, [tvShows, searchQuery]);
 
   const heroItem = useMemo(() => {
-    return props.tvShows.find(s => s.backdrop_url && s.status === 'matched') || props.tvShows[0];
-  }, [props.tvShows]);
+    return tvShows.find(s => s.backdrop_url && s.status === 'matched') || tvShows[0];
+  }, [tvShows]);
 
   return (
     <div className="pb-24">
-      <Hero 
-        item={heroItem} 
-        onPlay={(item) => props.onItemClick(item, {} as any)} 
-        onDetails={(item) => props.onItemClick(item, {} as any)} 
+      <Hero
+        item={heroItem}
+        onPlay={(item) => handleItemClick(item)}
+        onDetails={(item) => handleItemClick(item)}
       />
-      
+
       <div className={`flex flex-col md:flex-row gap-8 px-4 md:px-12 ${heroItem ? '-mt-20 relative z-10' : 'pt-24'}`}>
-        <Sidebar 
-          libraries={props.libraries}
-          selectedLibrary={props.selectedLibrary}
-          setSelectedLibrary={props.setSelectedLibrary}
-          moviesCount={props.moviesCount}
-          tvShowsCount={props.tvShows.length}
+        <Sidebar
+          libraries={libraries}
+          selectedLibrary={selectedLibrary}
+          setSelectedLibrary={setSelectedLibrary}
+          moviesCount={movies.length}
+          tvShowsCount={tvShows.length}
         />
-        
+
         <div className="flex-1 min-w-0">
-          <MediaGrid 
+          <MediaGrid
             title="Television"
             icon={<Tv className="w-6 h-6 text-red-600" />}
             items={filteredShows}
             itemCount={filteredShows.length}
-            onItemClick={props.onItemClick}
-            onPlayClick={props.onPlayClick}
-            selectedIds={props.selectedIds}
-            selectionMode={props.selectionMode}
-            setSelectionMode={props.setSelectionMode}
-            setSelectedIds={props.setSelectedIds}
-            selectedLibrary={props.selectedLibrary}
-            genreFilter={props.genreFilter}
-            setGenreFilter={props.setGenreFilter}
-            languageFilter={props.languageFilter}
-            setLanguageFilter={props.setLanguageFilter}
-            allGenres={props.allGenres}
-            allLanguages={props.allLanguages}
-            showFilterMenu={props.showFilterMenu}
-            setShowFilterMenu={props.setShowFilterMenu}
+            onItemClick={handleItemClick}
+            onPlayClick={handlePlayClick}
+            selectedIds={selectedIds}
+            selectionMode={selectionMode}
+            setSelectionMode={setSelectionMode}
+            setSelectedIds={setSelectedIds}
+            selectedLibrary={selectedLibrary}
+            genreFilter={genreFilter}
+            setGenreFilter={setGenreFilter}
+            languageFilter={languageFilter}
+            setLanguageFilter={setLanguageFilter}
+            allGenres={allGenres}
+            allLanguages={allLanguages}
+            showFilterMenu={showFilterMenu}
+            setShowFilterMenu={setShowFilterMenu}
           />
         </div>
       </div>

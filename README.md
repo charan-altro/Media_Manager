@@ -57,8 +57,9 @@ docker compose up --build
 
 ## Documentation
 
-- [System Design](DOCS/ARCHITECTURE/system_design.md)
-- [Application Architecture](DOCS/ARCHITECTURE/application_architecture.md)
-- [Migration Plan](DOCS/MIGRATION/python_to_rust_migration.md)
-- [MVP Scope](DOCS/PRODUCT/mvp.md)
-- [Implementation Plan](DOCS/PLAN/implementation_plan.md)
+- [Documentation Index](DOCS/README.md)
+- [Master Project Book](DOCS/MASTER_PROJECT_BOOK.md)
+- [System Architecture](DOCS/ARCHITECTURE.md)
+- [Python to Rust Migration](DOCS/MIGRATION.md)
+- [Product Specifications](DOCS/PRODUCT.md)
+- [Implementation Plan](DOCS/PLAN.md)

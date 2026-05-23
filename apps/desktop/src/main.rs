@@ -6,19 +6,22 @@ use media_core::db::{self, Repositories, LibraryReader, LibraryWriter, MovieRead
 use media_core::task_manager::{TaskManager, ProgressSink};
 use media_core::scanner::service::{ScannerService, DefaultScannerService};
 use media_core::scraper::service::{ScraperService, DefaultScraperService};
-use media_core::models::{Library, Movie, MediaType, TVShow, Season, Episode, TaskUpdate, MovieId, TvShowId, LibraryId};
+use media_core::models::{Library, Movie, MediaType, TVShow, Season, Episode, TaskUpdate, MovieId, TvShowId, LibraryId, Resolution};
 use media_core::cleanup::CleanupService;
 use media_core::exporter::Exporter;
 use sqlx::SqlitePool;
 
 use tauri::path::BaseDirectory;
 
+#[allow(dead_code)]
 struct AppState {
     pool: SqlitePool,
     repos: Arc<Repositories>,
     task_manager: Arc<TaskManager>,
     scanner_service: Arc<dyn ScannerService>,
     scraper_service: Arc<dyn ScraperService>,
+    library_service: Arc<media_core::services::LibraryService>,
+    playback_service: Arc<media_core::services::PlaybackService>,
 }
 
 fn now_ms() -> u64 {
@@ -667,7 +670,7 @@ async fn cleanup_empty_folders(id: i64, state: State<'_, AppState>) -> Result<Ve
 }
 
 #[tauri::command]
-async fn start_streaming(id: i64, media_type: String, state: State<'_, AppState>, app_handle: tauri::AppHandle) -> Result<String, String> {
+async fn start_streaming(id: i64, media_type: String, state: State<'_, AppState>) -> Result<String, String> {
     let path = if media_type == "movie" {
         state.repos.movie.get_full_path(media_core::models::MovieId(id)).await
     } else {
@@ -675,40 +678,12 @@ async fn start_streaming(id: i64, media_type: String, state: State<'_, AppState>
     }.map_err(|e| e.to_string())?;
 
     if let Some(input_path) = path {
-        let cache_dir = app_handle.path().app_cache_dir().unwrap_or_else(|_| std::env::current_dir().unwrap());
-        let output_dir = cache_dir.join("transcodes").join(id.to_string());
-        
-        // Clean up previous transcodes for this ID
-        if output_dir.exists() {
-            let _ = std::fs::remove_dir_all(&output_dir);
-        }
-        std::fs::create_dir_all(&output_dir).map_err(|e| e.to_string())?;
-
-        media_core::scanner::ffmpeg::FfmpegEngine::create_hls_stream(&input_path, &output_dir)
-            .map_err(|e| e.to_string())?;
-
-        let playlist = output_dir.join("playlist.m3u8");
-        
-        // Wait for playlist to be created and non-empty
-        let mut attempts = 0;
-        while attempts < 30 { // Wait up to 15 seconds
-            if playlist.exists() {
-                if let Ok(meta) = std::fs::metadata(&playlist) {
-                    if meta.len() > 0 {
-                        // Small extra delay to ensure the first segments are written
-                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                        break;
-                    }
-                }
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            attempts += 1;
-        }
-
-        if !playlist.exists() {
-            return Err("Streaming failed to start: playlist not created".to_string());
-        }
-
+        let stream_id = if media_type == "movie" {
+            format!("movie_{}", id)
+        } else {
+            format!("episode_{}", id)
+        };
+        let playlist = state.playback_service.start_hls(&stream_id, &input_path).await.map_err(|e| e.to_string())?;
         Ok(playlist.to_string_lossy().to_string())
     } else {
         Err("Media not found".to_string())
@@ -841,7 +816,7 @@ async fn download_to_local(id: i64, media_type: String, dest_path: String, state
 
 #[tauri::command]
 async fn get_playback_status(id: i64, media_type: String, state: State<'_, AppState>) -> Result<serde_json::Value, String> {
-    match state.repos.media.get_playback_status(id, &media_type).await {
+    match state.playback_service.get_playback_status(id, &media_type).await {
         Ok(Some(status)) => Ok(serde_json::json!({
             "position_ms": status.position_ms,
             "duration_ms": status.duration_ms,
@@ -860,7 +835,7 @@ async fn update_playback_progress(
     is_finished: bool,
     state: State<'_, AppState>
 ) -> Result<(), String> {
-    state.repos.media.update_playback_status(media_id, &media_type, position_ms, duration_ms, is_finished)
+    state.playback_service.update_playback_progress(media_id, &media_type, position_ms, duration_ms, is_finished)
         .await
         .map_err(|e| e.to_string())
 }
@@ -890,25 +865,13 @@ fn main() {
         task_manager.clone(),
         clients,
     ));
-    let scanner_service = Arc::new(DefaultScannerService::new(
-        repos.clone(),
-        task_manager.clone(),
-    ));
 
+    let repos_clone = repos.clone();
     let task_manager_clone = task_manager.clone();
-    let repos_for_watchdog = repos.clone();
-    let scanner_service_for_watchdog = scanner_service.clone();
-    let repos_for_notifications = repos.clone();
-    let task_manager_for_notifications = task_manager.clone();
-    
+    let scraper_service_clone = scraper_service.clone();
+    let pool_clone = pool.clone();
+
     tauri::Builder::default()
-        .manage(AppState { 
-            pool: pool.clone(), 
-            repos: repos.clone(), 
-            task_manager,
-            scanner_service,
-            scraper_service,
-        })
         .invoke_handler(tauri::generate_handler![
             get_libraries, create_library, delete_library,
             get_movies, get_tv_shows, get_seasons, get_episodes,
@@ -922,7 +885,7 @@ fn main() {
             cleanup_duplicates, cleanup_empty_folders, start_streaming,
             download_to_local, get_playback_status, update_playback_progress
         ])
-        .setup(|app| {
+        .setup(move |app| {
             // Resolve sidecar paths
             let handle = app.handle();
             
@@ -931,45 +894,85 @@ fn main() {
             #[cfg(not(target_os = "windows"))]
             let (ffmpeg_name, ffprobe_name) = ("ffmpeg", "ffprobe");
 
+            let mut ffmpeg_path_str = "ffmpeg".to_string();
+            let mut ffprobe_path_str = "ffprobe".to_string();
+
             if let Ok(ffmpeg_path) = handle.path().resolve(format!("bin/{}", ffmpeg_name), BaseDirectory::Resource) {
                 if ffmpeg_path.exists() {
                     tracing::info!("Found bundled FFmpeg at: {:?}", ffmpeg_path);
-                    media_core::config::set_ffmpeg_path(ffmpeg_path.to_string_lossy().to_string());
+                    ffmpeg_path_str = ffmpeg_path.to_string_lossy().to_string();
                 }
             }
 
             if let Ok(ffprobe_path) = handle.path().resolve(format!("bin/{}", ffprobe_name), BaseDirectory::Resource) {
                 if ffprobe_path.exists() {
                     tracing::info!("Found bundled ffprobe at: {:?}", ffprobe_path);
-                    media_core::config::set_ffprobe_path(ffprobe_path.to_string_lossy().to_string());
+                    ffprobe_path_str = ffprobe_path.to_string_lossy().to_string();
                 }
             }
 
+            let cache_dir = handle.path().app_cache_dir().unwrap_or_else(|_| std::env::current_dir().unwrap());
+            let transcode_dir = cache_dir.join("transcodes").to_string_lossy().to_string();
+
+            let config = media_core::AppConfig {
+                ffmpeg_path: ffmpeg_path_str,
+                ffprobe_path: ffprobe_path_str,
+                hls_transcode_dir: transcode_dir,
+            };
+
+            let ctx = media_core::CoreContext::new(config, repos_clone.clone(), task_manager_clone.clone());
+
+            let stream_manager = Arc::new(media_core::scanner::streaming::StreamManager::new(ctx.config.clone()));
+
+            let scanner_service = Arc::new(DefaultScannerService::new(
+                ctx.clone(),
+                task_manager_clone.clone(),
+            ));
+
+            let library_service = Arc::new(media_core::services::LibraryService::new(
+                ctx.clone(),
+                scanner_service.clone(),
+                scraper_service_clone.clone(),
+            ));
+
+            let playback_service = Arc::new(media_core::services::PlaybackService::new(
+                ctx.clone(),
+                stream_manager.clone(),
+            ));
+
+            // Start background stream cleanup
+            let playback_service_for_cleanup = playback_service.clone();
             tauri::async_runtime::spawn(async move {
-                let mut rx = task_manager_for_notifications.subscribe();
-                let notifier = media_core::notifications::Notifier::new();
-                while let Ok(update) = rx.recv().await {
-                    if update.status == "completed" || update.status == "error" {
-                        if let Ok(settings) = repos_for_notifications.settings.get_all().await {
-                            if let Some(url) = settings.get("discord_webhook_url") {
-                                if !url.is_empty() {
-                                    let _ = notifier.send_discord_webhook(url, &update).await;
-                                }
-                            }
-                        }
-                    }
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+                loop {
+                    interval.tick().await;
+                    playback_service_for_cleanup.cleanup_stale_streams().await;
                 }
             });
-            tauri::async_runtime::spawn(async move {
-                let watchdog = media_core::scanner::watchdog::Watchdog::new(repos_for_watchdog, scanner_service_for_watchdog);
-                let _ = watchdog.start().await;
+
+            // Start notification monitor
+            library_service.start_notification_monitor();
+
+            // Start watchdog
+            library_service.start_watchdog();
+
+            app.manage(AppState {
+                pool: pool_clone,
+                repos: repos_clone,
+                task_manager: task_manager_clone.clone(),
+                scanner_service,
+                scraper_service: scraper_service_clone,
+                library_service,
+                playback_service,
             });
-            let handle = app.handle().clone();
+
+            let handle_clone = handle.clone();
+            let task_manager_for_events = task_manager_clone.clone();
             tauri::async_runtime::spawn(async move {
-                let mut rx = task_manager_clone.subscribe();
+                let mut rx = task_manager_for_events.subscribe();
                 loop {
                     match rx.recv().await {
-                        Ok(update) => { let _ = handle.emit("task-update", update); }
+                        Ok(update) => { let _ = handle_clone.emit("task-update", update); }
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                         Err(_) => break,
                     }

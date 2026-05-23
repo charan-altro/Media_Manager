@@ -17,23 +17,27 @@ impl FfmpegEngine {
     /// Determines the best streaming strategy based on media details and browser support.
     pub fn get_stream_strategy(details: &crate::scanner::mediainfo::MediaDetails) -> StreamStrategy {
         let video_supported = ["h264", "vp9", "av1"].contains(&details.video_codec.as_str());
-        let audio_supported = ["aac", "mp3", "opus"].contains(&details.audio_codec.as_str());
+        let audio_supported = ["aac", "mp3"].contains(&details.audio_codec.as_str());
+        let rotation_ok = details.rotation == 0;
 
-        match (video_supported, audio_supported) {
-            (true, true) => StreamStrategy::DirectCopy,
-            (true, false) => StreamStrategy::SmartRemux { video_copy: true, audio_copy: false },
-            (false, true) => StreamStrategy::SmartRemux { video_copy: false, audio_copy: true },
-            (false, false) => StreamStrategy::FullTranscode,
+        match (video_supported, audio_supported, rotation_ok) {
+            (true, true, true) => StreamStrategy::DirectCopy,
+            (true, false, true) => StreamStrategy::SmartRemux { video_copy: true, audio_copy: false },
+            (false, true, _) | (true, true, false) => StreamStrategy::SmartRemux { video_copy: false, audio_copy: true },
+            (true, false, false) | (false, false, _) => StreamStrategy::FullTranscode,
         }
     }
 
     pub fn probe_hw_codecs() -> Vec<String> {
+        Self::probe_hw_codecs_with_path("ffmpeg")
+    }
+
+    pub fn probe_hw_codecs_with_path(ffmpeg_path: &str) -> Vec<String> {
         let mut supported = Vec::new();
-        // Include v4l2m2m for Broadcom/Raspberry Pi architectures
         let codecs_to_test = ["h264_v4l2m2m", "h264_nvenc", "h264_qsv", "h264_videotoolbox", "h264_vaapi"];
         
         for codec in codecs_to_test {
-            let output = Command::new(crate::config::get_ffmpeg_path())
+            let output = Command::new(ffmpeg_path)
                 .args(&[
                     "-v", "error",
                     "-f", "lavfi",
@@ -55,11 +59,15 @@ impl FfmpegEngine {
     }
 
     pub fn probe_hw_decoders() -> Vec<String> {
+        Self::probe_hw_decoders_with_path("ffmpeg")
+    }
+
+    pub fn probe_hw_decoders_with_path(ffmpeg_path: &str) -> Vec<String> {
         let mut supported = Vec::new();
         let decoders_to_test = ["h264_v4l2m2m", "hevc_v4l2m2m", "h264_cuvid", "hevc_cuvid", "h264_qsv", "hevc_qsv"];
         
         for decoder in decoders_to_test {
-            let output = Command::new(crate::config::get_ffmpeg_path())
+            let output = Command::new(ffmpeg_path)
                 .args(&[
                     "-v", "error",
                     "-decoders"
@@ -101,8 +109,11 @@ impl FfmpegEngine {
     }
 
     pub fn check_ffmpeg() -> Result<()> {
-        let ffmpeg_path = crate::config::get_ffmpeg_path();
-        let output = Command::new(&ffmpeg_path)
+        Self::check_ffmpeg_with_path("ffmpeg")
+    }
+
+    pub fn check_ffmpeg_with_path(ffmpeg_path: &str) -> Result<()> {
+        let output = Command::new(ffmpeg_path)
             .arg("-version")
             .output();
 
@@ -117,10 +128,14 @@ impl FfmpegEngine {
     }
 
     pub fn extract_thumbnail(input_path: &Path, dest_path: &Path, time_offset: &str) -> Result<PathBuf> {
-        Self::check_ffmpeg()?;
+        Self::extract_thumbnail_with_path("ffmpeg", input_path, dest_path, time_offset)
+    }
+
+    pub fn extract_thumbnail_with_path(ffmpeg_path: &str, input_path: &Path, dest_path: &Path, time_offset: &str) -> Result<PathBuf> {
+        Self::check_ffmpeg_with_path(ffmpeg_path)?;
         info!("Extracting thumbnail from {:?} at {}", input_path, time_offset);
         
-        let output = Command::new(crate::config::get_ffmpeg_path())
+        let output = Command::new(ffmpeg_path)
             .args(&[
                 "-ss", time_offset,
                 "-i", input_path.to_str().ok_or_else(|| CoreError::PathError("Invalid input path".to_string()))?,
@@ -141,20 +156,24 @@ impl FfmpegEngine {
     }
 
     pub fn generate_preview(input_path: &Path, output_path: &Path) -> Result<PathBuf> {
-        Self::check_ffmpeg()?;
+        Self::generate_preview_with_path("ffmpeg", input_path, output_path)
+    }
+
+    pub fn generate_preview_with_path(ffmpeg_path: &str, input_path: &Path, output_path: &Path) -> Result<PathBuf> {
+        Self::check_ffmpeg_with_path(ffmpeg_path)?;
         info!("Generating 10s preview for {:?} at {:?}", input_path, output_path);
         
-        let output = Command::new(crate::config::get_ffmpeg_path())
+        let output = Command::new(ffmpeg_path)
             .args(&[
-                "-ss", "00:05:00", // Start 5 minutes in
+                "-ss", "00:05:00",
                 "-i", input_path.to_str().ok_or_else(|| CoreError::PathError("Invalid input path".to_string()))?,
-                "-t", "10", // 10 seconds duration
-                "-vf", "scale=w=480:h=-2", // Standardize preview width
+                "-t", "10",
+                "-vf", "scale=w=480:h=-2",
                 "-c:v", "libx264",
                 "-preset", "ultrafast",
                 "-crf", "28",
-                "-an", // No audio
-                "-y", // Overwrite
+                "-an",
+                "-y",
                 output_path.to_str().ok_or_else(|| CoreError::PathError("Invalid dest path".to_string()))?,
             ])
             .output()?;
@@ -169,22 +188,23 @@ impl FfmpegEngine {
     }
 
     pub fn generate_advanced_assets(input_path: &Path, hash: &str, generated_root: &Path, duration_secs: f64) -> Result<()> {
+        Self::generate_advanced_assets_with_path("ffmpeg", "ffprobe", input_path, hash, generated_root, duration_secs)
+    }
+
+    pub fn generate_advanced_assets_with_path(ffmpeg_path: &str, _ffprobe_path: &str, input_path: &Path, hash: &str, generated_root: &Path, duration_secs: f64) -> Result<()> {
         let dest_dir = generated_root.join(hash);
         if !dest_dir.exists() {
             std::fs::create_dir_all(&dest_dir)?;
         }
 
-        // 1. Thumbnail
         let thumb_path = dest_dir.join("thumb.jpg");
-        Self::extract_thumbnail(input_path, &thumb_path, "00:01:00")?;
+        Self::extract_thumbnail_with_path(ffmpeg_path, input_path, &thumb_path, "00:01:00")?;
 
-        // 2. Sprite Sheet (also generates .vtt)
         let sprite_path = dest_dir.join("sprite.webp");
-        Self::generate_sprite_sheet(input_path, &sprite_path, duration_secs)?;
+        Self::generate_sprite_sheet_with_path(ffmpeg_path, input_path, &sprite_path, duration_secs)?;
 
-        // 3. Hover Preview
         let preview_path = dest_dir.join("preview.mp4");
-        Self::generate_preview(input_path, &preview_path)?;
+        Self::generate_preview_with_path(ffmpeg_path, input_path, &preview_path)?;
 
         Ok(())
     }
@@ -197,15 +217,17 @@ impl FfmpegEngine {
         format!("{:02}:{:02}:{:02}.{:03}", hrs, mins, secs, ms)
     }
 
-    /// Generates a sprite sheet (tile grid) for seek previews.
-    /// Creates a 10x10 grid of tiny thumbnails.
     pub fn generate_sprite_sheet(input_path: &Path, output_path: &Path, duration_secs: f64) -> Result<PathBuf> {
-        Self::check_ffmpeg()?;
-        let interval = duration_secs / 100.0; // 100 frames for 10x10 grid
+        Self::generate_sprite_sheet_with_path("ffmpeg", input_path, output_path, duration_secs)
+    }
+
+    pub fn generate_sprite_sheet_with_path(ffmpeg_path: &str, input_path: &Path, output_path: &Path, duration_secs: f64) -> Result<PathBuf> {
+        Self::check_ffmpeg_with_path(ffmpeg_path)?;
+        let interval = duration_secs / 100.0;
         
         info!("Generating 10x10 sprite sheet for {:?} at interval {}s", input_path, interval);
 
-        let output = Command::new(crate::config::get_ffmpeg_path())
+        let output = Command::new(ffmpeg_path)
             .args(&[
                 "-i", input_path.to_str().unwrap(),
                 "-vf", &format!("fps=1/{},scale=160:-1,tile=10x10", interval),
@@ -219,7 +241,6 @@ impl FfmpegEngine {
             return Err(CoreError::FfmpegError(format!("FFmpeg sprite failed: {}", err)));
         }
 
-        // Generate WebVTT
         let vtt_path = output_path.with_extension("vtt");
         let sprite_filename = output_path.file_name().unwrap_or_default().to_string_lossy();
         let mut vtt = String::from("WEBVTT\n\n");
@@ -229,7 +250,7 @@ impl FfmpegEngine {
             let end_time = Self::format_vtt_time((i + 1) as f64 * interval);
             
             let x = (i % 10) * 160;
-            let y = (i / 10) * 90; // Assuming 16:9 approx
+            let y = (i / 10) * 90;
             
             vtt.push_str(&format!("{} --> {}\n", start_time, end_time));
             vtt.push_str(&format!("{}#xywh={},{},160,90\n\n", sprite_filename, x, y));
@@ -241,11 +262,14 @@ impl FfmpegEngine {
     }
 
     pub fn detect_aspect_ratio(input_path: &Path) -> Result<String> {
-        Self::check_ffmpeg()?;
+        Self::detect_aspect_ratio_with_path("ffmpeg", input_path)
+    }
+
+    pub fn detect_aspect_ratio_with_path(ffmpeg_path: &str, input_path: &Path) -> Result<String> {
+        Self::check_ffmpeg_with_path(ffmpeg_path)?;
         info!("Detecting aspect ratio for {:?}", input_path);
         
-        // We'll analyze 10 frames around the 5-minute mark to avoid credits/intros
-        let output = Command::new(crate::config::get_ffmpeg_path())
+        let output = Command::new(ffmpeg_path)
             .args(&[
                 "-ss", "00:05:00",
                 "-i", input_path.to_str().ok_or_else(|| CoreError::PathError("Invalid path".to_string()))?,
@@ -258,7 +282,6 @@ impl FfmpegEngine {
 
         let stderr = String::from_utf8_lossy(&output.stderr);
         
-        // Parse cropdetect output: crop=1920:800:0:140
         let mut crops = std::collections::HashMap::new();
         for line in stderr.lines() {
             if let Some(pos) = line.find("crop=") {
@@ -267,19 +290,16 @@ impl FfmpegEngine {
             }
         }
 
-        // Find the most frequent crop
         let best_crop = crops.into_iter()
             .max_by_key(|&(_, count)| count)
             .map(|(crop, _)| crop)
             .ok_or_else(|| CoreError::PathError("No crop detected".to_string()))?;
 
-        // Extract width and height from crop=W:H:X:Y
         let parts: Vec<&str> = best_crop.trim_start_matches("crop=").split(':').collect();
         if parts.len() >= 2 {
             let w: f32 = parts[0].parse()?;
             let h: f32 = parts[1].parse()?;
             
-            // Calculate ratio and return a pretty string (e.g. 2.40:1 or 16:9)
             let ratio = w / h;
             if (ratio - 1.77).abs() < 0.1 { return Ok("16:9".to_string()); }
             if (ratio - 2.39).abs() < 0.1 { return Ok("2.39:1".to_string()); }
@@ -292,7 +312,11 @@ impl FfmpegEngine {
     }
 
     pub fn create_hls_stream(input_path: &Path, output_dir: &Path) -> Result<PathBuf> {
-        Self::check_ffmpeg()?;
+        Self::create_hls_stream_with_path("ffmpeg", input_path, output_dir)
+    }
+
+    pub fn create_hls_stream_with_path(ffmpeg_path: &str, input_path: &Path, output_dir: &Path) -> Result<PathBuf> {
+        Self::check_ffmpeg_with_path(ffmpeg_path)?;
         info!("Starting HLS transcode for {:?} into {:?}", input_path, output_dir);
         
         if !output_dir.exists() {
@@ -302,15 +326,14 @@ impl FfmpegEngine {
         let playlist_path = output_dir.join("playlist.m3u8");
         let segment_pattern = output_dir.join("seg_%03d.ts");
 
-        // Simple Hardware Acceleration check
-        let supported_codecs = Self::probe_hw_codecs();
+        let supported_codecs = Self::probe_hw_codecs_with_path(ffmpeg_path);
         let encoder = if let Some(codec) = supported_codecs.first() {
             codec.as_str()
         } else {
             "libx264"
         };
 
-        let _ = Command::new(crate::config::get_ffmpeg_path())
+        let _ = Command::new(ffmpeg_path)
             .args(&[
                 "-i", input_path.to_str().ok_or_else(|| CoreError::PathError("Invalid path".to_string()))?,
                 "-c:v", encoder,

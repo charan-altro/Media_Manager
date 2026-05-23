@@ -34,41 +34,43 @@ impl SqliteMediaRepository {
 impl MediaRepository for SqliteMediaRepository {
     #[tracing::instrument(skip(self), err)]
     async fn upsert_stream(&self, stream: &MediaStream) -> Result<()> {
-        sqlx::query(
-            r#"
-            INSERT INTO media_streams (file_hash, stream_index, stream_type, codec, language, title, channels, is_default)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(file_hash, stream_index) DO UPDATE SET
-                codec = excluded.codec,
-                language = excluded.language,
-                title = excluded.title,
-                channels = excluded.channels,
-                is_default = excluded.is_default
-            "#
-        )
-        .bind(&stream.file_hash)
-        .bind(stream.stream_index)
-        .bind(&stream.stream_type)
-        .bind(&stream.codec)
-        .bind(&stream.language)
-        .bind(&stream.title)
-        .bind(stream.channels)
-        .bind(stream.is_default)
-        .execute(&*self.base.pool)
-        .await?;
+        crate::execute_db!(
+            &*self.base.pool,
+            sqlx::query(
+                r#"
+                INSERT INTO media_streams (file_hash, stream_index, stream_type, codec, language, title, channels, is_default)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(file_hash, stream_index) DO UPDATE SET
+                    codec = excluded.codec,
+                    language = excluded.language,
+                    title = excluded.title,
+                    channels = excluded.channels,
+                    is_default = excluded.is_default
+                "#
+            )
+            .bind(&stream.file_hash)
+            .bind(stream.stream_index)
+            .bind(&stream.stream_type)
+            .bind(&stream.codec)
+            .bind(&stream.language)
+            .bind(&stream.title)
+            .bind(stream.channels)
+            .bind(stream.is_default)
+        ).await?;
         Ok(())
     }
 
     #[tracing::instrument(skip(self), err)]
     async fn upsert_generated_asset(&self, hash: &str, asset_type: &str, path: &str) -> Result<()> {
-        sqlx::query(
-            "INSERT INTO generated_assets (file_hash, asset_type, path) VALUES (?, ?, ?) ON CONFLICT(file_hash, asset_type) DO UPDATE SET path=excluded.path"
-        )
-        .bind(hash)
-        .bind(asset_type)
-        .bind(path)
-        .execute(&*self.base.pool)
-        .await?;
+        crate::execute_db!(
+            &*self.base.pool,
+            sqlx::query(
+                "INSERT INTO generated_assets (file_hash, asset_type, path) VALUES (?, ?, ?) ON CONFLICT(file_hash, asset_type) DO UPDATE SET path=excluded.path"
+            )
+            .bind(hash)
+            .bind(asset_type)
+            .bind(path)
+        ).await?;
         Ok(())
     }
 
@@ -122,24 +124,25 @@ impl MediaRepository for SqliteMediaRepository {
 
     #[tracing::instrument(skip(self), err)]
     async fn update_playback_status(&self, media_id: i64, media_type: &str, position_ms: i32, duration_ms: i32, is_finished: bool) -> Result<()> {
-        sqlx::query(
-            r#"
-            INSERT INTO playback_state (media_id, media_type, position_ms, duration_ms, is_finished, updated_at)
-            VALUES (?, ?, ?, ?, ?, datetime('now'))
-            ON CONFLICT(media_id, media_type) DO UPDATE SET
-                position_ms = excluded.position_ms,
-                duration_ms = excluded.duration_ms,
-                is_finished = excluded.is_finished,
-                updated_at = datetime('now')
-            "#
-        )
-        .bind(media_id)
-        .bind(media_type)
-        .bind(position_ms)
-        .bind(duration_ms)
-        .bind(is_finished)
-        .execute(&*self.base.pool)
-        .await?;
+        crate::execute_db!(
+            &*self.base.pool,
+            sqlx::query(
+                r#"
+                INSERT INTO playback_state (media_id, media_type, position_ms, duration_ms, is_finished, updated_at)
+                VALUES (?, ?, ?, ?, ?, datetime('now'))
+                ON CONFLICT(media_id, media_type) DO UPDATE SET
+                    position_ms = excluded.position_ms,
+                    duration_ms = excluded.duration_ms,
+                    is_finished = excluded.is_finished,
+                    updated_at = datetime('now')
+                "#
+            )
+            .bind(media_id)
+            .bind(media_type)
+            .bind(position_ms)
+            .bind(duration_ms)
+            .bind(is_finished)
+        ).await?;
         Ok(())
     }
 }

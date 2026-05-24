@@ -16,17 +16,20 @@ export interface Movie {
   id: number;
   library_id: number;
   title: string;
-  year?: number;
+  year?: number | null;
   tmdb_id?: number;
   imdb_id?: string;
   status: string;
   plot?: string;
-  rating?: number;
+  rating?: number | null;
   tagline?: string;
-  runtime?: number;
+  runtime?: number | null;
+  trailer_url?: string;
+  aspect_ratio?: string;
+  duration_secs?: number;
   poster_url?: string;
   backdrop_url?: string;
-  genres?: string;
+  genres?: string | string[];
   language?: string;
   cast_list?: string;
   created_at: string;
@@ -41,19 +44,29 @@ export interface TVShow {
   id: number;
   library_id: number;
   title: string;
-  year?: number;
+  year?: number | null;
   tmdb_id?: number;
   imdb_id?: string;
   tvdb_id?: string;
   status: string;
   plot?: string;
-  rating?: number;
+  rating?: number | null;
+  tagline?: string;
+  runtime?: number | null;
+  trailer_url?: string;
+  aspect_ratio?: string;
+  duration_secs?: number;
   poster_url?: string;
   backdrop_url?: string;
-  genres?: string;
+  genres?: string | string[];
   language?: string;
   cast_list?: string;
   created_at: string;
+  file_path?: string;
+  resolution?: string;
+  video_codec?: string;
+  audio_codec?: string;
+  hash?: string;
 }
 
 export interface Season {

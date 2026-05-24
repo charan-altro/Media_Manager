@@ -2,7 +2,7 @@
 use media_core::scanner::streaming::{StreamManager, StreamingService};
 use media_core::AppConfig;
 use tempfile::tempdir;
-use std::path::PathBuf;
+
 
 #[tokio::test]
 async fn test_mvp2_streaming_lifecycle() {

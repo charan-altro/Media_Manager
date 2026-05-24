@@ -21,8 +21,6 @@ import SettingsPage from './pages/SettingsPage'
 function AppContent() {
   const {
     libraries,
-    movies,
-    tvShows,
     selectedLibrary,
     setSelectedLibrary,
     searchQuery,
@@ -37,8 +35,6 @@ function AppContent() {
     setRefreshingIds,
     handleRefreshMetadata,
     handleProcessAdvanced,
-    handleItemClick,
-    handlePlayClick,
     appSettings,
     setAppSettings,
     loadData,

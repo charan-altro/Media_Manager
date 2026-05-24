@@ -29,10 +29,13 @@ const TvShowsPage: React.FC = () => {
     handlePlayClick,
   } = useMediaStore();
 
+  const genreText = (genres: string | string[] | undefined) =>
+    Array.isArray(genres) ? genres.join(' ') : genres || '';
+
   const filteredShows = useMemo(() => {
     return tvShows.filter(s =>
       s.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      (s.genres && s.genres.toLowerCase().includes(searchQuery.toLowerCase()))
+      genreText(s.genres).toLowerCase().includes(searchQuery.toLowerCase())
     );
   }, [tvShows, searchQuery]);
 

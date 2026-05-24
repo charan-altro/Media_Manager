@@ -30,10 +30,13 @@ const MoviesPage: React.FC = () => {
     handlePlayClick,
   } = useMediaStore();
 
+  const genreText = (genres: string | string[] | undefined) =>
+    Array.isArray(genres) ? genres.join(' ') : genres || '';
+
   const filteredMovies = useMemo(() => {
     return movies.filter(m =>
       m.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      (m.genres && m.genres.toLowerCase().includes(searchQuery.toLowerCase()))
+      genreText(m.genres).toLowerCase().includes(searchQuery.toLowerCase())
     );
   }, [movies, searchQuery]);
 

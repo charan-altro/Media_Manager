@@ -46,8 +46,8 @@ export interface MediaStoreState {
   handlePlayClick: (item: Movie | TVShow, e: React.MouseEvent) => void;
 
   // Actions
-  refreshingIds: Set<number>;
-  setRefreshingIds: (ids: Set<number>) => void;
+  refreshingIds: Record<number, boolean>;
+  setRefreshingIds: (ids: Record<number, boolean> | ((prev: Record<number, boolean>) => Record<number, boolean>)) => void;
   handleRefreshMetadata: (id: number) => Promise<void>;
   handleProcessAdvanced: (id: number) => Promise<void>;
 

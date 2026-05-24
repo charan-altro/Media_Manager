@@ -29,8 +29,6 @@ const DetailModal: React.FC<DetailModalProps> = ({
   const [activeMediaType, setActiveMediaType] = useState<'movie' | 'episode' | null>(null);
   const [activeTitle, setActiveTitle] = useState<string>('');
   const [activePosterUrl, setActivePosterUrl] = useState<string | undefined>(undefined);
-  const [activeVideoCodec, setActiveVideoCodec] = useState<string | undefined>(undefined);
-  const [activeAudioCodec, setActiveAudioCodec] = useState<string | undefined>(undefined);
   const [activeHash, setActiveHash] = useState<string | undefined>(undefined);
   const [resumePosition, setResumePosition] = useState(0);
   const [showResumeDialog, setShowResumeDialog] = useState(false);
@@ -51,14 +49,10 @@ const DetailModal: React.FC<DetailModalProps> = ({
       if (metadata) {
         setActiveTitle(metadata.title);
         setActivePosterUrl(metadata.posterUrl);
-        setActiveVideoCodec(metadata.videoCodec);
-        setActiveAudioCodec(metadata.audioCodec);
         setActiveHash(metadata.hash);
       } else {
         setActiveTitle(item.title);
         setActivePosterUrl(item.poster_url || item.backdrop_url);
-        setActiveVideoCodec(item.video_codec);
-        setActiveAudioCodec(item.audio_codec);
         setActiveHash(item.hash);
       }
 
@@ -148,12 +142,12 @@ const DetailModal: React.FC<DetailModalProps> = ({
   const startEditing = () => {
     setEditForm({
       title: item.title,
-      year: item.year || null,
+      year: item.year || undefined,
       plot: item.plot || '',
       rating: item.rating || 0,
-      genres: genres,
+      genres: genres as any,
       tagline: item.tagline || '',
-      runtime: item.runtime || null,
+      runtime: item.runtime || undefined,
       language: item.language || '',
       trailer_url: item.trailer_url || '',
     });
@@ -211,7 +205,7 @@ const DetailModal: React.FC<DetailModalProps> = ({
                 {isEditing ? (
                   <input
                     type="number" step="0.1" max="10" min="0"
-                    value={editForm.rating}
+                    value={editForm.rating ?? ''}
                     onChange={(e) => setEditForm({...editForm, rating: parseFloat(e.target.value)})}
                     className="bg-zinc-900 border border-zinc-700 rounded px-2 w-16 outline-none"
                   />
@@ -235,7 +229,7 @@ const DetailModal: React.FC<DetailModalProps> = ({
                     <input 
                       type="number"
                       value={editForm.year || ''}
-                      onChange={(e) => setEditForm({...editForm, year: parseInt(e.target.value) || null})}
+                      onChange={(e) => setEditForm({...editForm, year: parseInt(e.target.value) || undefined})}
                       className="bg-zinc-900 border border-zinc-700 rounded px-2 w-20 outline-none"
                     />
                   ) : (
@@ -284,7 +278,7 @@ const DetailModal: React.FC<DetailModalProps> = ({
                       <input 
                         type="number"
                         value={editForm.runtime || ''}
-                        onChange={(e) => setEditForm({...editForm, runtime: parseInt(e.target.value) || null})}
+                        onChange={(e) => setEditForm({...editForm, runtime: parseInt(e.target.value) || undefined})}
                         className="w-full bg-zinc-900/50 border border-zinc-700 rounded-lg px-4 py-2 text-zinc-300 outline-none focus:border-red-600 transition"
                       />
                     </div>
@@ -393,7 +387,7 @@ const DetailModal: React.FC<DetailModalProps> = ({
                 {isEditing ? (
                   <input 
                     value={Array.isArray(editForm.genres) ? editForm.genres.join(', ') : ''}
-                    onChange={(e) => setEditForm({...editForm, genres: e.target.value.split(',').map((s: string) => s.trim()).filter((s: string) => s)})}
+                    onChange={(e) => setEditForm({...editForm, genres: e.target.value.split(',').map((s: string) => s.trim()).filter((s: string) => s) as any})}
                     className="bg-zinc-900 border border-zinc-700 rounded px-4 py-2 text-sm text-zinc-300 outline-none w-full"
                     placeholder="Comedy, Drama, Sci-Fi"
                   />
@@ -570,7 +564,7 @@ const DetailModal: React.FC<DetailModalProps> = ({
             <div className="flex flex-col gap-2">
               <button 
                 onClick={() => {
-                  setStreamingUrl(pendingUrl); // Just set any non-null to open Vidstack
+                  setStreamingUrl(pendingUrl ? getStreamingUrlWithSeek(pendingUrl, resumePosition) : null);
                   setShowResumeDialog(false);
                 }}
                 className="w-full bg-red-600 hover:bg-red-700 py-3 rounded-xl font-black uppercase text-xs tracking-widest text-white transition"
@@ -599,7 +593,7 @@ const DetailModal: React.FC<DetailModalProps> = ({
           title={activeTitle}
           posterUrl={activePosterUrl}
           hash={activeHash}
-          duration={item.duration_secs || (item.runtime ? item.runtime * 60 : 0)}
+          duration={(item as any).duration_secs || ((item as any).runtime ? (item as any).runtime * 60 : 0)}
           initialPosition={resumePosition}
           onClose={async () => {
             setStreamingUrl(null);

@@ -82,10 +82,10 @@ async fn main() {
         playback_service: playback_service.clone(),
     });
 
-    // Start background stream cleanup
+    // Start background stream cleanup (faster check to align with 30s reap timeout)
     let playback_service_for_cleanup = playback_service.clone();
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
         loop {
             interval.tick().await;
             playback_service_for_cleanup.cleanup_stale_streams().await;

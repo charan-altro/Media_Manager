@@ -4,7 +4,6 @@ import {
   MediaProvider, 
   Poster, 
   Gesture,
-  type MediaSrc,
   type MediaPlayerInstance
 } from '@vidstack/react';
 import { 
@@ -301,25 +300,57 @@ const VidstackPlayer: React.FC<VidstackPlayerProps> = (props) => {
   const isPiped = useMemo(() => {
     if (!directUrl) return false;
     return (
+      directUrl.includes('/playlist.m3u8') ||
       directUrl.includes('/stream.mp4') ||
       directUrl.includes('/stream.webm') ||
-      directUrl.includes('/stream.mkv')
+      directUrl.includes('/stream.mkv') ||
+      directUrl.includes('/stream.ts')
     );
   }, [directUrl]);
 
   const sources = useMemo<any[]>(() => {
     if (!directUrl) return [];
 
-    const url = new URL(directUrl, window.location.origin);
-    // Only append start parameter for piped streams
-    if (isPiped && startOffset > 0) {
+    let finalUrlStr = directUrl;
+    
+    // Safari Workaround: Safari does not handle progressive/fragmented stream pipes well.
+    // If it is Safari, and it's a piped stream (but not already HLS), redirect/rewrite it to HLS (.m3u8)
+    const isSafari = typeof window !== 'undefined' && 
+      /Safari/.test(navigator.userAgent) && 
+      !/Chrome/.test(navigator.userAgent) && 
+      !/Chromium/.test(navigator.userAgent);
+      
+    if (isSafari && isPiped && !directUrl.includes('.m3u8')) {
+      if (directUrl.includes('/stream/direct/')) {
+        finalUrlStr = directUrl.replace(/\/stream\.[a-z0-9]+/, '/playlist.m3u8');
+      } else if (directUrl.includes('/stream/jit/movie/')) {
+        const id = directUrl.split('/').pop();
+        finalUrlStr = `/api/stream/direct/movie_${id}/playlist.m3u8`;
+      } else if (directUrl.includes('/stream/jit/episode/')) {
+        const id = directUrl.split('/').pop();
+        finalUrlStr = `/api/stream/direct/episode_${id}/playlist.m3u8`;
+      }
+    }
+
+    const url = new URL(finalUrlStr, window.location.origin);
+    // Only append start parameter for piped streams (but not for HLS playlist itself)
+    const finalIsPiped = url.pathname.includes('/stream.ts') || url.pathname.includes('/stream.mp4') || url.pathname.includes('/stream.webm') || url.pathname.includes('/stream.mkv');
+    if (finalIsPiped && startOffset > 0) {
       url.searchParams.set("start", startOffset.toString());
     }
 
     const finalSrc = url.pathname + url.search;
-    const type = directUrl.includes('.mkv') ? 'video/x-matroska' : 'video/mp4';
+    const type = finalUrlStr.includes('.m3u8') 
+      ? 'application/x-mpegURL' 
+      : (finalUrlStr.includes('.mkv') || finalUrlStr.includes('ext=mkv')
+        ? 'video/webm' 
+        : (finalUrlStr.includes('.webm') || finalUrlStr.includes('ext=webm')
+          ? 'video/webm'
+          : (finalUrlStr.includes('.ts') 
+            ? 'video/mp2t' 
+            : 'video/mp4')));
     return [{ src: finalSrc, type }];
-  }, [directUrl, isPiped, isPiped ? startOffset : undefined]);
+  }, [directUrl, isPiped, startOffset]);
 
   return (
     <div className="fixed inset-0 z-[200] bg-black flex flex-col items-center justify-center animate-in fade-in duration-500">

@@ -168,8 +168,9 @@ pub fn is_direct_playable(path: &Path, details: &crate::scanner::mediainfo::Medi
     
     let is_mp4_like = ext == "mp4" || ext == "m4v" || ext == "mov";
     let is_webm_like = ext == "webm";
+    let is_mkv = ext == "mkv";
 
-    if !is_mp4_like && !is_webm_like {
+    if !is_mp4_like && !is_webm_like && !is_mkv {
         return false;
     }
 
@@ -179,12 +180,12 @@ pub fn is_direct_playable(path: &Path, details: &crate::scanner::mediainfo::Medi
 
     let video_ok = ["h264", "vp9", "av1", "hevc"].contains(&v_codec.as_str());
     
-    // MP4/MOV supports AAC, MP3, and Opus
+    // MP4/MOV and MKV support AAC, MP3, Opus, Vorbis, AC3, E-AC3, FLAC, and DTS
     // WebM supports Opus and Vorbis
     let audio_ok = if is_webm_like {
         ["opus", "vorbis", "none"].contains(&a_codec.as_str())
     } else {
-        ["aac", "mp3", "opus", "none"].contains(&a_codec.as_str())
+        ["aac", "mp3", "opus", "vorbis", "ac3", "ec3", "flac", "dts", "dca", "none"].contains(&a_codec.as_str())
     };
 
     // 3. Rotation must be 0
@@ -443,10 +444,26 @@ impl StreamManager {
                 ]);
             }
 
-            // Hardware Scaling (Pi 4 Optimized)
-            if self.hw_decoders.contains(&"h264_v4l2m2m".to_string()) && details.width > 1280 {
-                args.push("-vf".to_string());
-                args.push("scale_v4l2m2m=1280:-1".to_string());
+            // Hardware-Accelerated Scaling mapping to prevent CPU copies
+            if details.width > 1280 {
+                let scale_filter = if v_codec == "h264_v4l2m2m" && self.hw_decoders.contains(&"h264_v4l2m2m".to_string()) {
+                    Some("scale_v4l2m2m=1280:-1".to_string())
+                } else if v_codec.contains("nvenc") && (self.hw_decoders.contains(&"h264_cuvid".to_string()) || self.hw_decoders.contains(&"hevc_cuvid".to_string())) {
+                    Some("scale_cuda=1280:-1".to_string())
+                } else if v_codec.contains("qsv") {
+                    Some("scale_qsv=1280:-1".to_string())
+                } else if v_codec.contains("vaapi") {
+                    Some("scale_vaapi=1280:-1".to_string())
+                } else if v_codec.contains("videotoolbox") {
+                    Some("scale_vt=1280:-1".to_string())
+                } else {
+                    Some("scale=1280:-1".to_string())
+                };
+
+                if let Some(filter) = scale_filter {
+                    args.push("-vf".to_string());
+                    args.push(filter);
+                }
             }
         }
 
@@ -581,6 +598,9 @@ impl StreamManager {
         if format == "webm" {
             // WebM only supports vp8, vp9, av1
             video_copyable = ["vp9", "vp8", "av1"].contains(&details.video_codec.to_lowercase().as_str());
+        } else if format == "ts" {
+            // MPEG-TS supports H.264 and HEVC (H.265)
+            video_copyable = ["h264", "hevc"].contains(&details.video_codec.to_lowercase().as_str());
         }
 
         if !video_copyable {
@@ -640,6 +660,18 @@ impl StreamManager {
                     "-ac".to_string(), "2".to_string()
                 ]);
             }
+        } else if format == "ts" {
+            // MPEG-TS: Copy if AAC or MP3, otherwise transcode to AAC (Opus is not well-supported in MPEG-TS by Hls.js)
+            let audio_copyable = ["aac", "mp3"].contains(&details.audio_codec.to_lowercase().as_str());
+            if audio_copyable {
+                args.push("copy".to_string());
+            } else {
+                args.extend(vec![
+                    "aac".to_string(),
+                    "-b:a".to_string(), "128k".to_string(),
+                    "-ac".to_string(), "2".to_string()
+                ]);
+            }
         } else {
             // MP4: Copy if AAC, MP3, or Opus, otherwise transcode to AAC
             let audio_copyable = ["aac", "mp3", "opus"].contains(&details.audio_codec.to_lowercase().as_str());
@@ -669,6 +701,8 @@ impl StreamManager {
             "matroska"
         } else if format == "webm" {
             "webm"
+        } else if format == "ts" {
+            "mpegts"
         } else {
             "mp4"
         };
@@ -801,7 +835,7 @@ impl StreamingService for StreamManager {
             // Restart if process died or segment is outside current transcode window (behind or too far ahead)
             let needs_restart = !is_alive 
                 || segment_index < session.start_segment 
-                || segment_index > session.last_requested_segment + 50;
+                || segment_index > session.last_requested_segment + 5;
 
             if !needs_restart {
                 session.last_requested_segment = segment_index;
@@ -860,7 +894,7 @@ impl StreamingService for StreamManager {
         let mut session_ids_to_throttle = Vec::new();
         
         let now = std::time::Instant::now();
-        let timeout = std::time::Duration::from_secs(120);
+        let timeout = std::time::Duration::from_secs(30);
 
         for entry in self.sessions.iter() {
             let id = entry.key();
@@ -874,7 +908,7 @@ impl StreamingService for StreamManager {
 
             // 2. Transcoder too far ahead (throttle only)
             if let Some(latest) = *session.latest_segment_rx.borrow() {
-                if latest > session.last_requested_segment + 30 { 
+                if latest > session.last_requested_segment + 15 { 
                     session_ids_to_throttle.push(id.clone());
                 }
             }

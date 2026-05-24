@@ -3,9 +3,18 @@ use axum::{
     Router,
     extract::{State, Path, Query},
     Json,
-    response::IntoResponse,
+    response::{IntoResponse, Redirect},
     http::{header, StatusCode},
 };
+
+fn is_safari(headers: &axum::http::HeaderMap) -> bool {
+    if let Some(user_agent) = headers.get(header::USER_AGENT).and_then(|h| h.to_str().ok()) {
+        let ua = user_agent.to_lowercase();
+        ua.contains("safari") && !ua.contains("chrome") && !ua.contains("chromium") && !ua.contains("crios")
+    } else {
+        false
+    }
+}
 use std::sync::Arc;
 use std::path::PathBuf;
 use crate::state::AppState;
@@ -330,11 +339,11 @@ async fn start_movie_stream(
 
             if playable {
                 tracing::info!("Tier 2: File is browser-compatible, enabling native static direct play for movie ID: {}", id);
-                return (StatusCode::OK, Json(format!("/api/stream/direct/movie/{}", id))).into_response();
+                let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("mp4");
+                return (StatusCode::OK, Json(format!("/api/stream/direct/movie/{}?ext={}", id, ext))).into_response();
             } else {
-                let ext = "mp4";
-                tracing::info!("Tier 2: File is browser-incompatible, enabling piped {} remux/transcode for movie ID: {}", ext, id);
-                return (StatusCode::OK, Json(format!("/api/stream/direct/{}/stream.{}", stream_id, ext))).into_response();
+                tracing::info!("Tier 2: File is browser-incompatible, enabling piped HLS remux/transcode for movie ID: {}", id);
+                return (StatusCode::OK, Json(format!("/api/stream/direct/{}/playlist.m3u8", stream_id))).into_response();
             }
         }
 
@@ -398,11 +407,11 @@ async fn start_episode_stream(
 
             if playable {
                 tracing::info!("Tier 2: File is browser-compatible, enabling native static direct play for episode ID: {}", id);
-                return (StatusCode::OK, Json(format!("/api/stream/direct/episode/{}", id))).into_response();
+                let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("mp4");
+                return (StatusCode::OK, Json(format!("/api/stream/direct/episode/{}?ext={}", id, ext))).into_response();
             } else {
-                let ext = "mp4";
-                tracing::info!("Tier 2: File is browser-incompatible, enabling piped {} remux/transcode for episode ID: {}", ext, id);
-                return (StatusCode::OK, Json(format!("/api/stream/direct/{}/stream.{}", stream_id, ext))).into_response();
+                tracing::info!("Tier 2: File is browser-incompatible, enabling piped HLS remux/transcode for episode ID: {}", id);
+                return (StatusCode::OK, Json(format!("/api/stream/direct/{}/playlist.m3u8", stream_id))).into_response();
             }
         }
 
@@ -437,7 +446,9 @@ async fn start_episode_stream(
 async fn serve_direct_hls_manifest(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
+    Query(query): Query<JitStreamQuery>,
 ) -> impl IntoResponse {
+    let start_time = query.start.unwrap_or(0.0);
     let (m_type, m_id) = if id.starts_with("movie_") {
         ("movie", id.strip_prefix("movie_").unwrap().parse::<i64>().unwrap_or(0))
     } else if id.starts_with("episode_") {
@@ -477,10 +488,10 @@ async fn serve_direct_hls_manifest(
             };
 
             if let Some(_path) = path_str {
-                // We ALWAYS use MP4 (fMP4) for the internal HLS segment because it's the most 
-                // compatible format for piped streaming in modern browsers.
-                // Video will still be 'copied' (zero CPU) if it's already H264.
-                let stream_url = format!("/api/stream/direct/{}/stream.mp4?start=0", id);
+                // We use MPEG-TS (.ts) for the internal HLS segment because it is a streamable
+                // format natively supported by Hls.js without requiring initialization segments.
+                // Video/audio will still be 'copied' (zero CPU) if they are browser-compatible.
+                let stream_url = format!("/api/stream/direct/{}/stream.ts?start={}", id, start_time);
                 let manifest = media_core::scanner::streaming::generate_direct_hls_manifest(dur as f64, &stream_url);
                 return (
                     [(header::CONTENT_TYPE, "application/vnd.apple.mpegurl")],
@@ -502,8 +513,14 @@ async fn serve_direct_stream_generic(
     State(state): State<Arc<AppState>>,
     Path((id, ext)): Path<(String, String)>,
     Query(query): Query<JitStreamQuery>,
+    headers: axum::http::HeaderMap,
 ) -> impl IntoResponse {
     let start_time = query.start.unwrap_or(0.0);
+    
+    if is_safari(&headers) && (ext == "mp4" || ext == "webm" || ext == "mkv") {
+        tracing::info!("Safari detected on direct stream {}, redirecting to HLS playlist", id);
+        return Redirect::temporary(&format!("/api/stream/direct/{}/playlist.m3u8", id)).into_response();
+    }
     
     let path = if id.starts_with("movie_") {
         let m_id = id.strip_prefix("movie_").unwrap().parse::<i64>().unwrap_or(0);
@@ -521,6 +538,7 @@ async fn serve_direct_stream_generic(
         let mime = match ext.as_str() {
             "mp4" => "video/mp4",
             "webm" => "video/webm",
+            "ts" => "video/mp2t",
             _ => "video/x-matroska",
         };
 
@@ -550,8 +568,14 @@ async fn serve_jit_movie(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
     Query(query): Query<JitStreamQuery>,
+    headers: axum::http::HeaderMap,
 ) -> impl IntoResponse {
     let start_time = query.start.unwrap_or(0.0);
+    
+    if is_safari(&headers) {
+        tracing::info!("Safari detected on JIT movie stream {}, redirecting to HLS playlist", id);
+        return Redirect::temporary(&format!("/api/stream/direct/movie_{}/playlist.m3u8", id)).into_response();
+    }
     if let Ok(Some(path)) = state.repos.movie.get_full_path(MovieId(id)).await {
         tracing::info!("JIT stream requested for movie {} at {}s", id, start_time);
         match state.stream_manager.start_direct_stream(&path, start_time, "mp4").await {
@@ -579,8 +603,14 @@ async fn serve_jit_episode(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
     Query(query): Query<JitStreamQuery>,
+    headers: axum::http::HeaderMap,
 ) -> impl IntoResponse {
     let start_time = query.start.unwrap_or(0.0);
+    
+    if is_safari(&headers) {
+        tracing::info!("Safari detected on JIT episode stream {}, redirecting to HLS playlist", id);
+        return Redirect::temporary(&format!("/api/stream/direct/episode_{}/playlist.m3u8", id)).into_response();
+    }
     if let Ok(Some(path)) = state.repos.tv.get_episode_full_path(EpisodeId(id)).await {
         tracing::info!("JIT stream requested for episode {} at {}s", id, start_time);
         match state.stream_manager.start_direct_stream(&path, start_time, "mp4").await {

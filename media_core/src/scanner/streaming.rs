@@ -180,12 +180,12 @@ pub fn is_direct_playable(path: &Path, details: &crate::scanner::mediainfo::Medi
 
     let video_ok = ["h264", "vp9", "av1", "hevc"].contains(&v_codec.as_str());
     
-    // MP4/MOV and MKV support AAC, MP3, Opus, Vorbis, AC3, E-AC3, FLAC, and DTS
-    // WebM supports Opus and Vorbis
+    // Direct playback compatible audio codecs (natively supported by standard HTML5 browsers)
+    // AC3, EAC3, DTS, and FLAC are excluded to trigger on-the-fly audio transcoding to Opus.
     let audio_ok = if is_webm_like {
         ["opus", "vorbis", "none"].contains(&a_codec.as_str())
     } else {
-        ["aac", "mp3", "opus", "vorbis", "ac3", "ec3", "flac", "dts", "dca", "none"].contains(&a_codec.as_str())
+        ["aac", "mp3", "opus", "vorbis", "none"].contains(&a_codec.as_str())
     };
 
     // 3. Rotation must be 0

@@ -333,14 +333,22 @@ async fn start_movie_stream(
         // Tier 2: Direct Streaming (Static File Range Serving or Piped Remux)
         if protocol == "direct" || protocol == "jit" {
             let mut playable = false;
+            let mut video_ok = false;
             if let Ok(details) = media_core::scanner::mediainfo::get_media_info(&path) {
                 playable = media_core::scanner::streaming::is_direct_playable(&path, &details);
+                let v_codec = details.video_codec.to_lowercase();
+                video_ok = ["h264", "vp9", "av1", "hevc"].contains(&v_codec.as_str());
             }
 
             if playable {
                 tracing::info!("Tier 2: File is browser-compatible, enabling native static direct play for movie ID: {}", id);
                 let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("mp4");
                 return (StatusCode::OK, Json(format!("/api/stream/direct/movie/{}?ext={}", id, ext))).into_response();
+            } else if video_ok {
+                tracing::info!("Tier 2: Video is compatible but audio is incompatible, enabling progressive piped remux with audio transcode for movie ID: {}", id);
+                let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("mp4").to_lowercase();
+                let stream_ext = if ext == "mkv" || ext == "webm" { "mkv" } else { "mp4" };
+                return (StatusCode::OK, Json(format!("/api/stream/direct/{}/stream.{}", stream_id, stream_ext))).into_response();
             } else {
                 tracing::info!("Tier 2: File is browser-incompatible, enabling piped HLS remux/transcode for movie ID: {}", id);
                 return (StatusCode::OK, Json(format!("/api/stream/direct/{}/playlist.m3u8", stream_id))).into_response();
@@ -401,14 +409,22 @@ async fn start_episode_stream(
         // Tier 2: Direct Streaming (Static File Range Serving or Piped Remux)
         if protocol == "direct" || protocol == "jit" {
             let mut playable = false;
+            let mut video_ok = false;
             if let Ok(details) = media_core::scanner::mediainfo::get_media_info(&path) {
                 playable = media_core::scanner::streaming::is_direct_playable(&path, &details);
+                let v_codec = details.video_codec.to_lowercase();
+                video_ok = ["h264", "vp9", "av1", "hevc"].contains(&v_codec.as_str());
             }
 
             if playable {
                 tracing::info!("Tier 2: File is browser-compatible, enabling native static direct play for episode ID: {}", id);
                 let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("mp4");
                 return (StatusCode::OK, Json(format!("/api/stream/direct/episode/{}?ext={}", id, ext))).into_response();
+            } else if video_ok {
+                tracing::info!("Tier 2: Video is compatible but audio is incompatible, enabling progressive piped remux with audio transcode for episode ID: {}", id);
+                let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("mp4").to_lowercase();
+                let stream_ext = if ext == "mkv" || ext == "webm" { "mkv" } else { "mp4" };
+                return (StatusCode::OK, Json(format!("/api/stream/direct/{}/stream.{}", stream_id, stream_ext))).into_response();
             } else {
                 tracing::info!("Tier 2: File is browser-incompatible, enabling piped HLS remux/transcode for episode ID: {}", id);
                 return (StatusCode::OK, Json(format!("/api/stream/direct/{}/playlist.m3u8", stream_id))).into_response();

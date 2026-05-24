@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import { 
   MediaPlayer, 
   MediaProvider, 
@@ -20,6 +21,68 @@ import { getImageUrl, api, API_BASE } from '../api/adapter';
 import { useVidstackAbLoop, type AbLoopManager } from '../hooks/useVidstackAbLoop';
 import { AbLoopControls } from './AbLoopControls';
 
+const formatTime = (secs: number) => {
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  const s = Math.floor(secs % 60);
+  if (h > 0) {
+    return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+  }
+  return `${m}:${s.toString().padStart(2, '0')}`;
+};
+
+const TimelineMarkers: React.FC<{
+  markers: any[];
+  duration: number;
+  onSeek: (seconds: number) => void;
+}> = ({ markers, duration, onSeek }) => {
+  const [trackEl, setTrackEl] = useState<Element | null>(null);
+
+  useEffect(() => {
+    // Poll for the track element
+    const interval = setInterval(() => {
+      const el = document.querySelector('.vds-time-slider .vds-slider-track') || 
+                 document.querySelector('.vds-time-slider') || 
+                 document.querySelector('.vds-slider');
+      if (el) {
+        setTrackEl(el);
+        clearInterval(interval);
+      }
+    }, 500);
+
+    return () => clearInterval(interval);
+  }, []);
+
+  if (!trackEl || duration <= 0) return null;
+
+  return createPortal(
+    <div className="absolute inset-y-0 left-0 right-0 pointer-events-none" style={{ zIndex: 100 }}>
+      {markers.map((marker) => {
+        const pct = (marker.seconds / duration) * 100;
+        if (pct < 0 || pct > 100) return null;
+        return (
+          <div
+            key={marker.id}
+            className="absolute top-1/2 -translate-y-1/2 w-2.5 h-2.5 bg-yellow-400 hover:bg-yellow-300 rounded-full border-2 border-black pointer-events-auto cursor-pointer group transition-transform hover:scale-150"
+            style={{ left: `${pct}%` }}
+            onClick={(e) => {
+              e.stopPropagation();
+              e.preventDefault();
+              onSeek(marker.seconds);
+            }}
+          >
+            {/* Custom tooltip */}
+            <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block bg-zinc-950/95 border border-zinc-800 text-white text-[10px] font-black uppercase tracking-wider py-1 px-2 rounded shadow-2xl whitespace-nowrap z-[999] pointer-events-none">
+              {marker.title} <span className="text-yellow-400 ml-1">{formatTime(marker.seconds)}</span>
+            </div>
+          </div>
+        );
+      })}
+    </div>,
+    trackEl
+  );
+};
+
 interface VidstackPlayerProps {
   mediaId: number;
   mediaType: 'movie' | 'episode';
@@ -37,7 +100,9 @@ const InnerPlayer: React.FC<VidstackPlayerProps & {
   isBuffering: boolean, 
   abLoop: AbLoopManager, 
   hasStarted: boolean,
-  sidecarSubs: any[]
+  sidecarSubs: any[],
+  markers: any[],
+  onSeek: (seconds: number) => void
 }> = ({
   mediaId,
   mediaType,
@@ -46,7 +111,10 @@ const InnerPlayer: React.FC<VidstackPlayerProps & {
   isBuffering,
   abLoop,
   hasStarted,
-  sidecarSubs
+  sidecarSubs,
+  markers,
+  onSeek,
+  duration
 }) => {
   // Handle keyboard hotkeys for A-B Loop
   useEffect(() => {
@@ -65,6 +133,42 @@ const InnerPlayer: React.FC<VidstackPlayerProps & {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [abLoop]);
+
+  // Screen Wake Lock support
+  useEffect(() => {
+    let wakeLock: any = null;
+    const requestWakeLock = async () => {
+      try {
+        if ('wakeLock' in navigator) {
+          wakeLock = await (navigator as any).wakeLock.request('screen');
+          console.log("[VidstackPlayer] Wake Lock acquired successfully.");
+        }
+      } catch (err) {
+        console.warn("[VidstackPlayer] Failed to acquire Wake Lock:", err);
+      }
+    };
+
+    const releaseWakeLock = async () => {
+      try {
+        if (wakeLock) {
+          await wakeLock.release();
+          wakeLock = null;
+          console.log("[VidstackPlayer] Wake Lock released.");
+        }
+      } catch (err) {
+        console.error(err);
+      }
+    };
+
+    // Acquire lock if player starts playing
+    if (hasStarted) {
+      requestWakeLock();
+    }
+
+    return () => {
+      releaseWakeLock();
+    };
+  }, [hasStarted]);
 
   const vttUrl = useMemo(() => {
     if (!hash) return undefined;
@@ -106,6 +210,8 @@ const InnerPlayer: React.FC<VidstackPlayerProps & {
 
       <AbLoopControls abLoop={abLoop} />
       
+      <TimelineMarkers markers={markers} duration={duration || 0} onSeek={onSeek} />
+      
       {isBuffering && (
         <div className="absolute inset-0 flex items-center justify-center z-[50] pointer-events-none">
           <div className="relative">
@@ -125,9 +231,10 @@ const PlayerContent: React.FC<VidstackPlayerProps & {
   onSeek: (time: number) => void, 
   duration: number,
   startOffset: number,
-  isPiped: boolean
+  isPiped: boolean,
+  onPlayerError?: (err: any) => void
 }> = (props) => {
-  const { title, sources, posterUrl, mediaId, mediaType, initialPosition = 0, onSeek, duration, startOffset, isPiped } = props;
+  const { title, sources, posterUrl, mediaId, mediaType, initialPosition = 0, onSeek, duration, startOffset, isPiped, onPlayerError } = props;
   const [isBuffering, setIsBuffering] = useState(false);
   const playerRef = useRef<MediaPlayerInstance>(null);
   const abLoop = useVidstackAbLoop();
@@ -194,16 +301,6 @@ const PlayerContent: React.FC<VidstackPlayerProps & {
     } finally {
       setNewMarkerSaving(false);
     }
-  };
-
-  const formatTime = (secs: number) => {
-    const h = Math.floor(secs / 3600);
-    const m = Math.floor((secs % 3600) / 60);
-    const s = Math.floor(secs % 60);
-    if (h > 0) {
-      return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
-    }
-    return `${m}:${s.toString().padStart(2, '0')}`;
   };
 
   // Hotkeys listener for player actions
@@ -427,10 +524,21 @@ const PlayerContent: React.FC<VidstackPlayerProps & {
         onTimeUpdate={handleTimeUpdate}
         onEnded={handleEnded}
         onSeeking={handleSeeking}
+        onError={(err) => {
+          if (onPlayerError) onPlayerError(err);
+        }}
         streamType="on-demand"
         duration={duration}
       >
-        <InnerPlayer {...props} isBuffering={isBuffering} abLoop={abLoop} hasStarted={hasStarted} sidecarSubs={sidecarSubs} />
+        <InnerPlayer 
+          {...props} 
+          isBuffering={isBuffering} 
+          abLoop={abLoop} 
+          hasStarted={hasStarted} 
+          sidecarSubs={sidecarSubs} 
+          markers={markers}
+          onSeek={seek}
+        />
       </MediaPlayer>
 
       {/* Floating button to open Bookmarks drawer */}
@@ -556,11 +664,36 @@ const PlayerContent: React.FC<VidstackPlayerProps & {
 const VidstackPlayer: React.FC<VidstackPlayerProps> = (props) => {
   const { mediaId, mediaType, onClose, initialPosition = 0 } = props;
   const [directUrl, setDirectUrl] = useState<string | null>(null);
+  const [protocol, setProtocol] = useState<'direct' | 'hls'>('direct');
   const [startOffset, setStartOffset] = useState<number>(initialPosition / 1000);
   const [duration, setDuration] = useState<number>(props.duration || 0);
   const [isPreparing, setIsPreparing] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const isFirstLoad = useRef(true);
+
+  const handlePlayerError = useCallback(async (err: any) => {
+    console.error("[VidstackPlayer] Player error fired:", err);
+    if (protocol === 'direct') {
+      console.log("[VidstackPlayer] Attempting fallback to full transcoded HLS...");
+      toast.error("Direct play failed. Falling back to transcoded HLS...");
+      setIsPreparing(true);
+      try {
+        const url = await api.startStreaming(mediaId, mediaType, 'hls');
+        if (url) {
+          setDirectUrl(url);
+          setProtocol('hls');
+        } else {
+          setError("Failed to generate fallback HLS stream.");
+        }
+      } catch (e: any) {
+        setError(e.message || "Failed to start transcoded HLS stream.");
+      } finally {
+        setIsPreparing(false);
+      }
+    } else {
+      setError("Playback failed on both direct play and HLS transcoded fallback.");
+    }
+  }, [mediaId, mediaType, protocol]);
 
   // Fetch direct playback/remux URL once
   useEffect(() => {
@@ -685,6 +818,7 @@ const VidstackPlayer: React.FC<VidstackPlayerProps> = (props) => {
           duration={duration} 
           startOffset={startOffset}
           isPiped={isPiped}
+          onPlayerError={handlePlayerError}
         />
       )}
     </div>

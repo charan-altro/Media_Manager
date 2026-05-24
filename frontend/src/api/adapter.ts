@@ -242,8 +242,13 @@ export const api = {
     request<string>('scrape_batch', `/scrape/batch`, { method: 'POST', ids, media_type }),
   cleanupBatch: (ids: number[], media_type: string) =>
     request<string>('cleanup_batch', `/cleanup/batch`, { method: 'POST', ids, media_type }),
-  downloadToLocal: (id: number, media_type: string, dest_path: string) =>
-    request<string>('download_to_local', '', { id, media_type, dest_path }),
+  downloadToLocal: (id: number, media_type: string, dest_path: string) => {
+    if (IS_TAURI) {
+      return request<string>('download_to_local', '', { id, media_type, dest_path });
+    } else {
+      throw new Error("Local download is only supported in the desktop app.");
+    }
+  },
   getGenres: () => request<string[]>('get_genres', '/genres', { method: 'GET' }),
   getLanguages: () => request<string[]>('get_languages', '/languages', { method: 'GET' }),
   refreshMetadata: (movie_id: number) =>
@@ -273,8 +278,13 @@ export const api = {
   getSettings: () =>
     request<Record<string, string>>('get_settings', '/settings'),
 
-  setSettings: (settings: Record<string, string>) =>
-    request<void>('set_settings', '/settings', { method: 'POST', settings }),
+  setSettings: (settings: Record<string, string>) => {
+    if (IS_TAURI) {
+      return request<void>('set_settings', '/settings', { method: 'POST', settings });
+    } else {
+      return request<void>('set_settings', '/settings', { method: 'POST', ...settings });
+    }
+  },
 
   createBackup: () =>
     request<string>('create_backup', '/maintenance/backup', { method: 'POST' }),
@@ -350,6 +360,7 @@ export const api = {
   exportCsv: () => window.open(`${API_BASE}/export/csv`),
   exportHtml: () => window.open(`${API_BASE}/export/html`),
   exportXlsx: () => window.open(`${API_BASE}/export/xlsx`),
+  exportJson: () => window.open(`${API_BASE}/export/json`),
   syncTrakt: () => request<any>('sync_trakt', '/sync/trakt', { method: 'POST' }),
   request,
 };

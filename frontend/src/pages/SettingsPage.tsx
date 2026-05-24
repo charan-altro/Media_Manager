@@ -199,6 +199,12 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
             >
               Export to XLSX
             </button>
+            <button 
+              onClick={() => api.exportJson()}
+              className="bg-zinc-800 hover:bg-zinc-700 px-8 py-4 rounded-xl text-xs font-black uppercase tracking-widest text-white transition border border-zinc-700 active:scale-95"
+            >
+              Export to JSON
+            </button>
           </div>
         </div>
 

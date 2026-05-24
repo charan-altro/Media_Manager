@@ -49,7 +49,7 @@ export interface MediaStoreState {
   refreshingIds: Record<number, boolean>;
   setRefreshingIds: (ids: Record<number, boolean> | ((prev: Record<number, boolean>) => Record<number, boolean>)) => void;
   handleRefreshMetadata: (id: number) => Promise<void>;
-  handleProcessAdvanced: (id: number) => Promise<void>;
+  handleProcessAdvanced: (id: number, type?: 'movie' | 'tv') => Promise<void>;
 
   // Settings
   appSettings: Record<string, string>;

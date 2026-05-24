@@ -16,11 +16,15 @@ export function useMediaActions() {
     }
   };
 
-  const handleProcessAdvanced = async (id: number) => {
+  const handleProcessAdvanced = async (id: number, type: 'movie' | 'tv' = 'movie') => {
     if (refreshingIds[id]) return;
     setRefreshingIds(prev => ({ ...prev, [id]: true }));
     try {
-      await api.request('process_movie_advanced', `/movies/${id}/process-advanced`, { method: 'POST' });
+      if (type === 'movie') {
+        await api.processMovieAdvanced(id);
+      } else {
+        await api.processTvShowAdvanced(id);
+      }
       toast.success('Advanced analysis started in background.');
     } catch (err) {
       console.error('Failed to start advanced analysis', err);

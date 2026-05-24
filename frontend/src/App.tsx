@@ -100,7 +100,7 @@ function AppContent() {
           item={selectedItem}
           onClose={() => setSelectedItem(null)}
           onRefresh={() => handleRefreshMetadata(selectedItem.id)}
-          onAdvanced={() => handleProcessAdvanced(selectedItem.id)}
+          onAdvanced={(id, type) => handleProcessAdvanced(id, type)}
           onDownload={handleDownload}
           refreshingIds={refreshingIds}
           loadData={loadData}

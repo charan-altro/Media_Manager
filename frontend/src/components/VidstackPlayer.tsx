@@ -31,11 +31,12 @@ interface VidstackPlayerProps {
 }
 
 // Inner component that HAS access to MediaPlayer context
-const InnerPlayer: React.FC<VidstackPlayerProps & { sources: any[], isBuffering: boolean, abLoop: AbLoopManager }> = ({
+const InnerPlayer: React.FC<VidstackPlayerProps & { sources: any[], isBuffering: boolean, abLoop: AbLoopManager, hasStarted: boolean }> = ({
   title,
   hash,
   isBuffering,
-  abLoop
+  abLoop,
+  hasStarted
 }) => {
   // Handle keyboard hotkeys for A-B Loop
   useEffect(() => {
@@ -63,7 +64,7 @@ const InnerPlayer: React.FC<VidstackPlayerProps & { sources: any[], isBuffering:
   return (
     <>
       <MediaProvider>
-        <Poster className="vds-poster" />
+        {!hasStarted && <Poster className="vds-poster" />}
         <Gesture className="vds-gesture" event="pointerup" action="toggle:paused" />
         <Gesture className="vds-gesture" event="dblpointerup" action="toggle:fullscreen" />
         <Gesture className="vds-gesture" event="dblpointerup" action="seek:-10" />
@@ -117,6 +118,8 @@ const PlayerContent: React.FC<VidstackPlayerProps & {
   const seekTimeoutRef = useRef<any>(null);
   const isRewritingSourceRef = useRef(false);
   const loadedSourceRef = useRef<string>('');
+  const [hasStarted, setHasStarted] = useState(false);
+  const wasPlayingRef = useRef(true);
 
   const seek = useCallback((time: number) => {
     if (playerRef.current) {
@@ -178,6 +181,9 @@ const PlayerContent: React.FC<VidstackPlayerProps & {
         // Piped stream is seeked by backend starting at startOffset,
         // so we must seek the video element to startOffset to align with the stream
         player.currentTime = startOffset;
+        if (wasPlayingRef.current) {
+          player.play().catch(err => console.warn("[VidstackPlayer] Failed to resume playback:", err));
+        }
       } else if (!hasSeeked.current && initialPosition > 0) {
         player.currentTime = initialPosition / 1000;
         hasSeeked.current = true;
@@ -206,6 +212,9 @@ const PlayerContent: React.FC<VidstackPlayerProps & {
     if (Math.abs(targetTime - startOffset) < 2.0) {
       return;
     }
+
+    // Capture the playing state before rewriting source
+    wasPlayingRef.current = !player.paused;
 
     // Debounce stream restarts to prevent backend hammering during scrubbing
     if (seekTimeoutRef.current) {
@@ -239,11 +248,13 @@ const PlayerContent: React.FC<VidstackPlayerProps & {
         ref={playerRef}
         title={title}
         src={sources}
-        poster={getImageUrl(posterUrl)}
+        poster={hasStarted ? undefined : getImageUrl(posterUrl)}
         className="w-full h-full bg-black overflow-hidden"
         style={playerStyles}
         crossOrigin
         playsInline
+        autoplay
+        onPlay={() => setHasStarted(true)}
         onWaiting={() => setIsBuffering(true)}
         onPlaying={() => setIsBuffering(false)}
         onCanPlay={handleCanPlay}
@@ -253,7 +264,7 @@ const PlayerContent: React.FC<VidstackPlayerProps & {
         streamType="on-demand"
         duration={duration}
       >
-        <InnerPlayer {...props} isBuffering={isBuffering} abLoop={abLoop} />
+        <InnerPlayer {...props} isBuffering={isBuffering} abLoop={abLoop} hasStarted={hasStarted} />
       </MediaPlayer>
     </div>
   );

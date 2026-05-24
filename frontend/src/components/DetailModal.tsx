@@ -8,7 +8,7 @@ interface DetailModalProps {
   item: Movie | TVShow;
   onClose: () => void;
   onRefresh: (id: number) => void;
-  onAdvanced: (id: number) => void;
+  onAdvanced: (id: number, type: 'movie' | 'tv') => void;
   onDownload: (id: number, type: 'movie' | 'tv') => void;
   refreshingIds: Record<number, boolean>;
   loadData: () => void;
@@ -506,15 +506,13 @@ const DetailModal: React.FC<DetailModalProps> = ({
                     <RefreshCw className={`w-4 h-4 ${refreshingIds[item.id] ? 'animate-spin' : ''}`} /> 
                     {refreshingIds[item.id] ? 'Refreshing...' : 'Refresh Metadata'}
                   </button>
-                  {!isShow && (
-                    <button 
-                      onClick={() => onAdvanced(item.id)}
-                      disabled={refreshingIds[item.id]}
-                      className="w-full bg-zinc-800 hover:bg-zinc-700 py-4 rounded-xl font-black uppercase tracking-widest text-xs transition border border-zinc-700 flex items-center justify-center gap-2"
-                    >
-                      <Monitor className={`w-4 h-4 ${refreshingIds[item.id] ? 'animate-pulse' : ''}`} /> Advanced Analysis
-                    </button>
-                  )}
+                  <button 
+                    onClick={() => onAdvanced(item.id, isShow ? 'tv' : 'movie')}
+                    disabled={refreshingIds[item.id]}
+                    className="w-full bg-zinc-800 hover:bg-zinc-700 py-4 rounded-xl font-black uppercase tracking-widest text-xs transition border border-zinc-700 flex items-center justify-center gap-2"
+                  >
+                    <Monitor className={`w-4 h-4 ${refreshingIds[item.id] ? 'animate-pulse' : ''}`} /> Advanced Analysis
+                  </button>
                   {!isShow && (
                     <button 
                       onClick={async () => {
@@ -529,6 +527,21 @@ const DetailModal: React.FC<DetailModalProps> = ({
                       className="w-full bg-zinc-800 hover:bg-zinc-700 py-4 rounded-xl font-black uppercase tracking-widest text-xs transition border border-zinc-700 flex items-center justify-center gap-2"
                     >
                       <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg> Rename File
+                    </button>
+                  )}
+                  {!isShow && (
+                    <button 
+                      onClick={async () => {
+                        try {
+                          await api.searchSubtitles(item.id);
+                          toast.success('Subtitle search started in background.');
+                        } catch (err: any) {
+                          toast.error('Subtitle search failed: ' + err.message);
+                        }
+                      }}
+                      className="w-full bg-zinc-800 hover:bg-zinc-700 py-4 rounded-xl font-black uppercase tracking-widest text-xs transition border border-zinc-700 flex items-center justify-center gap-2"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="16" rx="2" ry="2"/><line x1="7" y1="8" x2="17" y2="8"/><line x1="7" y1="12" x2="17" y2="12"/><line x1="7" y1="16" x2="13" y2="16"/></svg> Search Subtitles
                     </button>
                   )}
                   {!isShow && (

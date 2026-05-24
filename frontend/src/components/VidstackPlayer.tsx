@@ -15,6 +15,7 @@ import '@vidstack/react/player/styles/default/theme.css';
 import '@vidstack/react/player/styles/default/layouts/video.css';
 
 import { X, Loader2, AlertCircle } from 'lucide-react';
+import toast from 'react-hot-toast';
 import { getImageUrl, api, API_BASE } from '../api/adapter';
 import { useVidstackAbLoop, type AbLoopManager } from '../hooks/useVidstackAbLoop';
 import { AbLoopControls } from './AbLoopControls';
@@ -31,12 +32,21 @@ interface VidstackPlayerProps {
 }
 
 // Inner component that HAS access to MediaPlayer context
-const InnerPlayer: React.FC<VidstackPlayerProps & { sources: any[], isBuffering: boolean, abLoop: AbLoopManager, hasStarted: boolean }> = ({
+const InnerPlayer: React.FC<VidstackPlayerProps & { 
+  sources: any[], 
+  isBuffering: boolean, 
+  abLoop: AbLoopManager, 
+  hasStarted: boolean,
+  sidecarSubs: any[]
+}> = ({
+  mediaId,
+  mediaType,
   title,
   hash,
   isBuffering,
   abLoop,
-  hasStarted
+  hasStarted,
+  sidecarSubs
 }) => {
   // Handle keyboard hotkeys for A-B Loop
   useEffect(() => {
@@ -69,6 +79,16 @@ const InnerPlayer: React.FC<VidstackPlayerProps & { sources: any[], isBuffering:
         <Gesture className="vds-gesture" event="dblpointerup" action="toggle:fullscreen" />
         <Gesture className="vds-gesture" event="dblpointerup" action="seek:-10" />
         <Gesture className="vds-gesture" event="dblpointerup" action="seek:10" />
+
+        {sidecarSubs.map(sub => (
+          <track
+            key={sub.language}
+            src={`${API_BASE}/media/${mediaType}/${mediaId}/subtitles/${sub.language}`}
+            label={sub.name}
+            kind="subtitles"
+            srcLang={sub.language}
+          />
+        ))}
       </MediaProvider>
       
       <DefaultVideoLayout 
@@ -111,15 +131,6 @@ const PlayerContent: React.FC<VidstackPlayerProps & {
   const [isBuffering, setIsBuffering] = useState(false);
   const playerRef = useRef<MediaPlayerInstance>(null);
   const abLoop = useVidstackAbLoop();
-  
-  const lastHeartbeatTime = useRef(0);
-  const durationRef = useRef(0);
-  const hasSeeked = useRef(false);
-  const seekTimeoutRef = useRef<any>(null);
-  const isRewritingSourceRef = useRef(false);
-  const loadedSourceRef = useRef<string>('');
-  const [hasStarted, setHasStarted] = useState(false);
-  const wasPlayingRef = useRef(true);
 
   const seek = useCallback((time: number) => {
     if (playerRef.current) {
@@ -130,6 +141,160 @@ const PlayerContent: React.FC<VidstackPlayerProps & {
       }
     }
   }, [isPiped, onSeek]);
+  
+  // Scene Markers State
+  const [markers, setMarkers] = useState<any[]>([]);
+  const [showMarkersList, setShowMarkersList] = useState(false);
+  const [showAddMarkerModal, setShowAddMarkerModal] = useState(false);
+  const [newMarkerTitle, setNewMarkerTitle] = useState('');
+  const [newMarkerTime, setNewMarkerTime] = useState(0);
+  const [newMarkerSaving, setNewMarkerSaving] = useState(false);
+
+  const loadMarkers = useCallback(async () => {
+    try {
+      const data = await api.getSceneMarkers(mediaId, mediaType);
+      setMarkers(data);
+    } catch (err) {
+      console.error("[VidstackPlayer] Failed to load markers:", err);
+    }
+  }, [mediaId, mediaType]);
+
+  useEffect(() => {
+    loadMarkers();
+  }, [loadMarkers]);
+
+  // Sidecar Subtitles State
+  const [sidecarSubs, setSidecarSubs] = useState<any[]>([]);
+
+  const loadSidecarSubs = useCallback(async () => {
+    try {
+      const data = await api.getSidecarSubtitles(mediaId, mediaType);
+      setSidecarSubs(data);
+    } catch (err) {
+      console.error("[VidstackPlayer] Failed to load sidecar subtitles:", err);
+    }
+  }, [mediaId, mediaType]);
+
+  useEffect(() => {
+    loadSidecarSubs();
+  }, [loadSidecarSubs]);
+
+  const handleSaveMarker = async () => {
+    if (!newMarkerTitle.trim()) return;
+    setNewMarkerSaving(true);
+    try {
+      await api.createSceneMarker(mediaId, mediaType, newMarkerTime, newMarkerTitle.trim());
+      toast.success("Marker saved!");
+      setShowAddMarkerModal(false);
+      loadMarkers();
+      playerRef.current?.play();
+    } catch (err) {
+      console.error("Failed to save marker:", err);
+      toast.error("Failed to save marker.");
+    } finally {
+      setNewMarkerSaving(false);
+    }
+  };
+
+  const formatTime = (secs: number) => {
+    const h = Math.floor(secs / 3600);
+    const m = Math.floor((secs % 3600) / 60);
+    const s = Math.floor(secs % 60);
+    if (h > 0) {
+      return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+    }
+    return `${m}:${s.toString().padStart(2, '0')}`;
+  };
+
+  // Hotkeys listener for player actions
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement;
+      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) return;
+
+      const player = playerRef.current;
+      if (!player) return;
+
+      // Blur focused slider/buttons inside Vidstack so arrow keys don't trigger dual actions
+      if (document.activeElement && document.activeElement instanceof HTMLElement) {
+        if (document.activeElement.closest('.vds-slider') || document.activeElement.closest('button')) {
+          document.activeElement.blur();
+        }
+      }
+
+      const key = e.key.toLowerCase();
+
+      // 0-9 percentage-based seeks
+      if (/^[0-9]$/.test(key)) {
+        e.preventDefault();
+        const num = parseInt(key);
+        const targetTime = (durationRef.current || player.duration || 0) * (num / 10);
+        seek(targetTime);
+      }
+
+      // Space play/pause toggle
+      if (e.key === ' ' || key === 'spacebar') {
+        e.preventDefault();
+        if (player.paused) {
+          player.play().catch(err => console.warn(err));
+        } else {
+          player.pause();
+        }
+      }
+
+      // Left/Right arrows skip 5 seconds
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+        e.preventDefault();
+        const diff = e.key === 'ArrowRight' ? 5 : -5;
+        const targetTime = Math.max(0, Math.min(durationRef.current || player.duration || 0, player.currentTime + diff));
+        seek(targetTime);
+      }
+
+      // Up/Down arrows volume control (by 5%)
+      if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+        e.preventDefault();
+        const diff = e.key === 'ArrowUp' ? 0.05 : -0.05;
+        player.volume = Math.max(0, Math.min(1, player.volume + diff));
+      }
+
+      // F key fullscreen toggle
+      if (key === 'f') {
+        e.preventDefault();
+        if (player.state.fullscreen) {
+          player.exitFullscreen().catch(err => console.warn(err));
+        } else {
+          player.enterFullscreen().catch(err => console.warn(err));
+        }
+      }
+
+      // M key for Add Marker dialog
+      if (key === 'm') {
+        e.preventDefault();
+        player.pause();
+        setNewMarkerTime(player.currentTime);
+        setNewMarkerTitle('');
+        setShowAddMarkerModal(true);
+      }
+
+      // V key for toggling Scene Bookmarks panel
+      if (key === 'v') {
+        e.preventDefault();
+        setShowMarkersList(prev => !prev);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [seek, loadMarkers]);
+  
+  const lastHeartbeatTime = useRef(0);
+  const durationRef = useRef(0);
+  const hasSeeked = useRef(false);
+  const seekTimeoutRef = useRef<any>(null);
+  const isRewritingSourceRef = useRef(false);
+  const loadedSourceRef = useRef<string>('');
+  const [hasStarted, setHasStarted] = useState(false);
+  const wasPlayingRef = useRef(true);
 
   const handleTimeUpdate = useCallback((event: any) => {
     const currentTime = event?.detail?.currentTime ?? playerRef.current?.currentTime ?? 0;
@@ -248,6 +413,7 @@ const PlayerContent: React.FC<VidstackPlayerProps & {
         ref={playerRef}
         title={title}
         src={sources}
+        storage="media-manager-player-settings"
         poster={hasStarted ? undefined : getImageUrl(posterUrl)}
         className="w-full h-full bg-black overflow-hidden"
         style={playerStyles}
@@ -264,8 +430,125 @@ const PlayerContent: React.FC<VidstackPlayerProps & {
         streamType="on-demand"
         duration={duration}
       >
-        <InnerPlayer {...props} isBuffering={isBuffering} abLoop={abLoop} hasStarted={hasStarted} />
+        <InnerPlayer {...props} isBuffering={isBuffering} abLoop={abLoop} hasStarted={hasStarted} sidecarSubs={sidecarSubs} />
       </MediaPlayer>
+
+      {/* Floating button to open Bookmarks drawer */}
+      {!showMarkersList && (
+        <button
+          onClick={() => setShowMarkersList(true)}
+          className="absolute top-24 right-6 z-[180] bg-black/60 hover:bg-red-600 text-white p-3 rounded-full border border-zinc-800/80 backdrop-blur-md shadow-2xl transition active:scale-95 group/btn"
+          title="Open Scene Bookmarks (Press V)"
+        >
+          <svg className="w-5 h-5 group-hover/btn:scale-110 transition" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M17.593 3.322c1.1.128 1.907 1.077 1.907 2.185V21L12 17.25 4.5 21V5.507c0-1.108.806-2.057 1.907-2.185a48.507 48.507 0 0111.186 0z" />
+          </svg>
+        </button>
+      )}
+
+      {/* Bookmarks Drawer Panel */}
+      {showMarkersList && (
+        <div className="absolute top-0 right-0 bottom-0 w-80 z-[250] bg-black/90 border-l border-zinc-800/80 backdrop-blur-md flex flex-col p-6 space-y-6 animate-in slide-in-from-right duration-300">
+          <div className="flex items-center justify-between">
+            <h3 className="text-white text-lg font-black uppercase tracking-tight italic">Scene Bookmarks</h3>
+            <button 
+              onClick={() => setShowMarkersList(false)}
+              className="text-zinc-500 hover:text-white p-1 hover:bg-zinc-800/50 rounded-lg transition"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+
+          <div className="flex-1 overflow-y-auto pr-2 space-y-2 scrollbar-thin">
+            {markers.length === 0 ? (
+              <div className="h-40 flex flex-col items-center justify-center text-center gap-1">
+                <p className="text-zinc-500 text-xs uppercase font-black tracking-widest">No Markers Yet</p>
+                <p className="text-zinc-600 text-[10px] font-bold">Press <kbd className="bg-zinc-900 border border-zinc-800 px-1 py-0.5 rounded font-mono font-black text-zinc-500">M</kbd> to add markers at any timestamp.</p>
+              </div>
+            ) : (
+              markers.map((marker) => (
+                <div 
+                  key={marker.id} 
+                  className="flex items-center justify-between p-3 bg-zinc-900/40 border border-zinc-800/50 hover:bg-zinc-800/40 rounded-xl transition group/marker"
+                >
+                  <button
+                    onClick={() => seek(marker.seconds)}
+                    className="flex-1 text-left flex flex-col gap-0.5 cursor-pointer"
+                  >
+                    <span className="text-zinc-200 text-xs font-bold line-clamp-1">{marker.title}</span>
+                    <span className="text-zinc-500 text-[10px] font-mono font-black">{formatTime(marker.seconds)}</span>
+                  </button>
+                  <button
+                    onClick={async (e) => {
+                      e.stopPropagation();
+                      if (window.confirm("Delete this scene marker?")) {
+                        try {
+                          await api.deleteSceneMarker(marker.id);
+                          toast.success("Marker deleted!");
+                          loadMarkers();
+                        } catch (err) {
+                          console.error("Failed to delete marker:", err);
+                        }
+                      }
+                    }}
+                    className="p-1.5 hover:bg-red-600/10 text-zinc-500 hover:text-red-500 rounded-lg transition"
+                    title="Delete Marker"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Add Marker Modal */}
+      {showAddMarkerModal && (
+        <div className="absolute inset-0 z-[300] flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="bg-[#141414] border border-zinc-800 p-6 rounded-2xl max-w-sm w-full shadow-2xl space-y-4 animate-in zoom-in-95 duration-200">
+            <div className="space-y-1 text-center">
+              <h4 className="text-lg font-black text-white uppercase italic tracking-tight">Add Scene Marker</h4>
+              <p className="text-zinc-500 text-xs font-mono">Position: {formatTime(newMarkerTime)}</p>
+            </div>
+            <input
+              autoFocus
+              type="text"
+              placeholder="e.g. Action Scene, Intro..."
+              value={newMarkerTitle}
+              onChange={(e) => setNewMarkerTitle(e.target.value)}
+              onKeyDown={async (e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  await handleSaveMarker();
+                } else if (e.key === 'Escape') {
+                  setShowAddMarkerModal(false);
+                  playerRef.current?.play();
+                }
+              }}
+              className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-4 py-2.5 text-sm text-zinc-200 outline-none focus:border-red-600 transition"
+            />
+            <div className="flex gap-2">
+              <button
+                onClick={() => {
+                  setShowAddMarkerModal(false);
+                  playerRef.current?.play();
+                }}
+                className="flex-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 py-2.5 rounded-lg text-xs font-black uppercase tracking-wider transition"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSaveMarker}
+                disabled={newMarkerSaving || !newMarkerTitle.trim()}
+                className="flex-1 bg-red-600 hover:bg-red-700 disabled:bg-zinc-800 disabled:text-zinc-600 text-white py-2.5 rounded-lg text-xs font-black uppercase tracking-wider transition flex items-center justify-center gap-1.5"
+              >
+                {newMarkerSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : 'Save Marker'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

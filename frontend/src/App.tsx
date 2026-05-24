@@ -1,4 +1,4 @@
-import { useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom'
 import { api, IS_TAURI, API_BASE } from './api/adapter'
 import { Star, Wand2 } from 'lucide-react'
@@ -49,6 +49,16 @@ function AppContent() {
     }
   }, [setAppSettings]);
 
+  const [isScrolled, setIsScrolled] = useState(false);
+
+  useEffect(() => {
+    const handleScroll = () => {
+      setIsScrolled(window.scrollY > 30);
+    };
+    window.addEventListener('scroll', handleScroll, { passive: true });
+    return () => window.removeEventListener('scroll', handleScroll);
+  }, []);
+
   useEffect(() => { loadSettings(); }, [loadSettings]);
 
   const handleDownload = useCallback(async (id: number, type: 'movie' | 'tv') => {
@@ -71,7 +81,7 @@ function AppContent() {
     <TaskProvider loadData={loadData} setRefreshingIds={setRefreshingIds}>
     <div className="min-h-screen bg-zinc-950 font-sans selection:bg-red-600/30 selection:text-red-500">
       <Navbar
-        isScrolled={false}
+        isScrolled={isScrolled}
         searchQuery={searchQuery}
         setSearchQuery={setSearchQuery}
       />

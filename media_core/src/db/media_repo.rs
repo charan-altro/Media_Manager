@@ -16,6 +16,11 @@ pub trait MediaRepository: Send + Sync {
     // Playback State (Resume)
     async fn get_playback_status(&self, media_id: i64, media_type: &str) -> Result<Option<PlaybackState>>;
     async fn update_playback_status(&self, media_id: i64, media_type: &str, position_ms: i32, duration_ms: i32, is_finished: bool) -> Result<()>;
+
+    // Scene Markers
+    async fn get_scene_markers(&self, media_id: i64, media_type: &str) -> Result<Vec<crate::models::SceneMarker>>;
+    async fn create_scene_marker(&self, media_id: i64, media_type: &str, seconds: f64, title: &str) -> Result<crate::models::SceneMarker>;
+    async fn delete_scene_marker(&self, id: i64) -> Result<()>;
 }
 
 // --- SQLite implementation ---
@@ -142,6 +147,53 @@ impl MediaRepository for SqliteMediaRepository {
             .bind(position_ms)
             .bind(duration_ms)
             .bind(is_finished)
+        ).await?;
+        Ok(())
+    }
+
+    #[tracing::instrument(skip(self), err)]
+    async fn get_scene_markers(&self, media_id: i64, media_type: &str) -> Result<Vec<crate::models::SceneMarker>> {
+        let pool = &*self.base.pool;
+        let markers: Vec<crate::models::SceneMarker> = sqlx::query_as(
+            "SELECT id, media_id, media_type, seconds, title, created_at FROM scene_markers WHERE media_id = ? AND media_type = ? ORDER BY seconds ASC"
+        )
+        .bind(media_id)
+        .bind(media_type)
+        .fetch_all(pool)
+        .await?;
+        Ok(markers)
+    }
+
+    #[tracing::instrument(skip(self), err)]
+    async fn create_scene_marker(&self, media_id: i64, media_type: &str, seconds: f64, title: &str) -> Result<crate::models::SceneMarker> {
+        let pool = &*self.base.pool;
+        let id = crate::execute_db!(
+            pool,
+            sqlx::query(
+                "INSERT INTO scene_markers (media_id, media_type, seconds, title) VALUES (?, ?, ?, ?)"
+            )
+            .bind(media_id)
+            .bind(media_type)
+            .bind(seconds)
+            .bind(title)
+        ).await?.last_insert_rowid();
+
+        let marker: crate::models::SceneMarker = sqlx::query_as(
+            "SELECT id, media_id, media_type, seconds, title, created_at FROM scene_markers WHERE id = ?"
+        )
+        .bind(id)
+        .fetch_one(pool)
+        .await?;
+
+        Ok(marker)
+    }
+
+    #[tracing::instrument(skip(self), err)]
+    async fn delete_scene_marker(&self, id: i64) -> Result<()> {
+        let pool = &*self.base.pool;
+        crate::execute_db!(
+            pool,
+            sqlx::query("DELETE FROM scene_markers WHERE id = ?").bind(id)
         ).await?;
         Ok(())
     }

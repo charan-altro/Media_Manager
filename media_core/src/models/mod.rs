@@ -4,12 +4,14 @@ pub mod movie;
 pub mod tv;
 pub mod task;
 pub mod ids;
+pub mod scene_marker;
 
 pub use library::*;
 pub use movie::*;
 pub use tv::*;
 pub use task::*;
 pub use ids::*;
+pub use scene_marker::*;
 
 use serde::{Deserialize, Serialize};
 

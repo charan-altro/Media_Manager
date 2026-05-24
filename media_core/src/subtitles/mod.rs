@@ -1,4 +1,7 @@
 // core/src/subtitles/mod.rs
+pub mod sidecar;
+pub use sidecar::{discover_sidecar_subtitles, srt_to_vtt, SidecarSubtitle};
+
 use serde::{Deserialize, Serialize};
 use reqwest::Client;
 use crate::errors::{CoreError, Result};

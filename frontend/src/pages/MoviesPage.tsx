@@ -1,7 +1,6 @@
 import React, { useMemo } from 'react';
 import { Film } from 'lucide-react';
 import Hero from '../components/Hero';
-import Sidebar from '../components/Sidebar';
 import MediaGrid from '../components/MediaGrid';
 import { api } from '../api/adapter';
 import { useMediaStore } from '../context/MediaStoreContext';
@@ -9,10 +8,7 @@ import { useMediaStore } from '../context/MediaStoreContext';
 const MoviesPage: React.FC = () => {
   const {
     movies,
-    tvShows,
-    libraries,
     selectedLibrary,
-    setSelectedLibrary,
     searchQuery,
     genreFilter,
     setGenreFilter,
@@ -45,45 +41,35 @@ const MoviesPage: React.FC = () => {
   }, [movies]);
 
   return (
-    <div className="pb-24">
+    <div className="pb-24 bg-zinc-950">
       <Hero
         item={heroItem}
         onPlay={(item) => api.playMovie(item.id)}
         onDetails={(item) => handleItemClick(item)}
       />
 
-      <div className={`flex flex-col md:flex-row gap-8 px-4 md:px-12 ${heroItem ? '-mt-20 relative z-10' : 'pt-24'}`}>
-        <Sidebar
-          libraries={libraries}
+      <div className={`px-4 md:px-12 w-full ${heroItem ? '-mt-20 relative z-10' : 'pt-24'}`}>
+        <MediaGrid
+          title="My Collection"
+          icon={<Film className="w-6 h-6 text-red-600 animate-pulse" />}
+          items={filteredMovies}
+          itemCount={filteredMovies.length}
+          onItemClick={handleItemClick}
+          onPlayClick={handlePlayClick}
+          selectedIds={selectedIds}
+          selectionMode={selectionMode}
+          setSelectionMode={setSelectionMode}
+          setSelectedIds={setSelectedIds}
           selectedLibrary={selectedLibrary}
-          setSelectedLibrary={setSelectedLibrary}
-          moviesCount={movies.length}
-          tvShowsCount={tvShows.length}
+          genreFilter={genreFilter}
+          setGenreFilter={setGenreFilter}
+          languageFilter={languageFilter}
+          setLanguageFilter={setLanguageFilter}
+          allGenres={allGenres}
+          allLanguages={allLanguages}
+          showFilterMenu={showFilterMenu}
+          setShowFilterMenu={setShowFilterMenu}
         />
-
-        <div className="flex-1 min-w-0">
-          <MediaGrid
-            title="My Collection"
-            icon={<Film className="w-6 h-6 text-red-600" />}
-            items={filteredMovies}
-            itemCount={filteredMovies.length}
-            onItemClick={handleItemClick}
-            onPlayClick={handlePlayClick}
-            selectedIds={selectedIds}
-            selectionMode={selectionMode}
-            setSelectionMode={setSelectionMode}
-            setSelectedIds={setSelectedIds}
-            selectedLibrary={selectedLibrary}
-            genreFilter={genreFilter}
-            setGenreFilter={setGenreFilter}
-            languageFilter={languageFilter}
-            setLanguageFilter={setLanguageFilter}
-            allGenres={allGenres}
-            allLanguages={allLanguages}
-            showFilterMenu={showFilterMenu}
-            setShowFilterMenu={setShowFilterMenu}
-          />
-        </div>
       </div>
     </div>
   );

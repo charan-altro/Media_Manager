@@ -345,6 +345,18 @@ export const api = {
   searchSubtitles: (id: number) =>
     request<void>('search_subtitles', `/movies/${id}/subtitles/search`, { method: 'GET', id }),
 
+  getSceneMarkers: (mediaId: number, mediaType: string) =>
+    request<any[]>('get_scene_markers', `/media/${mediaType}/${mediaId}/markers`, { method: 'GET', mediaId, mediaType }),
+
+  getSidecarSubtitles: (mediaId: number, mediaType: string) =>
+    request<any[]>('get_sidecar_subtitles', `/media/${mediaType}/${mediaId}/subtitles`, { method: 'GET', mediaId, mediaType }),
+
+  createSceneMarker: (mediaId: number, mediaType: string, seconds: number, title: string) =>
+    request<any>('create_scene_marker', `/media/${mediaType}/${mediaId}/markers`, { method: 'POST', mediaId, mediaType, seconds, title }),
+
+  deleteSceneMarker: (markerId: number) =>
+    request<void>('delete_scene_marker', `/media/markers/${markerId}`, { method: 'DELETE', markerId }),
+
   getPlaybackStatus: (type: string, id: number) =>
     request<PlaybackStatus>('get_playback_status', `/playback/status/${type}/${id}`, { method: 'GET', id, mediaType: type }),
   updatePlaybackProgress: (data: PlaybackProgressPayload) =>

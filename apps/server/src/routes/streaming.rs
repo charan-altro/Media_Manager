@@ -1,5 +1,5 @@
 use axum::{
-    routing::{get, post},
+    routing::{get, post, delete},
     Router,
     extract::{State, Path, Query},
     Json,
@@ -23,7 +23,7 @@ use media_core::models::{MovieId, EpisodeId};
 use media_core::task_manager::ProgressSink;
 use tower::ServiceExt;
 use tower_http::services::ServeFile;
-use media_core::db::{MovieReader, MovieWriter, TvReader, TvWriter};
+use media_core::db::{MovieReader, MovieWriter, TvReader, TvWriter, MediaRepository};
 use tokio_util::io::ReaderStream;
 
 pub fn router() -> Router<Arc<AppState>> {
@@ -46,6 +46,10 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/movies/:id/download", get(download_movie))
         .route("/episodes/:id/download", get(download_episode))
         .route("/movies/:id/subtitles/search", get(search_subtitles))
+        .route("/media/:media_type/:media_id/markers", get(get_markers).post(create_marker))
+        .route("/media/markers/:marker_id", delete(delete_marker))
+        .route("/media/:media_type/:media_id/subtitles", get(get_sidecar_subtitles))
+        .route("/media/:media_type/:media_id/subtitles/:lang", get(serve_sidecar_subtitle_vtt))
 }
 
 async fn play_movie(State(state): State<Arc<AppState>>, Path(id): Path<i64>) -> Json<String> {
@@ -914,5 +918,117 @@ async fn serve_stream_file(
             ).into_response()
         }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+// --- Scene Markers Handler ---
+
+#[derive(serde::Deserialize)]
+struct CreateSceneMarkerRequest {
+    seconds: f64,
+    title: String,
+}
+
+async fn get_markers(
+    State(state): State<Arc<AppState>>,
+    Path((media_type, media_id)): Path<(String, i64)>,
+) -> impl IntoResponse {
+    match state.repos.media.get_scene_markers(media_id, &media_type).await {
+        Ok(markers) => (StatusCode::OK, Json(markers)).into_response(),
+        Err(e) => {
+            tracing::error!("Failed to get scene markers: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+        }
+    }
+}
+
+async fn create_marker(
+    State(state): State<Arc<AppState>>,
+    Path((media_type, media_id)): Path<(String, i64)>,
+    Json(payload): Json<CreateSceneMarkerRequest>,
+) -> impl IntoResponse {
+    match state.repos.media.create_scene_marker(media_id, &media_type, payload.seconds, &payload.title).await {
+        Ok(marker) => (StatusCode::CREATED, Json(marker)).into_response(),
+        Err(e) => {
+            tracing::error!("Failed to create scene marker: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+        }
+    }
+}
+
+async fn delete_marker(
+    State(state): State<Arc<AppState>>,
+    Path(marker_id): Path<i64>,
+) -> impl IntoResponse {
+    match state.repos.media.delete_scene_marker(marker_id).await {
+        Ok(_) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => {
+            tracing::error!("Failed to delete scene marker: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+        }
+    }
+}
+
+// --- Sidecar Subtitles Handlers ---
+
+async fn get_sidecar_subtitles(
+    State(state): State<Arc<AppState>>,
+    Path((media_type, media_id)): Path<(String, i64)>,
+) -> impl IntoResponse {
+    let path = if media_type == "movie" {
+        state.repos.movie.get_full_path(MovieId(media_id)).await.ok().flatten()
+    } else {
+        state.repos.tv.get_episode_full_path(EpisodeId(media_id)).await.ok().flatten()
+    };
+
+    let path = match path {
+        Some(p) => p,
+        None => return (StatusCode::NOT_FOUND, "Media not found").into_response(),
+    };
+
+    match media_core::subtitles::discover_sidecar_subtitles(&path) {
+        Ok(subs) => (StatusCode::OK, Json(subs)).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn serve_sidecar_subtitle_vtt(
+    State(state): State<Arc<AppState>>,
+    Path((media_type, media_id, lang)): Path<(String, i64, String)>,
+) -> impl IntoResponse {
+    let path = if media_type == "movie" {
+        state.repos.movie.get_full_path(MovieId(media_id)).await.ok().flatten()
+    } else {
+        state.repos.tv.get_episode_full_path(EpisodeId(media_id)).await.ok().flatten()
+    };
+
+    let path = match path {
+        Some(p) => p,
+        None => return (StatusCode::NOT_FOUND, "Media not found").into_response(),
+    };
+
+    let subs = match media_core::subtitles::discover_sidecar_subtitles(&path) {
+        Ok(s) => s,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+
+    let matching_sub = subs.into_iter().find(|s| s.language == lang);
+    let sub_file_path = match matching_sub {
+        Some(s) => std::path::PathBuf::from(s.file_path),
+        None => return (StatusCode::NOT_FOUND, "Subtitle language not found").into_response(),
+    };
+
+    match tokio::fs::read_to_string(&sub_file_path).await {
+        Ok(srt_content) => {
+            let vtt_content = media_core::subtitles::srt_to_vtt(&srt_content);
+            (
+                [(header::CONTENT_TYPE, "text/vtt")],
+                vtt_content,
+            ).into_response()
+        }
+        Err(e) => {
+            tracing::error!("Failed to read sidecar subtitle file: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+        }
     }
 }

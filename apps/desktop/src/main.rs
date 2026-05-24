@@ -840,6 +840,33 @@ async fn update_playback_progress(
         .map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+async fn get_scene_markers(media_id: i64, media_type: String, state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    use media_core::db::MediaRepository;
+    match state.repos.media.get_scene_markers(media_id, &media_type).await {
+        Ok(markers) => Ok(serde_json::to_value(markers).unwrap()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+#[tauri::command]
+async fn create_scene_marker(media_id: i64, media_type: String, seconds: f64, title: String, state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    use media_core::db::MediaRepository;
+    match state.repos.media.create_scene_marker(media_id, &media_type, seconds, &title).await {
+        Ok(marker) => Ok(serde_json::to_value(marker).unwrap()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+#[tauri::command]
+async fn delete_scene_marker(marker_id: i64, state: State<'_, AppState>) -> Result<(), String> {
+    use media_core::db::MediaRepository;
+    match state.repos.media.delete_scene_marker(marker_id).await {
+        Ok(_) => Ok(()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 fn main() {
     dotenvy::dotenv().ok();
     let database_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| {
@@ -883,7 +910,8 @@ fn main() {
             rename_movie, search_subtitles, process_movie_advanced,
             process_tv_show_advanced, process_library_advanced, sync_trakt,
             cleanup_duplicates, cleanup_empty_folders, start_streaming,
-            download_to_local, get_playback_status, update_playback_progress
+            download_to_local, get_playback_status, update_playback_progress,
+            get_scene_markers, create_scene_marker, delete_scene_marker
         ])
         .setup(move |app| {
             // Resolve sidecar paths

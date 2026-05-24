@@ -200,6 +200,12 @@ impl FfmpegEngine {
         let thumb_path = dest_dir.join("thumb.jpg");
         Self::extract_thumbnail_with_path(ffmpeg_path, input_path, &thumb_path, "00:01:00")?;
 
+        // 🎯 Optimization Guard: Skip heavy storyboard and video preview generation for long-form media (> 45 mins)
+        if duration_secs > 2700.0 {
+            info!("Long-form media detected ({:.1} mins). Skipping heavy sprite sheet and preview generation to optimize resources.", duration_secs / 60.0);
+            return Ok(());
+        }
+
         let sprite_path = dest_dir.join("sprite.webp");
         Self::generate_sprite_sheet_with_path(ffmpeg_path, input_path, &sprite_path, duration_secs)?;
 

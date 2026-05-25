@@ -134,10 +134,48 @@ pub fn read_nfo_tv(path: &Path) -> Result<TvShowNfo> {
     Ok(nfo)
 }
 
+#[derive(Debug, Deserialize, Default, Clone)]
+pub struct EpisodeNfo {
+    #[serde(rename = "title", default)]
+    pub title: Vec<String>,
+    #[serde(rename = "season", default)]
+    pub season: Vec<i32>,
+    #[serde(rename = "episode", default)]
+    pub episode: Vec<i32>,
+    #[serde(rename = "plot", default)]
+    pub plot: Vec<String>,
+    #[serde(rename = "rating", default)]
+    pub rating: Vec<f32>,
+    #[serde(rename = "thumb", default)]
+    pub thumb: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum EpisodeNfoRoot {
+    Episodedetails(EpisodeNfo),
+}
+
+pub fn read_nfo_episode(path: &Path) -> Result<EpisodeNfo> {
+    let content = std::fs::read_to_string(path)?;
+    if content.trim().is_empty() { return Ok(EpisodeNfo::default()); }
+    
+    let nfo = if let Ok(root) = from_str::<EpisodeNfoRoot>(&content) {
+        match root {
+            EpisodeNfoRoot::Episodedetails(e) => e,
+        }
+    } else {
+        from_str::<EpisodeNfo>(&content).unwrap_or_default()
+    };
+
+    Ok(nfo)
+}
+
 #[derive(Debug, Default)]
 pub struct NfoMetadata {
     pub nfo: Option<MovieNfo>,
     pub tv_nfo: Option<TvShowNfo>,
+    pub episode: Option<EpisodeNfo>,
     pub poster_path: Option<String>,
     pub backdrop_path: Option<String>,
 }
@@ -173,6 +211,17 @@ pub fn detect_metadata(video_path: &Path) -> NfoMetadata {
         }
     }
 
+    // Detect sidecar episode NFO file
+    let nfo_path = video_path.with_extension("nfo");
+    let mut episode_nfo = None;
+    if nfo_path.exists() {
+        if let Ok(content) = std::fs::read_to_string(&nfo_path) {
+            if content.contains("<episodedetails") {
+                episode_nfo = read_nfo_episode(&nfo_path).ok();
+            }
+        }
+    }
+
     // 2. Local Image Detection
     let poster_candidates = ["poster.jpg", "poster.png", &format!("{}-poster.jpg", base_name), "folder.jpg"];
     let fanart_candidates = ["fanart.jpg", "backdrop.jpg", &format!("{}-fanart.jpg", base_name)];
@@ -198,6 +247,7 @@ pub fn detect_metadata(video_path: &Path) -> NfoMetadata {
     NfoMetadata {
         nfo: best_movie_nfo,
         tv_nfo: best_tv_nfo,
+        episode: episode_nfo,
         poster_path,
         backdrop_path,
     }

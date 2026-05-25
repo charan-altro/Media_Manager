@@ -313,7 +313,45 @@ impl DefaultScannerService {
             let audio_codec = item.media_info.as_ref().map(|i| i.audio_codec.as_str());
             let duration = item.media_info.as_ref().map(|i| i.duration_secs);
 
-            self.repos.tv.upsert_episode(season_id, extracted_episode, &relative_path, filename, item.size, Some(item.mtime), res, codec, audio_codec, duration, None, item.fingerprint.as_deref()).await?;
+            let (ep_title, ep_plot) = if let Some(ref ep_nfo) = item.metadata.episode {
+                (
+                    ep_nfo.title.first().cloned(),
+                    ep_nfo.plot.first().cloned()
+                )
+            } else {
+                (None, None)
+            };
+
+            let episode_id = self.repos.tv.upsert_episode(
+                season_id,
+                extracted_episode,
+                &relative_path,
+                filename,
+                item.size,
+                Some(item.mtime),
+                res,
+                codec,
+                audio_codec,
+                duration,
+                None,
+                item.fingerprint.as_deref(),
+                ep_title.as_deref(),
+                ep_plot.as_deref(),
+            ).await?;
+
+            if let Some(ref ep_nfo) = item.metadata.episode {
+                let rating = ep_nfo.rating.first().cloned();
+                let thumb = ep_nfo.thumb.first().cloned();
+                if rating.is_some() || thumb.is_some() {
+                    let _ = self.repos.tv.update_episode_scraped_metadata(
+                        episode_id,
+                        None,
+                        None,
+                        rating,
+                        thumb,
+                    ).await;
+                }
+            }
 
             if let Some(ref nfo) = item.metadata.tv_nfo {
                 let tmdb_id = nfo.tmdb_id.as_ref().and_then(|s| s.trim().parse::<i32>().ok());

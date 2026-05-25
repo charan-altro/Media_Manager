@@ -477,6 +477,81 @@ impl ScraperService for DefaultScraperService {
             ).await.map_err(|e| CoreError::Internal(format!("Failed to update TV show metadata in database: {}", e)))?;
         }
 
+        // Fetch seasons for this show from the database and scrape their details from TMDB
+        if let Ok(db_seasons) = self.repos.tv.find_seasons_by_show_id(show_id).await {
+            for db_season in db_seasons {
+                let season_num = db_season.season_number;
+                match self.clients.tmdb.get_season_details(&tmdb_id, season_num).await {
+                    Ok(tmdb_season) => {
+                        let season_poster_url = tmdb_season.poster_path.as_ref()
+                            .map(|p| format!("https://image.tmdb.org/t/p/w500{}", p));
+                        if let Err(e) = self.repos.tv.update_season_scraped_metadata(
+                            db_season.id,
+                            Some(tmdb_season.name),
+                            tmdb_season.overview,
+                            season_poster_url,
+                        ).await {
+                            tracing::error!("Failed to update season S{} metadata: {}", season_num, e);
+                        }
+
+                        if let Ok(db_episodes) = self.repos.tv.find_episodes_by_season_id(db_season.id).await {
+                            for db_ep in db_episodes {
+                                if let Some(tmdb_ep) = tmdb_season.episodes.iter().find(|e| e.episode_number == db_ep.episode_number) {
+                                    let ep_thumbnail = tmdb_ep.still_path.as_ref()
+                                        .map(|p| format!("https://image.tmdb.org/t/p/w300{}", p));
+                                    if let Err(e) = self.repos.tv.update_episode_scraped_metadata(
+                                        db_ep.id,
+                                        Some(tmdb_ep.name.clone()),
+                                        tmdb_ep.overview.clone(),
+                                        tmdb_ep.vote_average,
+                                        ep_thumbnail,
+                                    ).await {
+                                        tracing::error!("Failed to update episode S{}E{} metadata: {}", season_num, db_ep.episode_number, e);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to fetch TMDB season details for show {} S{}: {}", title, season_num, e);
+                    }
+                }
+            }
+        }
+
+        // Fetch and update episode titles/plots from TVMaze
+        if let Ok(maze_results) = self.clients.tvmaze.search_show(&clean_title).await {
+            if let Some(best) = maze_results.first() {
+                let show_maze_id = best.show.id;
+                match self.clients.tvmaze.get_show_episodes(show_maze_id).await {
+                    Ok(maze_episodes) => {
+                        if let Ok(seasons) = self.repos.tv.find_seasons_by_show_id(show_id).await {
+                            for season in seasons {
+                                if let Ok(episodes) = self.repos.tv.find_episodes_by_season_id(season.id).await {
+                                    for ep in episodes {
+                                        if let Some(maze_ep) = maze_episodes.iter().find(|me| {
+                                            me.season == season.season_number && me.number == Some(ep.episode_number)
+                                        }) {
+                                            let clean_summary = maze_ep.summary.as_ref().map(|s| {
+                                                let re = regex::Regex::new(r"<[^>]*>").unwrap();
+                                                re.replace_all(s, "").trim().to_string()
+                                            });
+                                            if let Err(e) = self.repos.tv.update_episode_title_and_plot(ep.id, &maze_ep.name, clean_summary.as_deref()).await {
+                                                tracing::warn!("Failed to update title for episode ID {}: {}", ep.id.0, e);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to fetch TVMaze episodes for show '{}': {}", title, e);
+                    }
+                }
+            }
+        }
+
         // Fire post-processing hook
         if let Some(path) = script_path {
             if !path.is_empty() {

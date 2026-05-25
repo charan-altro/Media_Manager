@@ -69,6 +69,27 @@ pub struct ScrapedTvShow {
     pub original_language: Option<String>,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ScrapedTvSeasonDetails {
+    pub id: String,
+    pub name: String,
+    pub overview: Option<String>,
+    pub poster_path: Option<String>,
+    pub season_number: i32,
+    pub episodes: Vec<ScrapedTvEpisodeDetails>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ScrapedTvEpisodeDetails {
+    pub id: String,
+    pub name: String,
+    pub overview: Option<String>,
+    pub episode_number: i32,
+    pub season_number: i32,
+    pub still_path: Option<String>,
+    pub vote_average: Option<f32>,
+}
+
 pub trait ScraperProvider: Send + Sync {
     fn name(&self) -> &str;
 
@@ -79,4 +100,6 @@ pub trait ScraperProvider: Send + Sync {
     fn search_tv_show<'a>(&'a self, title: &'a str) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::scraper::Result<Vec<ScrapedTvSearchResult>>> + Send + 'a>>;
 
     fn get_tv_details<'a>(&'a self, id: &'a str) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::scraper::Result<ScrapedTvShow>> + Send + 'a>>;
+
+    fn get_season_details<'a>(&'a self, series_id: &'a str, season_number: i32) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::scraper::Result<ScrapedTvSeasonDetails>> + Send + 'a>>;
 }

@@ -64,13 +64,31 @@ pub trait TvWriter: Send + Sync {
         audio_codec: Option<&'a str>,
         duration_secs: Option<i32>,
         hash: Option<&'a str>,
-        fingerprint: Option<&'a str>
+        fingerprint: Option<&'a str>,
+        title: Option<&'a str>,
+        plot: Option<&'a str>,
     ) -> Result<EpisodeId>;
     async fn update_episode_path(&self, id: EpisodeId, new_path: &str) -> Result<()>;
     async fn update_episode_last_scanned(&self, id: EpisodeId) -> Result<()>;
     async fn update_episode_fingerprint(&self, id: EpisodeId, fingerprint: &str) -> Result<()>;
     async fn update_episode_duration(&self, id: EpisodeId, duration_secs: i32) -> Result<()>;
     async fn update_episode_metadata(&self, id: EpisodeId, duration_secs: i32, width: i32, height: i32) -> Result<()>;
+    async fn update_episode_title_and_plot<'a>(&self, id: EpisodeId, title: &str, plot: Option<&'a str>) -> Result<()>;
+    async fn update_episode_scraped_metadata(
+        &self,
+        id: EpisodeId,
+        title: Option<String>,
+        plot: Option<String>,
+        rating: Option<f32>,
+        thumbnail_path: Option<String>,
+    ) -> Result<()>;
+    async fn update_season_scraped_metadata(
+        &self,
+        id: SeasonId,
+        name: Option<String>,
+        plot: Option<String>,
+        poster_url: Option<String>,
+    ) -> Result<()>;
     async fn mark_missing_in_library(&self, library_id: LibraryId) -> Result<i32>;
 }
 
@@ -354,15 +372,17 @@ impl TvWriter for SqliteTvRepository {
         audio_codec: Option<&str>,
         duration_secs: Option<i32>,
         hash: Option<&str>,
-        fingerprint: Option<&str>
+        fingerprint: Option<&str>,
+        title: Option<&str>,
+        plot: Option<&str>,
     ) -> Result<EpisodeId> {
         let normalized_path = crate::paths::normalize_slashes(file_path);
         let row: (EpisodeId,) = crate::fetch_one_db!(
             &*self.base.pool,
             sqlx::query_as(
                 r#"
-                INSERT INTO episodes (season_id, episode_number, file_path, original_name, size_bytes, mtime, resolution, codec, audio_codec, duration_secs, hash, fingerprint, is_missing, last_scanned)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, datetime('now'))
+                INSERT INTO episodes (season_id, episode_number, file_path, original_name, size_bytes, mtime, resolution, codec, audio_codec, duration_secs, hash, fingerprint, is_missing, last_scanned, title, plot)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, datetime('now'), ?, ?)
                 ON CONFLICT(file_path) DO UPDATE SET 
                     size_bytes = excluded.size_bytes,
                     mtime = excluded.mtime,
@@ -374,7 +394,9 @@ impl TvWriter for SqliteTvRepository {
                     fingerprint = excluded.fingerprint,
                     is_missing = 0,
                     last_scanned = datetime('now'),
-                    updated_at = datetime('now')
+                    updated_at = datetime('now'),
+                    title = COALESCE(excluded.title, episodes.title),
+                    plot = COALESCE(excluded.plot, episodes.plot)
                 RETURNING id
                 "#
             )
@@ -390,6 +412,8 @@ impl TvWriter for SqliteTvRepository {
             .bind(duration_secs)
             .bind(hash)
             .bind(fingerprint)
+            .bind(title)
+            .bind(plot)
         ).await?;
 
         Ok(row.0)
@@ -447,6 +471,58 @@ impl TvWriter for SqliteTvRepository {
             sqlx::query("UPDATE episodes SET duration_secs = ?, resolution = ?, updated_at = datetime('now') WHERE id = ?")
                 .bind(duration_secs)
                 .bind(res)
+                .bind(id)
+        ).await?;
+        Ok(())
+    }
+
+    #[tracing::instrument(skip(self), err)]
+    async fn update_episode_title_and_plot<'a>(&self, id: EpisodeId, title: &str, plot: Option<&'a str>) -> Result<()> {
+        crate::execute_db!(
+            &*self.base.pool,
+            sqlx::query("UPDATE episodes SET title = ?, plot = ?, updated_at = datetime('now') WHERE id = ?")
+                .bind(title)
+                .bind(plot)
+                .bind(id)
+        ).await?;
+        Ok(())
+    }
+
+    #[tracing::instrument(skip(self), err)]
+    async fn update_episode_scraped_metadata(
+        &self,
+        id: EpisodeId,
+        title: Option<String>,
+        plot: Option<String>,
+        rating: Option<f32>,
+        thumbnail_path: Option<String>,
+    ) -> Result<()> {
+        crate::execute_db!(
+            &*self.base.pool,
+            sqlx::query("UPDATE episodes SET title = ?, plot = ?, rating = ?, thumbnail_path = ?, updated_at = datetime('now') WHERE id = ?")
+                .bind(title)
+                .bind(plot)
+                .bind(rating)
+                .bind(thumbnail_path)
+                .bind(id)
+        ).await?;
+        Ok(())
+    }
+
+    #[tracing::instrument(skip(self), err)]
+    async fn update_season_scraped_metadata(
+        &self,
+        id: SeasonId,
+        name: Option<String>,
+        plot: Option<String>,
+        poster_url: Option<String>,
+    ) -> Result<()> {
+        crate::execute_db!(
+            &*self.base.pool,
+            sqlx::query("UPDATE seasons SET name = ?, plot = ?, poster_url = ?, updated_at = datetime('now') WHERE id = ?")
+                .bind(name)
+                .bind(plot)
+                .bind(poster_url)
                 .bind(id)
         ).await?;
         Ok(())

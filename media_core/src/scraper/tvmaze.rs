@@ -72,4 +72,24 @@ impl TvmazeClient {
 
         Ok(resp.json::<TvmazeShow>().await?)
     }
+
+    pub async fn get_show_episodes(&self, id: i32) -> Result<Vec<TvmazeEpisode>> {
+        let url = format!("https://api.tvmaze.com/shows/{}/episodes", id);
+        let resp = self.client.get(&url).send().await?;
+
+        if !resp.status().is_success() {
+            return Err(ScraperError::Internal(format!("TVMaze error: {}", resp.status())));
+        }
+
+        Ok(resp.json::<Vec<TvmazeEpisode>>().await?)
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct TvmazeEpisode {
+    pub id: i32,
+    pub name: String,
+    pub season: i32,
+    pub number: Option<i32>,
+    pub summary: Option<String>,
 }

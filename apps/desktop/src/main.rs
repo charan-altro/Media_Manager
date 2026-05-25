@@ -552,7 +552,9 @@ async fn process_tv_show_advanced(id: i64, state: State<'_, AppState>) -> Result
                                     Some(&details.audio_codec), 
                                     Some(details.duration_secs), 
                                     ep.hash.as_deref(), 
-                                    ep.fingerprint.as_deref()
+                                    ep.fingerprint.as_deref(),
+                                    ep.title.as_deref(),
+                                    ep.plot.as_deref(),
                                 ).await;
                             }
 

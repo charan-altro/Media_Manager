@@ -119,6 +119,28 @@ pub struct TmdbTvDetails {
     pub original_language: Option<String>,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct TmdbTvSeasonDetails {
+    pub id: i32,
+    pub name: String,
+    pub overview: Option<String>,
+    pub poster_path: Option<String>,
+    pub season_number: i32,
+    pub episodes: Vec<TmdbTvEpisodeDetails>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct TmdbTvEpisodeDetails {
+    pub id: i32,
+    pub name: String,
+    pub overview: Option<String>,
+    pub episode_number: i32,
+    pub season_number: i32,
+    pub still_path: Option<String>,
+    pub vote_average: Option<f32>,
+    pub runtime: Option<i32>,
+}
+
 impl TmdbClient {
     pub fn new(api_key: String) -> Self {
         Self {
@@ -141,6 +163,18 @@ impl TmdbClient {
         }
         
         req
+    }
+
+    pub fn get_season_details_helper<'a>(&'a self, series_id: i32, season_number: i32) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<TmdbTvSeasonDetails>> + Send + 'a>> {
+        Box::pin(async move {
+            let _permit = TMDB_SEMAPHORE.acquire().await?;
+            let resp = self.build_request(reqwest::Method::GET, &format!("/tv/{}/season/{}", series_id, season_number))
+                .send()
+                .await?
+                .json::<TmdbTvSeasonDetails>()
+                .await?;
+            Ok(resp)
+        })
     }
 }
 
@@ -301,6 +335,29 @@ impl crate::scraper::provider::ScraperProvider for TmdbClient {
                     video_type: v.video_type,
                 }).collect(),
                 original_language: details.original_language,
+            })
+        })
+    }
+
+    fn get_season_details<'a>(&'a self, series_id: &'a str, season_number: i32) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<crate::scraper::provider::ScrapedTvSeasonDetails>> + Send + 'a>> {
+        Box::pin(async move {
+            let tmdb_id = series_id.parse::<i32>().map_err(|e| ScraperError::Internal(e.to_string()))?;
+            let details = self.get_season_details_helper(tmdb_id, season_number).await?;
+            Ok(crate::scraper::provider::ScrapedTvSeasonDetails {
+                id: details.id.to_string(),
+                name: details.name,
+                overview: details.overview,
+                poster_path: details.poster_path,
+                season_number: details.season_number,
+                episodes: details.episodes.into_iter().map(|ep| crate::scraper::provider::ScrapedTvEpisodeDetails {
+                    id: ep.id.to_string(),
+                    name: ep.name,
+                    overview: ep.overview,
+                    episode_number: ep.episode_number,
+                    season_number: ep.season_number,
+                    still_path: ep.still_path,
+                    vote_average: ep.vote_average,
+                }).collect(),
             })
         })
     }

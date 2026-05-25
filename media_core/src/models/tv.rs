@@ -31,6 +31,11 @@ pub struct Season {
     pub id: SeasonId,
     pub show_id: TvShowId,
     pub season_number: i32,
+    pub name: Option<String>,
+    pub plot: Option<String>,
+    pub poster_url: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
@@ -57,4 +62,6 @@ pub struct Episode {
     pub mtime: Option<i64>,
     pub created_at: String,
     pub updated_at: String,
+    pub plot: Option<String>,
+    pub rating: Option<f32>,
 }

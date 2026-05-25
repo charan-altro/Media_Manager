@@ -213,15 +213,11 @@ impl DefaultScannerService {
             }
         } else {
             // TV Show Logic
-            let mut title = item.parsed.title.clone();
             let mut genres: Option<String> = None;
             let mut language: Option<String> = None;
             let mut cast_list: Option<String> = None;
 
             if let Some(ref nfo) = item.metadata.tv_nfo {
-                if let Some(nfo_title) = nfo.title.first().filter(|t| !t.is_empty()) {
-                    title = nfo_title.clone();
-                }
                 if !nfo.genre.is_empty() {
                     genres = serde_json::to_string(&nfo.genre).ok();
                 }
@@ -238,34 +234,78 @@ impl DefaultScannerService {
                 }
             }
 
-            let mut extracted_show_title = item.parsed.title.clone();
+            let extracted_show_title;
             let mut extracted_season = item.parsed.season.unwrap_or(1);
             let extracted_episode = item.parsed.episode.unwrap_or(1);
 
-            if let Some(parent) = item.path.parent() {
-                let parent_name = parent.file_name().and_then(|s| s.to_str()).unwrap_or("");
-                let lc_parent = parent_name.to_lowercase();
-                
-                if lc_parent.starts_with("season") || lc_parent.starts_with("series") {
-                    if let Some(num) = lc_parent.split_whitespace().last().and_then(|s| s.parse::<i32>().ok()) {
-                        extracted_season = num;
-                    }
-                    if let Some(grandparent) = parent.parent() {
-                        let gp_name = grandparent.file_name().and_then(|s| s.to_str()).unwrap_or("");
-                        if !gp_name.is_empty() {
-                            extracted_show_title = gp_name.to_string();
-                        }
-                    }
-                } else if item.parsed.season.is_none() {
-                    extracted_show_title = parent_name.to_string();
-                }
-            }
+            let library_root = Path::new(&library.path);
+            let relative_path_buf = paths::make_relative(&item.path, library_root).unwrap_or_default();
             
-            if title == item.parsed.title && extracted_show_title != item.parsed.title {
-                title = extracted_show_title;
+            let mut parts: Vec<&str> = Vec::new();
+            let mut current = Path::new(&relative_path_buf).parent();
+            while let Some(p) = current {
+                if p.as_os_str().is_empty() || p == Path::new("") {
+                    break;
+                }
+                if let Some(name) = p.file_name().and_then(|s| s.to_str()) {
+                    parts.insert(0, name);
+                }
+                current = p.parent();
             }
 
-            let show_id = self.repos.tv.upsert_show(library.id, &title).await?;
+            if parts.is_empty() {
+                extracted_show_title = item.parsed.title.clone();
+            } else if parts.len() == 1 {
+                let folder_name = parts[0];
+                static RE_SEASON_FOLDER: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| {
+                    regex::Regex::new(r"(?i)\b(?:season|series|s)\s*(\d+)\b").unwrap()
+                });
+                if let Some(caps) = RE_SEASON_FOLDER.captures(folder_name) {
+                    if let Some(s_num) = caps.get(1).and_then(|m| m.as_str().parse::<i32>().ok()) {
+                        extracted_season = s_num;
+                    }
+                    let clean_show_name = RE_SEASON_FOLDER.replace(folder_name, "");
+                    extracted_show_title = clean_show_name.to_string();
+                } else {
+                    extracted_show_title = folder_name.to_string();
+                }
+            } else {
+                let show_folder = parts[0];
+                extracted_show_title = show_folder.to_string();
+                
+                let mut found_season = None;
+                static RE_SEASON_FOLDER_NESTED: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| {
+                    regex::Regex::new(r"(?i)\b(?:season|series|s)\s*(\d+)\b").unwrap()
+                });
+                for part in parts.iter().rev() {
+                    if let Some(caps) = RE_SEASON_FOLDER_NESTED.captures(part) {
+                        if let Some(s_num) = caps.get(1).and_then(|m| m.as_str().parse::<i32>().ok()) {
+                            found_season = Some(s_num);
+                            break;
+                        }
+                    } else if part.to_lowercase().contains("special") {
+                        found_season = Some(0);
+                        break;
+                    }
+                }
+                if let Some(s) = found_season {
+                    extracted_season = s;
+                }
+            }
+
+            let mut db_title = clean_show_title_for_db(&extracted_show_title);
+            if db_title.is_empty() {
+                db_title = extracted_show_title;
+            }
+
+            // NFO title override takes precedence
+            if let Some(ref nfo) = item.metadata.tv_nfo {
+                if let Some(nfo_title) = nfo.title.first().filter(|t| !t.is_empty()) {
+                    db_title = nfo_title.clone();
+                }
+            }
+
+            let show_id = self.repos.tv.upsert_show(library.id, &db_title).await?;
             let season_id = self.repos.tv.upsert_season(show_id, extracted_season).await?;
             
             let res = item.media_info.as_ref().map(|i| Resolution::from_dimensions(i.width, i.height));
@@ -585,3 +625,32 @@ impl ScannerService for DefaultScannerService {
         Ok(())
     }
 }
+
+fn clean_show_title_for_db(raw: &str) -> String {
+    static RE_SEASON: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| {
+        regex::Regex::new(r"(?i)\s*\b(?:season|series|s)\s*\d+\b.*").unwrap()
+    });
+    static RE_QUALITY: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| {
+        regex::Regex::new(r"(?i)\s+\b(2160p|1080p|720p|480p|576p|x264|x265|h264|h265|10bit|hdtv|web-dl|webdl|bluray)\b.*").unwrap()
+    });
+
+    let cleaned = RE_SEASON.replace_all(raw, "");
+    let cleaned = RE_QUALITY.replace_all(&cleaned, "");
+    cleaned.trim().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_clean_show_title_for_db() {
+        assert_eq!(clean_show_title_for_db("Better Call Saul (2015)"), "Better Call Saul (2015)");
+        assert_eq!(clean_show_title_for_db("Better Call Saul Season 2 (1080p x265 10bit Joy)"), "Better Call Saul");
+        assert_eq!(clean_show_title_for_db("Better Call Saul Season 3 Complete 720p HDTV x264 [i_c]"), "Better Call Saul");
+        assert_eq!(clean_show_title_for_db("Breaking Bad (2008)"), "Breaking Bad (2008)");
+        assert_eq!(clean_show_title_for_db("Friends (1994)"), "Friends (1994)");
+    }
+}
+
+

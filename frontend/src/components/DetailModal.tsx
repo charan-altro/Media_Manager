@@ -4,6 +4,8 @@ import { getImageUrl, api, type Movie, type TVShow } from '../api/adapter';
 import toast from 'react-hot-toast';
 import VidstackPlayer from './VidstackPlayer';
 
+import { useMediaStore } from '../context/MediaStoreContext';
+
 interface DetailModalProps {
   item: Movie | TVShow;
   onClose: () => void;
@@ -17,9 +19,14 @@ interface DetailModalProps {
 const DetailModal: React.FC<DetailModalProps> = ({ 
   item, onClose, onRefresh, onAdvanced, onDownload, refreshingIds, loadData 
 }) => {
+  const { libraries } = useMediaStore();
+  const library = libraries.find(l => l.id === item.library_id);
+  const isShow = library ? library.media_type === 'tv' : false;
+  
   const [isEditing, setIsEditing] = useState(false);
   const [editForm, setEditForm] = useState<Partial<Movie & TVShow>>({});
   const [seasons, setSeasons] = useState<any[]>([]);
+  const [selectedSeasonId, setSelectedSeasonId] = useState<number | null>(null);
   const [episodes, setEpisodes] = useState<Record<number, any[]>>({});
   const [playbackStatus, setPlaybackStatus] = useState<any>(null);
   
@@ -34,7 +41,9 @@ const DetailModal: React.FC<DetailModalProps> = ({
   const [showResumeDialog, setShowResumeDialog] = useState(false);
   const [pendingUrl, setPendingUrl] = useState<string | null>(null);
 
-  const isShow = 'library_id' in item && !('runtime' in item);
+  const currentSeason = seasons.find(s => s.id === selectedSeasonId);
+  const seasonNumber = currentSeason ? currentSeason.season_number : 1;
+  const paddedSeason = seasonNumber.toString().padStart(2, '0');
 
   const handlePlayMedia = async (mediaId: number, mediaType: 'movie' | 'episode', metadata?: { title: string, posterUrl?: string, videoCodec?: string, audioCodec?: string, hash?: string }) => {
     if (isStartingStream) return;
@@ -110,8 +119,15 @@ const DetailModal: React.FC<DetailModalProps> = ({
 
   const loadSeasons = async (showId: number) => {
     try {
+      setSeasons([]);
+      setSelectedSeasonId(null);
+      setEpisodes({});
       const data = await api.getSeasons(showId);
+      data.sort((a: any, b: any) => a.season_number - b.season_number);
       setSeasons(data);
+      if (data.length > 0) {
+        setSelectedSeasonId(data[0].id);
+      }
       for (const season of data) {
         loadEpisodes(season.id);
       }
@@ -380,91 +396,106 @@ const DetailModal: React.FC<DetailModalProps> = ({
             {/* Seasons & Episodes Grid Section (TV Shows Only) */}
             {isShow && !isEditing && (
               <div className="space-y-6 pt-4">
-                <h3 className="text-xs font-black uppercase tracking-[0.2em] text-zinc-500 border-b border-zinc-850 pb-2">Seasons & Episodes</h3>
-                <div className="space-y-8">
-                  {seasons.map(season => (
-                    <div key={season.id} className="space-y-4">
-                      <div className="flex items-center gap-3 text-white font-black uppercase italic tracking-tight">
-                         <div className="w-1.5 h-5 bg-red-650 rounded-full shadow-[0_0_8px_#dc2626]" />
-                         Season {season.season_number}
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-zinc-850 pb-4">
+                  <h3 className="text-xs font-black uppercase tracking-[0.2em] text-zinc-500">Episodes</h3>
+                  
+                  {seasons.length > 0 && (
+                    <div className="relative">
+                      <select
+                        value={selectedSeasonId ?? ''}
+                        onChange={(e) => setSelectedSeasonId(Number(e.target.value))}
+                        className="appearance-none bg-zinc-900 border border-zinc-800 rounded-lg px-4 py-2.5 pr-10 text-xs font-black uppercase tracking-wider text-zinc-200 focus:outline-none focus:border-red-650 transition cursor-pointer"
+                      >
+                        {seasons.map((s) => (
+                          <option key={s.id} value={s.id} className="bg-zinc-950 text-zinc-200">
+                            Season {s.season_number}
+                          </option>
+                        ))}
+                      </select>
+                      <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-3 text-zinc-400">
+                        <svg className="fill-current h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path d="M9.293 12.95l.707.707L15.657 8l-1.414-1.414L10 10.828 5.757 6.586 4.343 8z"/></svg>
                       </div>
-                      
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                        {episodes[season.id]?.map(ep => (
-                          <div 
-                            key={ep.id} 
-                            onClick={() => handlePlayMedia(ep.id, 'episode', { 
-                              title: `${item.title} - S${ep.season_number.toString().padStart(2, '0')}E${ep.episode_number.toString().padStart(2, '0')} - ${ep.title || 'Episode ' + ep.episode_number}`,
-                              posterUrl: ep.thumbnail_path || item.poster_url || item.backdrop_url,
-                              videoCodec: ep.video_codec || ep.codec,
-                              audioCodec: ep.audio_codec,
-                              hash: ep.hash
-                            })} 
-                            className="flex flex-col bg-zinc-900/35 rounded-xl border border-zinc-850/80 hover:border-zinc-700/80 hover:bg-zinc-850/30 transition-all duration-300 group cursor-pointer overflow-hidden shadow-md"
-                          >
-                            {/* Episode Card Thumbnail */}
-                            <div className="relative aspect-video bg-zinc-950 overflow-hidden shrink-0">
-                              {ep.thumbnail_path ? (
-                                <img src={getImageUrl(ep.thumbnail_path)} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" alt={ep.title} />
-                              ) : (
-                                <div className="w-full h-full flex items-center justify-center text-zinc-700 bg-zinc-900/60">
-                                  <Monitor className="w-7 h-7" />
-                                </div>
-                              )}
-                              <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center z-10">
-                                <div className="w-10 h-10 rounded-full bg-white/20 hover:bg-white text-white hover:text-black flex items-center justify-center border border-white/30 transition duration-300 transform scale-90 group-hover:scale-100 shadow-2xl">
-                                  <Play className="w-4 h-4 fill-current translate-x-0.5" />
-                                </div>
+                    </div>
+                  )}
+                </div>
+
+                {selectedSeasonId && (
+                  <div className="space-y-4 animate-in fade-in duration-300">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      {episodes[selectedSeasonId]?.map(ep => (
+                        <div 
+                          key={ep.id} 
+                          onClick={() => handlePlayMedia(ep.id, 'episode', { 
+                            title: `${item.title} - S${paddedSeason}E${ep.episode_number.toString().padStart(2, '0')} - ${ep.title || 'Episode ' + ep.episode_number}`,
+                            posterUrl: ep.thumbnail_path || item.poster_url || item.backdrop_url,
+                            videoCodec: ep.video_codec || ep.codec,
+                            audioCodec: ep.audio_codec,
+                            hash: ep.hash
+                          })} 
+                          className="flex flex-col bg-zinc-900/35 rounded-xl border border-zinc-850/80 hover:border-zinc-700/80 hover:bg-zinc-850/30 transition-all duration-300 group cursor-pointer overflow-hidden shadow-md"
+                        >
+                          {/* Episode Card Thumbnail */}
+                          <div className="relative aspect-video bg-zinc-950 overflow-hidden shrink-0">
+                            {ep.thumbnail_path ? (
+                              <img src={getImageUrl(ep.thumbnail_path)} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" alt={ep.title} />
+                            ) : (
+                              <div className="w-full h-full flex items-center justify-center text-zinc-700 bg-zinc-900/60">
+                                <Monitor className="w-7 h-7" />
                               </div>
-                              <div className="absolute bottom-2 right-2 bg-black/75 px-1.5 py-0.5 rounded text-[9px] font-bold font-mono text-zinc-400">
-                                {ep.runtime ? `${ep.runtime}m` : 'HD'}
+                            )}
+                            <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center z-10">
+                              <div className="w-10 h-10 rounded-full bg-white/20 hover:bg-white text-white hover:text-black flex items-center justify-center border border-white/30 transition duration-300 transform scale-90 group-hover:scale-100 shadow-2xl">
+                                <Play className="w-4 h-4 fill-current translate-x-0.5" />
                               </div>
                             </div>
-                            
-                            {/* Episode Card Info */}
-                            <div className="p-4 flex-1 flex flex-col justify-between space-y-2">
-                              <div className="space-y-1">
-                                <div className="flex items-center gap-2">
-                                  <span className="text-xs font-black text-red-500 tracking-wider">E{ep.episode_number}</span>
-                                  <span className="text-zinc-200 font-bold text-sm line-clamp-1 group-hover:text-white transition">{ep.title || `Episode ${ep.episode_number}`}</span>
-                                </div>
-                                {ep.plot && <p className="text-[11px] text-zinc-500 line-clamp-2 leading-relaxed font-medium">{ep.plot}</p>}
+                            <div className="absolute bottom-2 right-2 bg-black/75 px-1.5 py-0.5 rounded text-[9px] font-bold font-mono text-zinc-400">
+                              {ep.runtime ? `${ep.runtime}m` : 'HD'}
+                            </div>
+                          </div>
+                          
+                          {/* Episode Card Info */}
+                          <div className="p-4 flex-1 flex flex-col justify-between space-y-2">
+                            <div className="space-y-1">
+                              <div className="flex items-center gap-2">
+                                <span className="text-xs font-black text-red-500 tracking-wider">E{ep.episode_number}</span>
+                                <span className="text-zinc-200 font-bold text-sm line-clamp-1 group-hover:text-white transition">{ep.title || `Episode ${ep.episode_number}`}</span>
                               </div>
-                              
-                              <div className="flex items-center justify-between pt-2 border-t border-zinc-900/50">
-                                <div className="flex items-center gap-2 text-[9px] text-zinc-500 font-mono uppercase tracking-tighter">
-                                  <span>{ep.resolution || '1080p'}</span>
-                                  <span>•</span>
-                                  <span>{ep.codec || 'AVC'}</span>
-                                </div>
-                                <div className="flex items-center gap-1">
-                                  <button 
-                                    onClick={(e) => { 
-                                      e.stopPropagation(); 
-                                      api.playEpisode(ep.id); 
-                                      toast.success("Opening in local player...");
-                                    }} 
-                                    className="p-1.5 hover:bg-zinc-800 rounded-lg text-zinc-500 hover:text-white transition"
-                                    title="Play Locally"
-                                  >
-                                    <Monitor className="w-3.5 h-3.5" />
-                                  </button>
-                                  <button 
-                                    onClick={(e) => { e.stopPropagation(); onDownload(ep.id, 'tv'); }} 
-                                    className="p-1.5 hover:bg-zinc-800 rounded-lg text-zinc-500 hover:text-white transition"
-                                    title="Download"
-                                  >
-                                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>
-                                  </button>
-                                </div>
+                              {ep.plot && <p className="text-[11px] text-zinc-500 line-clamp-2 leading-relaxed font-medium">{ep.plot}</p>}
+                            </div>
+                            
+                            <div className="flex items-center justify-between pt-2 border-t border-zinc-900/50">
+                              <div className="flex items-center gap-2 text-[9px] text-zinc-500 font-mono uppercase tracking-tighter">
+                                <span>{ep.resolution || '1080p'}</span>
+                                <span>•</span>
+                                <span>{ep.codec || 'AVC'}</span>
+                              </div>
+                              <div className="flex items-center gap-1">
+                                <button 
+                                  onClick={(e) => { 
+                                    e.stopPropagation(); 
+                                    api.playEpisode(ep.id); 
+                                    toast.success("Opening in local player...");
+                                  }} 
+                                  className="p-1.5 hover:bg-zinc-800 rounded-lg text-zinc-500 hover:text-white transition"
+                                  title="Play Locally"
+                                >
+                                  <Monitor className="w-3.5 h-3.5" />
+                                </button>
+                                <button 
+                                  onClick={(e) => { e.stopPropagation(); onDownload(ep.id, 'tv'); }} 
+                                  className="p-1.5 hover:bg-zinc-800 rounded-lg text-zinc-500 hover:text-white transition"
+                                  title="Download"
+                                >
+                                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>
+                                </button>
                               </div>
                             </div>
                           </div>
-                        ))}
-                      </div>
+                        </div>
+                      ))}
                     </div>
-                  ))}
-                </div>
+                  </div>
+                )}
               </div>
             )}
 

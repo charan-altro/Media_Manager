@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use reqwest::Client;
 use crate::scraper::{Result, ScraperError};
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TvmazeShow {
     pub id: i32,
     pub name: String,
@@ -13,27 +13,28 @@ pub struct TvmazeShow {
     pub image: Option<TvmazeImage>,
     pub runtime: Option<i32>,
     pub rating: Option<TvmazeRating>,
+    pub genres: Option<Vec<String>>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TvmazeExternals {
     pub tvrage: Option<i32>,
     pub thetvdb: Option<i32>,
     pub imdb: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TvmazeImage {
     pub medium: Option<String>,
     pub original: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TvmazeRating {
     pub average: Option<f32>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TvmazeSearchResult {
     pub score: f32,
     pub show: TvmazeShow,

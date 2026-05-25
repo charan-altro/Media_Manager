@@ -229,6 +229,7 @@ impl ScraperService for DefaultScraperService {
             .ok_or_else(|| CoreError::Internal(format!("TV show with ID {} not found", show_id.0)))?;
 
         let title = &existing.title;
+        let clean_title = clean_tv_title_for_search(title);
 
         // Acquire rate limit permit
         let _permit = self.clients.rate_limiter.acquire().await
@@ -241,25 +242,39 @@ impl ScraperService for DefaultScraperService {
             .unwrap_or_default();
         let script_path = settings_map.get("post_processing_script").cloned();
 
+        let mut show_folder: Option<String> = None;
+        if let Ok(seasons) = self.repos.tv.find_seasons_by_show_id(show_id).await {
+            'outer: for season in seasons {
+                if let Ok(episodes) = self.repos.tv.find_episodes_by_season_id(season.id).await {
+                    for ep in episodes {
+                        if !ep.file_path.is_empty() {
+                            show_folder = Some(ep.file_path);
+                            break 'outer;
+                        }
+                    }
+                }
+            }
+        }
+
         let tmdb_id = if let Some(id) = existing.tmdb_id {
             Some(id.to_string())
         } else {
             // 1. Try TMDB first (default)
-            let results = self.clients.tmdb.search_tv_show(title)
-                .instrument(tracing::info_span!("tmdb_search_tv", title = title))
+            let results = self.clients.tmdb.search_tv_show(&clean_title)
+                .instrument(tracing::info_span!("tmdb_search_tv", title = clean_title))
                 .await
                 .unwrap_or_default();
 
-            let best_match = find_best_tv_match(title, &results);
+            let best_match = find_best_tv_match(&clean_title, &results);
             
             if let Some(result) = best_match {
                 Some(result.id.clone())
             } else {
                 // 2. Fallback: Try TVDB if TMDB returned no results
-                tracing::info!("TMDB returned no results for '{}', trying TVDB fallback...", title);
+                tracing::info!("TMDB returned no results for '{}', trying TVDB fallback...", clean_title);
                 let tvdb_match = {
-                    match self.clients.tvdb.search_series(title)
-                        .instrument(tracing::info_span!("tvdb_search_series", title = title))
+                    match self.clients.tvdb.search_series(&clean_title)
+                        .instrument(tracing::info_span!("tvdb_search_series", title = clean_title))
                         .await 
                     {
                         Ok(tvdb_results) => {
@@ -273,7 +288,7 @@ impl ScraperService for DefaultScraperService {
                             }
                         }
                         Err(e) => {
-                            tracing::warn!("TVDB fallback failed for '{}': {}", title, e);
+                            tracing::warn!("TVDB fallback failed for '{}': {}", clean_title, e);
                             None
                         }
                     }
@@ -281,9 +296,9 @@ impl ScraperService for DefaultScraperService {
 
                 // 3. Fallback: Try TVMaze search
                 if tvdb_match.is_none() {
-                    tracing::info!("Trying TVMaze fallback for '{}'...", title);
-                    match self.clients.tvmaze.search_show(title)
-                        .instrument(tracing::info_span!("tvmaze_search_show", title = title))
+                    tracing::info!("Trying TVMaze fallback for '{}'...", clean_title);
+                    match self.clients.tvmaze.search_show(&clean_title)
+                        .instrument(tracing::info_span!("tvmaze_search_show", title = clean_title))
                         .await 
                     {
                         Ok(tvmaze_results) => {
@@ -305,9 +320,9 @@ impl ScraperService for DefaultScraperService {
 
         // 4. Final fallback: Try Trakt search
         let tmdb_id = if tmdb_id.is_none() && self.clients.trakt.is_configured() {
-            tracing::info!("Trying Trakt fallback for '{}'...", title);
-            match self.clients.trakt.search_show(title)
-                .instrument(tracing::info_span!("trakt_search_show", title = title))
+            tracing::info!("Trying Trakt fallback for '{}'...", clean_title);
+            match self.clients.trakt.search_show(&clean_title)
+                .instrument(tracing::info_span!("trakt_search_show", title = clean_title))
                 .await 
             {
                 Ok(trakt_results) => {
@@ -331,92 +346,127 @@ impl ScraperService for DefaultScraperService {
 
         let tmdb_id_i32 = tmdb_id.parse::<i32>().unwrap_or(0);
 
-        let details = self.clients.tmdb.get_tv_details(&tmdb_id)
+        let tmdb_details_res = self.clients.tmdb.get_tv_details(&tmdb_id)
             .instrument(tracing::info_span!("tmdb_get_tv_details", tmdb_id = tmdb_id))
-            .await
-            .map_err(|e| CoreError::Internal(format!("Failed to fetch TMDB TV details: {}", e)))?;
-        
-        // Artwork: Start with TMDB, then try Fanart.tv for higher quality
-        let mut poster_url = details.poster_path.as_ref().map(|p| format!("https://image.tmdb.org/t/p/original{}", p));
-        let mut backdrop_url = details.backdrop_path.as_ref().map(|p| format!("https://image.tmdb.org/t/p/original{}", p));
+            .await;
 
-        // Fanart.tv artwork upgrade for TV shows
-        if settings.movie_artwork_source == "fanart" {
-            if let Ok(fanart_data) = self.clients.fanart.get_movie_images(tmdb_id_i32)
-                .instrument(tracing::info_span!("fanart_get_tv_images", tmdb_id = tmdb_id_i32))
-                .await 
-            {
-                if let Some(p) = fanart_data.movieposter.and_then(|v| v.first().map(|i| i.url.clone())) {
-                    poster_url = Some(p);
-                }
-                if let Some(b) = fanart_data.moviebackground.and_then(|v| v.first().map(|i| i.url.clone())) {
-                    backdrop_url = Some(b);
-                }
-            }
-        }
+        let (overview, vote_average, genres_json, language, poster_url, backdrop_url, trailer_url, cast_json, show_name_for_hook) = match tmdb_details_res {
+            Ok(details) => {
+                let mut p_url = details.poster_path.as_ref().map(|p| format!("https://image.tmdb.org/t/p/original{}", p));
+                let mut b_url = details.backdrop_path.as_ref().map(|p| format!("https://image.tmdb.org/t/p/original{}", p));
 
-        // Find the show's folder from a representative episode to download artwork locally
-        let seasons = self.repos.tv.find_seasons_by_show_id(show_id).await.unwrap_or_default();
-        let show_folder = if let Some(s) = seasons.first() {
-            let eps = self.repos.tv.find_episodes_by_season_id(s.id).await.unwrap_or_default();
-            eps.first().map(|e| e.file_path.clone())
-        } else {
-            None
-        };
-
-        let mut final_cast = Vec::new();
-
-        if let Some(ep_file_path) = show_folder {
-            let ep_path = std::path::Path::new(&ep_file_path);
-            // Walk up: episode → season folder → show folder
-            if let Some(season_folder) = ep_path.parent() {
-                let show_root = season_folder.parent().unwrap_or(season_folder);
-
-                if let Some(url) = poster_url.as_deref() {
-                    let dest = show_root.join("poster.jpg");
-                    let _ = download_to_file(url, &dest).await;
-                    poster_url = Some(dest.to_string_lossy().to_string());
-                }
-                if let Some(url) = backdrop_url.as_deref() {
-                    let dest = show_root.join("fanart.jpg");
-                    let _ = download_to_file(url, &dest).await;
-                    backdrop_url = Some(dest.to_string_lossy().to_string());
-                }
-
-                let actors_dir = show_root.join(".actors");
-                let _ = std::fs::create_dir_all(&actors_dir);
-                for member in details.cast.iter().take(10) {
-                    let mut member_image = None;
-                    if let Some(ref p_path) = member.profile_path {
-                        let clean_name = member.name.replace(|c: char| !c.is_alphanumeric(), "_");
-                        let dest = actors_dir.join(format!("{}.jpg", clean_name));
-                        let url = format!("https://image.tmdb.org/t/p/w185{}", p_path);
-                        if download_to_file(&url, &dest).await.is_ok() {
-                            member_image = Some(dest.to_string_lossy().to_string());
+                if settings.movie_artwork_source == "fanart" {
+                    if let Ok(fanart_data) = self.clients.fanart.get_movie_images(tmdb_id_i32)
+                        .instrument(tracing::info_span!("fanart_get_tv_images", tmdb_id = tmdb_id_i32))
+                        .await 
+                    {
+                        if let Some(p) = fanart_data.movieposter.and_then(|v| v.first().map(|i| i.url.clone())) {
+                            p_url = Some(p);
+                        }
+                        if let Some(b) = fanart_data.moviebackground.and_then(|v| v.first().map(|i| i.url.clone())) {
+                            b_url = Some(b);
                         }
                     }
-                    final_cast.push(CastMember {
-                        name: member.name.clone(),
-                        role: Some(member.character.clone()),
-                        image: member_image,
-                    });
+                }
+
+                let mut final_cast = Vec::new();
+                if let Some(ep_file_path) = show_folder {
+                    let ep_path = std::path::Path::new(&ep_file_path);
+                    if let Some(season_folder) = ep_path.parent() {
+                        let show_root = season_folder.parent().unwrap_or(season_folder);
+
+                        if let Some(url) = p_url.as_deref() {
+                            let dest = show_root.join("poster.jpg");
+                            let _ = download_to_file(url, &dest).await;
+                            p_url = Some(dest.to_string_lossy().to_string());
+                        }
+                        if let Some(url) = b_url.as_deref() {
+                            let dest = show_root.join("fanart.jpg");
+                            let _ = download_to_file(url, &dest).await;
+                            b_url = Some(dest.to_string_lossy().to_string());
+                        }
+
+                        let actors_dir = show_root.join(".actors");
+                        let _ = std::fs::create_dir_all(&actors_dir);
+                        for member in details.cast.iter().take(10) {
+                            let mut member_image = None;
+                            if let Some(ref p_path) = member.profile_path {
+                                let clean_name = member.name.replace(|c: char| !c.is_alphanumeric(), "_");
+                                let dest = actors_dir.join(format!("{}.jpg", clean_name));
+                                let url = format!("https://image.tmdb.org/t/p/w185{}", p_path);
+                                if download_to_file(&url, &dest).await.is_ok() {
+                                    member_image = Some(dest.to_string_lossy().to_string());
+                                }
+                            }
+                            final_cast.push(CastMember {
+                                name: member.name.clone(),
+                                role: Some(member.character.clone()),
+                                image: member_image,
+                            });
+                        }
+                    }
+                }
+
+                let cast_j = serde_json::to_string(&final_cast).ok();
+                let tr_url = details.videos.iter()
+                    .find(|v| v.site == "YouTube" && v.video_type == "Trailer")
+                    .map(|v| format!("https://www.youtube.com/watch?v={}", v.key));
+                let genres_j = serde_json::to_string(&details.genres).ok();
+                let lang = details.original_language.clone();
+
+                (details.overview.clone(), Some(details.vote_average as f32), genres_j, lang, p_url, b_url, tr_url, cast_j, details.name.clone())
+            }
+            Err(tmdb_err) => {
+                tracing::warn!("TMDB details query failed: {}. Falling back to TVMaze...", tmdb_err);
+                
+                let mut maze_show = None;
+                if let Ok(maze_results) = self.clients.tvmaze.search_show(&clean_title).await {
+                    if let Some(best) = maze_results.first() {
+                        maze_show = Some(best.show.clone());
+                    }
+                }
+
+                match maze_show {
+                    Some(show) => {
+                        let overview = show.summary.clone().map(|s| {
+                            let re = regex::Regex::new(r"<[^>]*>").unwrap();
+                            re.replace_all(&s, "").trim().to_string()
+                        });
+                        
+                        let vote_avg = show.rating.and_then(|r| r.average);
+                        let genres_j = show.genres.as_ref().and_then(|g| serde_json::to_string(g).ok());
+                        
+                        let mut p_url = show.image.as_ref().and_then(|img| img.original.clone().or(img.medium.clone()));
+                        let b_url = None;
+
+                        if let Some(ep_file_path) = show_folder {
+                            let ep_path = std::path::Path::new(&ep_file_path);
+                            if let Some(season_folder) = ep_path.parent() {
+                                let show_root = season_folder.parent().unwrap_or(season_folder);
+
+                                if let Some(url) = p_url.as_deref() {
+                                    let dest = show_root.join("poster.jpg");
+                                    let _ = download_to_file(url, &dest).await;
+                                    p_url = Some(dest.to_string_lossy().to_string());
+                                }
+                            }
+                        }
+
+                        (overview, vote_avg, genres_j, Some("en".to_string()), p_url, b_url, None, None, show.name.clone())
+                    }
+                    None => {
+                        return Err(CoreError::Internal(format!("Failed to fetch TV details (TMDB error: {}, TVMaze fallback failed)", tmdb_err)));
+                    }
                 }
             }
-        }
-
-        let cast_json = serde_json::to_string(&final_cast).ok();
-        let trailer_url = details.videos.iter()
-            .find(|v| v.site == "YouTube" && v.video_type == "Trailer")
-            .map(|v| format!("https://www.youtube.com/watch?v={}", v.key));
-        let genres_json = serde_json::to_string(&details.genres).ok();
-        let language = details.original_language.clone();
+        };
 
         {
             self.repos.tv.update_show_metadata(
                 show_id,
                 Some(tmdb_id_i32),
-                details.overview.clone(),
-                Some(details.vote_average as f32),
+                overview,
+                vote_average,
                 genres_json,
                 language,
                 cast_json,
@@ -431,7 +481,7 @@ impl ScraperService for DefaultScraperService {
         if let Some(path) = script_path {
             if !path.is_empty() {
                 let mut ctx = std::collections::HashMap::new();
-                ctx.insert("title".to_string(), details.name.clone());
+                ctx.insert("title".to_string(), show_name_for_hook);
                 ctx.insert("tmdb_id".to_string(), tmdb_id.to_string());
                 ctx.insert("media_type".to_string(), "tv".to_string());
                 crate::hooks::run_post_processing(&path, "scrape_complete", ctx).await;
@@ -573,7 +623,8 @@ fn find_best_tv_match(
     results.iter().max_by_key(|res| {
         let clean_res = clean_for_matching(&res.name);
         let title_sim = jaro_winkler(&clean_search, &clean_res);
-        (title_sim * 1000.0) as i32
+        // Factor in rating as a tie-breaker (gives highly-rated shows a small boost to break exact title ties)
+        (title_sim * 1000.0) as i32 + (res.vote_average * 5.0) as i32
     }).cloned()
 }
 
@@ -586,3 +637,44 @@ async fn download_to_file(url: &str, dest: &std::path::Path) -> Result<()> {
     std::fs::write(dest, bytes)?;
     Ok(())
 }
+
+fn clean_tv_title_for_search(title: &str) -> String {
+    static RE_YEAR: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| {
+        regex::Regex::new(r"\s*[\(\[-]?\s*(?:19|20)\d{2}\s*[\)\]-]?").unwrap()
+    });
+    static RE_SEASON: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| {
+        regex::Regex::new(r"(?i)\s+(season|series|s)\s*\d+.*").unwrap()
+    });
+    static RE_QUALITY: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| {
+        regex::Regex::new(r"(?i)\s+(2160p|1080p|720p|480p|576p|x264|x265|h264|h265|10bit|hdtv|web-dl|webdl|bluray).*").unwrap()
+    });
+
+    let cleaned = RE_YEAR.replace_all(title, "");
+    let cleaned = RE_SEASON.replace_all(&cleaned, "");
+    let cleaned = RE_QUALITY.replace_all(&cleaned, "");
+
+    let cleaned = cleaned.trim().to_string();
+    if cleaned.is_empty() {
+        title.to_string()
+    } else {
+        cleaned
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_clean_tv_title_for_search() {
+        assert_eq!(clean_tv_title_for_search("Better Call Saul (2015)"), "Better Call Saul");
+        assert_eq!(clean_tv_title_for_search("Better Call Saul Employee Training (2017)"), "Better Call Saul Employee Training");
+        assert_eq!(clean_tv_title_for_search("Better Call Saul Season 2 (1080p x265 10bit Joy)"), "Better Call Saul");
+        assert_eq!(clean_tv_title_for_search("Better Call Saul Season 3 Complete 720p HDTV x264 [i_c]"), "Better Call Saul");
+        assert_eq!(clean_tv_title_for_search("Breaking Bad (2008)"), "Breaking Bad");
+        assert_eq!(clean_tv_title_for_search("Friends (1994)"), "Friends");
+        assert_eq!(clean_tv_title_for_search("Gabbar Singh"), "Gabbar Singh");
+    }
+}
+
+

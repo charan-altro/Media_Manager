@@ -13,15 +13,10 @@ pub struct TvdbResponse<T> {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TvdbSeries {
-    pub id: i32,
+    pub id: String,
     pub name: String,
     pub overview: Option<String>,
-    pub status: Option<TvdbStatus>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct TvdbStatus {
-    pub name: Option<String>,
+    pub status: Option<serde_json::Value>,
 }
 
 pub struct TvdbClient {

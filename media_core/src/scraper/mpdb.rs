@@ -37,10 +37,7 @@ pub struct MpdbClient {
 impl MpdbClient {
     pub fn new(abo_key: String, username: String) -> Self {
         Self {
-            client: Client::builder()
-                .user_agent("MediaManager/0.2.0")
-                .build()
-                .unwrap(),
+            client: crate::scraper::build_http_client(),
             abo_key,
             username,
         }

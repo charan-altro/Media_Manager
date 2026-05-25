@@ -3,10 +3,11 @@ use std::path::{Path, PathBuf};
 use notify::{Watcher, RecursiveMode, Config};
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tokio::time::{sleep, Duration};
+use tokio::time::sleep;
+use std::time::{Duration, Instant};
 use tracing::info;
 use crate::scanner::service::ScannerService;
-use std::collections::HashSet;
+use std::collections::{HashSet, HashMap};
 use crate::db::{Repositories, LibraryReader};
 
 pub struct Watchdog {
@@ -29,6 +30,7 @@ impl Watchdog {
         }, Config::default())?;
 
         let mut watched_paths: HashSet<String> = HashSet::new();
+        let mut failed_paths: HashMap<String, Instant> = HashMap::new();
 
         info!("Watchdog started, monitoring for file changes and new libraries...");
 
@@ -38,13 +40,23 @@ impl Watchdog {
             // Check for new libraries every 30 seconds
             if let Ok(libraries) = repos_clone.library.find_all().await {
                 for lib in libraries {
-                    if !watched_paths.contains(&lib.path) {
-                        info!("Watchdog: New library detected, watching: {}", lib.path);
-                        if let Err(e) = watcher.watch(Path::new(&lib.path), RecursiveMode::Recursive) {
-                            tracing::error!("Watchdog failed to watch {}: {}", lib.path, e);
-                        } else {
-                            watched_paths.insert(lib.path.clone());
+                    if watched_paths.contains(&lib.path) {
+                        continue;
+                    }
+
+                    if let Some(&last_try) = failed_paths.get(&lib.path) {
+                        if last_try.elapsed() < Duration::from_secs(300) {
+                            continue;
                         }
+                    }
+
+                    info!("Watchdog: New library detected, watching: {}", lib.path);
+                    if let Err(e) = watcher.watch(Path::new(&lib.path), RecursiveMode::Recursive) {
+                        tracing::error!("Watchdog failed to watch {}: {}", lib.path, e);
+                        failed_paths.insert(lib.path.clone(), Instant::now());
+                    } else {
+                        watched_paths.insert(lib.path.clone());
+                        failed_paths.remove(&lib.path);
                     }
                 }
             }

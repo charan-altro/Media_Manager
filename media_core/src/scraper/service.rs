@@ -705,7 +705,9 @@ fn find_best_tv_match(
 
 async fn download_to_file(url: &str, dest: &std::path::Path) -> Result<()> {
     if dest.exists() { return Ok(()); }
-    let resp = reqwest::get(url)
+    let client = crate::scraper::build_http_client();
+    let resp = client.get(url)
+        .send()
         .instrument(tracing::info_span!("download_file", url = url))
         .await?;
     let bytes = resp.bytes().await?;

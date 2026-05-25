@@ -122,9 +122,7 @@ impl MaintenanceEngine {
     pub async fn check_for_updates() -> Result<String> {
         info!("Checking for updates via GitHub Releases API...");
         
-        let client = reqwest::Client::builder()
-            .user_agent("MediaManager/0.2.0")
-            .build()?;
+        let client = crate::scraper::build_http_client();
 
         match client
             .get("https://api.github.com/repos/selfhost-media-orchestrator/media-manager/releases/latest")

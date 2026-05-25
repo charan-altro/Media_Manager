@@ -2802,6 +2802,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "dashmap",
+ "dotenvy",
  "fs_extra",
  "futures",
  "html-escape",

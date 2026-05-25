@@ -54,7 +54,7 @@ pub struct TraktClient {
 impl TraktClient {
     pub fn new(client_id: String) -> Self {
         Self {
-            client: Client::new(),
+            client: crate::scraper::build_http_client(),
             client_id: client_id.trim().to_string(),
             base_url: "https://api.trakt.tv".to_string(),
         }

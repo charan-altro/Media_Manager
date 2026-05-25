@@ -24,6 +24,14 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use crate::db::{Repositories, SettingsRepository};
 
+pub fn build_http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ScraperSettings {
     pub primary_movie_scraper: String, // "tmdb", "imdb", "universal", "kodi"

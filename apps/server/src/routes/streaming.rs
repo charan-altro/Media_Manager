@@ -56,7 +56,20 @@ async fn play_movie(State(state): State<Arc<AppState>>, Path(id): Path<i64>) -> 
     let repos = state.repos.clone();
     tokio::spawn(async move {
         if let Ok(Some(path)) = repos.movie.get_full_path(MovieId(id)).await {
-            let _ = opener::open(path);
+            // Standardize path separators for the OS
+            let path_str = path.to_string_lossy();
+            #[cfg(target_os = "windows")]
+            let clean_path = std::path::PathBuf::from(path_str.replace('/', "\\"));
+            #[cfg(not(target_os = "windows"))]
+            let clean_path = std::path::PathBuf::from(path_str.replace('\\', "/"));
+
+            tracing::info!("Attempting to open movie locally: {:?}", clean_path);
+            match opener::open(&clean_path) {
+                Ok(_) => tracing::info!("Successfully opened local player for {:?}", clean_path),
+                Err(e) => tracing::error!("Failed to open local player for {:?}: {}", clean_path, e),
+            }
+        } else {
+            tracing::warn!("Failed to retrieve full path for Movie ID: {}", id);
         }
     });
     Json("Playback started".to_string())
@@ -66,7 +79,20 @@ async fn play_episode(State(state): State<Arc<AppState>>, Path(id): Path<i64>) -
     let repos = state.repos.clone();
     tokio::spawn(async move {
         if let Ok(Some(path)) = repos.tv.get_episode_full_path(EpisodeId(id)).await {
-            let _ = opener::open(path);
+            // Standardize path separators for the OS
+            let path_str = path.to_string_lossy();
+            #[cfg(target_os = "windows")]
+            let clean_path = std::path::PathBuf::from(path_str.replace('/', "\\"));
+            #[cfg(not(target_os = "windows"))]
+            let clean_path = std::path::PathBuf::from(path_str.replace('\\', "/"));
+
+            tracing::info!("Attempting to open episode locally: {:?}", clean_path);
+            match opener::open(&clean_path) {
+                Ok(_) => tracing::info!("Successfully opened local player for {:?}", clean_path),
+                Err(e) => tracing::error!("Failed to open local player for {:?}: {}", clean_path, e),
+            }
+        } else {
+            tracing::warn!("Failed to retrieve full path for Episode ID: {}", id);
         }
     });
     Json("Playback started".to_string())

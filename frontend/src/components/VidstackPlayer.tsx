@@ -489,8 +489,34 @@ const PlayerContent: React.FC<VidstackPlayerProps & {
     }, 250);
   }, [onSeek, startOffset, isPiped]);
 
+  const handleProviderChange = useCallback((provider: any) => {
+    if (provider && provider.type === 'hls') {
+      provider.config = {
+        maxBufferSize: 60 * 1024 * 1024,
+        backBufferLength: 10,
+        maxBufferLength: 15,
+        maxMaxBufferLength: 30,
+        frontBufferFlushThreshold: 30,
+        enableWorker: true,
+      };
+    }
+  }, []);
+
   useEffect(() => {
     return () => {
+      const player = playerRef.current;
+      if (player) {
+        try {
+          player.pause();
+          const video = player.el?.querySelector('video');
+          if (video) {
+            video.removeAttribute('src');
+            video.load();
+          }
+        } catch (e) {
+          console.warn("[VidstackPlayer] Teardown warning:", e);
+        }
+      }
       if (seekTimeoutRef.current) {
         clearTimeout(seekTimeoutRef.current);
       }
@@ -508,6 +534,7 @@ const PlayerContent: React.FC<VidstackPlayerProps & {
     <div className="w-full h-full relative group">
       <MediaPlayer
         ref={playerRef}
+        onProviderChange={handleProviderChange}
         title={title}
         src={sources}
         storage="media-manager-player-settings"

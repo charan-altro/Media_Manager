@@ -144,9 +144,9 @@ pub struct TmdbTvEpisodeDetails {
 impl TmdbClient {
     pub fn new(api_key: String) -> Self {
         Self {
-            client: Client::new(),
+            client: crate::scraper::build_http_client(),
             api_key: api_key.trim().to_string(),
-            base_url: "https://api.themoviedb.org/3".to_string(),
+            base_url: "https://api.tmdb.org/3".to_string(),
         }
     }
 

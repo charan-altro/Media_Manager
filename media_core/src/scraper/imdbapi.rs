@@ -31,7 +31,7 @@ pub struct ImdbApiClient {
 impl ImdbApiClient {
     pub fn new(api_key: String) -> Self {
         Self {
-            client: Client::new(),
+            client: crate::scraper::build_http_client(),
             api_key,
         }
     }

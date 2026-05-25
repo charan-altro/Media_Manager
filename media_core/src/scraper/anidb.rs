@@ -55,7 +55,7 @@ pub struct AnidbClient {
 impl AnidbClient {
     pub fn new(client_name: String, client_version: String) -> Self {
         Self {
-            client: Client::new(),
+            client: crate::scraper::build_http_client(),
             client_name: client_name.trim().to_string(),
             client_version: client_version.trim().to_string(),
             base_url: "http://api.anidb.net:9001/httpapi".to_string(),

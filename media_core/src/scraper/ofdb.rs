@@ -10,10 +10,7 @@ pub struct OfdbClient {
 impl OfdbClient {
     pub fn new() -> Self {
         Self {
-            client: Client::builder()
-                .user_agent("Mozilla/5.0")
-                .build()
-                .unwrap(),
+            client: crate::scraper::build_http_client(),
         }
     }
 

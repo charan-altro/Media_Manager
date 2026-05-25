@@ -10,7 +10,7 @@ pub struct TheSportsDbClient {
 impl TheSportsDbClient {
     pub fn new(api_key: String) -> Self {
         Self {
-            client: Client::new(),
+            client: crate::scraper::build_http_client(),
             api_key: if api_key.is_empty() { "3".to_string() } else { api_key }, // '3' is often a free test key
         }
     }

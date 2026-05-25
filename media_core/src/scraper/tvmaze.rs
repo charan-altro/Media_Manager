@@ -47,7 +47,7 @@ pub struct TvmazeClient {
 impl TvmazeClient {
     pub fn new() -> Self {
         Self {
-            client: Client::new(),
+            client: crate::scraper::build_http_client(),
         }
     }
 

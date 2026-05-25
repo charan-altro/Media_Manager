@@ -30,7 +30,7 @@ pub struct FanartClient {
 impl FanartClient {
     pub fn new(api_key: String) -> Self {
         Self {
-            client: Client::new(),
+            client: crate::scraper::build_http_client(),
             api_key: api_key.trim().to_string(),
             base_url: "https://webservice.fanart.tv/v3".to_string(),
         }

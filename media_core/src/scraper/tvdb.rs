@@ -29,7 +29,7 @@ pub struct TvdbClient {
 impl TvdbClient {
     pub fn new(api_key: String) -> Self {
         Self {
-            client: Client::new(),
+            client: crate::scraper::build_http_client(),
             api_key: api_key.trim().to_string(),
             token: Arc::new(RwLock::new(None)),
             base_url: "https://api4.thetvdb.com/v4".to_string(),

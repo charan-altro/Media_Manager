@@ -10,8 +10,11 @@ export function useMediaActions() {
     setRefreshingIds(prev => ({ ...prev, [id]: true }));
     try {
       await api.refreshMetadata(id);
+      toast.success('Metadata refresh started in background.');
     } catch (err) {
       console.error('Failed to refresh metadata', err);
+      toast.error('Failed to start metadata refresh.');
+    } finally {
       setRefreshingIds(prev => ({ ...prev, [id]: false }));
     }
   };
@@ -28,6 +31,8 @@ export function useMediaActions() {
       toast.success('Advanced analysis started in background.');
     } catch (err) {
       console.error('Failed to start advanced analysis', err);
+      toast.error('Failed to start advanced analysis.');
+    } finally {
       setRefreshingIds(prev => ({ ...prev, [id]: false }));
     }
   };

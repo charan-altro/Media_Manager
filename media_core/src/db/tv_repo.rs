@@ -304,6 +304,17 @@ impl TvWriter for SqliteTvRepository {
             }
             
             if existing_normalized == current_normalized {
+                // If the incoming title is shorter/cleaner, update the stored title
+                // so the DB converges to the most human-readable version over time.
+                if title.len() < existing_title.len() {
+                    let _ = sqlx::query(
+                        "UPDATE tv_shows SET title = ?, updated_at = datetime('now') WHERE id = ?"
+                    )
+                    .bind(title)
+                    .bind(*id)
+                    .execute(&*self.base.pool)
+                    .await;
+                }
                 return Ok(*id);
             }
         }
@@ -635,3 +646,176 @@ impl TvWriter for SqliteTvRepository {
 }
 
 impl TvReaderWriter for SqliteTvRepository {}
+
+// ---------------------------------------------------------------------------
+// Startup deduplication: merge TV shows that are the same show but were
+// stored under slightly different raw folder/file names.
+// ---------------------------------------------------------------------------
+
+/// Normalise a show title for grouping purposes.
+/// This matches `normalize_for_comparison` but is kept as a standalone fn
+/// so it can be used outside the impl block.
+fn normalize_title_key(s: &str) -> String {
+    // Replace common separators with spaces
+    let mut out = s.to_lowercase()
+        .replace('.', " ")
+        .replace('_', " ")
+        .replace('-', " ")
+        .replace('(', " ")
+        .replace(')', " ")
+        .replace('[', " ")
+        .replace(']', " ");
+
+    // Strip release-group / quality tokens
+    static RE_QUALITY_KEY: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| {
+        regex::Regex::new(
+            r"(?i)\b(2160p|1080p|720p|480p|576p|x264|x265|h264|h265|10bit|bluray|web[- ]?dl|webrip|hdtv|brrip|hdrip|proper|repack|hevc|avc|aac|ddp|nf|amzn|complete|galaxy|tv|mkvcage|eztv|yts|rarbg|1337x|tgx|psarips|kontrast|minx|memento)\b.*"
+        ).unwrap()
+    });
+    out = RE_QUALITY_KEY.replace(&out, "").to_string();
+
+    // Strip SxxExx markers
+    static RE_SEP_KEY: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| {
+        regex::Regex::new(r"(?i)\bs\d{1,2}(?:e\d{1,2})?\b.*").unwrap()
+    });
+    out = RE_SEP_KEY.replace(&out, "").to_string();
+
+    // Strip year
+    static RE_YEAR_KEY: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| {
+        regex::Regex::new(r"\b(?:19|20)\d{2}\b").unwrap()
+    });
+    out = RE_YEAR_KEY.replace_all(&out, "").to_string();
+
+    // Strip torrent-site prefixes
+    static RE_SITE_KEY: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| {
+        regex::Regex::new(r"(?i)^(?:www\s+)?(?:torrenting|eztv|yts|rarbg)\s+com\s*").unwrap()
+    });
+    out = RE_SITE_KEY.replace(&out, "").to_string();
+
+    // Collapse whitespace
+    static RE_WS_KEY: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| {
+        regex::Regex::new(r"\s+").unwrap()
+    });
+    RE_WS_KEY.replace_all(&out, " ").trim().to_string()
+}
+
+/// Score a title — lower is better (shorter, no dots, no quality tags).
+fn title_score(t: &str) -> usize {
+    t.len()
+}
+
+/// After migrations, deduplicate TV shows within each library.
+/// Shows that resolve to the same normalised key are merged into the entry
+/// with the best (shortest / cleanest) title.
+pub async fn deduplicate_shows(pool: &sqlx::sqlite::SqlitePool) -> Result<()> {
+    // Fetch all shows: (id, library_id, title)
+    let all_shows: Vec<(i64, i64, String)> =
+        sqlx::query_as("SELECT id, library_id, title FROM tv_shows ORDER BY id ASC")
+            .fetch_all(pool)
+            .await?;
+
+    if all_shows.is_empty() {
+        return Ok(());
+    }
+
+    // Group by (library_id, normalised_key)
+    let mut groups: std::collections::HashMap<(i64, String), Vec<(i64, String)>> =
+        std::collections::HashMap::new();
+
+    for (id, lib_id, title) in &all_shows {
+        let key = normalize_title_key(title);
+        if key.is_empty() {
+            continue; // can't reliably group, leave alone
+        }
+        groups.entry((*lib_id, key)).or_default().push((*id, title.clone()));
+    }
+
+    let mut total_merged = 0usize;
+
+    for ((_lib_id, _key), mut group) in groups {
+        if group.len() < 2 {
+            continue; // nothing to merge
+        }
+
+        // Sort: lowest score (shortest/cleanest title) first → that's the canonical winner
+        group.sort_by_key(|(_, t)| title_score(t));
+
+        let (canonical_id, canonical_title) = group[0].clone();
+        let duplicates = &group[1..];
+
+        tracing::info!(
+            "Deduplicating show '{}' (id={}) — merging {} duplicate(s)",
+            canonical_title, canonical_id, duplicates.len()
+        );
+
+        for (dup_id, dup_title) in duplicates {
+            // Move seasons from dup_id → canonical_id, handling conflicts
+            let dup_seasons: Vec<(i64, i32)> =
+                sqlx::query_as("SELECT id, season_number FROM seasons WHERE show_id = ?")
+                    .bind(dup_id)
+                    .fetch_all(pool)
+                    .await?;
+
+            for (dup_season_id, season_number) in &dup_seasons {
+                // Check if canonical already has a season with this number
+                let canon_season: Option<(i64,)> = sqlx::query_as(
+                    "SELECT id FROM seasons WHERE show_id = ? AND season_number = ?",
+                )
+                .bind(canonical_id)
+                .bind(season_number)
+                .fetch_optional(pool)
+                .await?;
+
+                let target_season_id = if let Some((existing_season_id,)) = canon_season {
+                    // Merge episodes into the existing season
+                    sqlx::query(
+                        "UPDATE OR IGNORE episodes SET season_id = ? WHERE season_id = ?",
+                    )
+                    .bind(existing_season_id)
+                    .bind(dup_season_id)
+                    .execute(pool)
+                    .await?;
+                    // Delete any leftover episodes that conflicted (same file_path)
+                    sqlx::query("DELETE FROM episodes WHERE season_id = ?")
+                        .bind(dup_season_id)
+                        .execute(pool)
+                        .await?;
+                    existing_season_id
+                } else {
+                    // No conflict — just re-parent the season
+                    sqlx::query(
+                        "UPDATE seasons SET show_id = ? WHERE id = ?",
+                    )
+                    .bind(canonical_id)
+                    .bind(dup_season_id)
+                    .execute(pool)
+                    .await?;
+                    *dup_season_id
+                };
+
+                let _ = target_season_id; // used above
+            }
+
+            // Delete the duplicate show (cascades to leftover empty seasons)
+            sqlx::query("DELETE FROM seasons WHERE show_id = ?")
+                .bind(dup_id)
+                .execute(pool)
+                .await?;
+            sqlx::query("DELETE FROM tv_shows WHERE id = ?")
+                .bind(dup_id)
+                .execute(pool)
+                .await?;
+
+            tracing::info!("  Removed duplicate show '{}' (id={})", dup_title, dup_id);
+            total_merged += 1;
+        }
+    }
+
+    if total_merged > 0 {
+        tracing::info!("TV show deduplication complete: merged {} duplicate entries", total_merged);
+    } else {
+        tracing::info!("TV show deduplication complete: no duplicates found");
+    }
+
+    Ok(())
+}

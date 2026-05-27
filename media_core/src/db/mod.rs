@@ -72,6 +72,14 @@ pub async fn init_pool(database_url: &str) -> Result<SqlitePool> {
     sqlx::migrate!("src/db/migrations")
         .run(&pool)
         .await?;
+
+    // Deduplicate TV shows that were stored under different raw release names
+    // (e.g. "Better Call Saul" vs "Better.Call.Saul.S04.1080p.BluRay.x265-KONTRAST").
+    // This runs after every startup so incremental scans don't leave orphan rows.
+    tracing::info!("Running TV show deduplication...");
+    if let Err(e) = tv_repo::deduplicate_shows(&pool).await {
+        tracing::warn!("TV show deduplication failed (non-fatal): {}", e);
+    }
         
     tracing::info!("Database initialized successfully");
     Ok(pool)

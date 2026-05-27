@@ -665,16 +665,35 @@ impl ScannerService for DefaultScannerService {
 }
 
 fn clean_show_title_for_db(raw: &str) -> String {
+    let replaced = raw.replace('.', " ").replace('_', " ");
+
     static RE_SEASON: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| {
         regex::Regex::new(r"(?i)\s*\b(?:season|series|s)\s*\d+\b.*").unwrap()
     });
     static RE_QUALITY: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| {
         regex::Regex::new(r"(?i)\s+\b(2160p|1080p|720p|480p|576p|x264|x265|h264|h265|10bit|hdtv|web-dl|webdl|bluray)\b.*").unwrap()
     });
+    static RE_SXXEXX: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| {
+        regex::Regex::new(r"(?i)\s*\b[Ss]\d{1,2}[Ee]\d{1,2}\b.*").unwrap()
+    });
+    static RE_TORRENT_SITE: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| {
+        regex::Regex::new(r"(?i)^(?:www\s+)?(?:torrenting|eztv|yts|rarbg|1337x|kickass|tgx|limetorrents|zooqle)(?:\s+com)?\s*[-–—:]\s*").unwrap()
+    });
+    static RE_BRACKETS: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| {
+        regex::Regex::new(r"(?i)\s*[\[\({][^\]\)}]*?(?:eztv|torrenting|yts|rarbg|1337x|x264|x265|1080p|720p|2160p|h264|h265|bluray|web-dl|hdtv|memento|kontrast|minx)[^\]\)}]*?[\]\)}]").unwrap()
+    });
 
-    let cleaned = RE_SEASON.replace_all(raw, "");
+    let cleaned = RE_SEASON.replace_all(&replaced, "");
     let cleaned = RE_QUALITY.replace_all(&cleaned, "");
-    cleaned.trim().to_string()
+    let cleaned = RE_SXXEXX.replace_all(&cleaned, "");
+    
+    let mut final_title = RE_TORRENT_SITE.replace(&cleaned, "").to_string();
+    final_title = RE_BRACKETS.replace_all(&final_title, "").to_string();
+
+    static RE_SPACES: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| {
+        regex::Regex::new(r"\s+").unwrap()
+    });
+    RE_SPACES.replace_all(&final_title, " ").trim().to_string()
 }
 
 #[cfg(test)]
@@ -688,6 +707,8 @@ mod tests {
         assert_eq!(clean_show_title_for_db("Better Call Saul Season 3 Complete 720p HDTV x264 [i_c]"), "Better Call Saul");
         assert_eq!(clean_show_title_for_db("Breaking Bad (2008)"), "Breaking Bad (2008)");
         assert_eq!(clean_show_title_for_db("Friends (1994)"), "Friends (1994)");
+        assert_eq!(clean_show_title_for_db("Better.Call.Saul..1080p.BluRay.x265-KONTRAST"), "Better Call Saul");
+        assert_eq!(clean_show_title_for_db("www.Torrenting.com - Game of Thrones S08E03 The Long Night"), "Game of Thrones");
     }
 }
 

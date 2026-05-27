@@ -184,31 +184,40 @@ pub fn detect_metadata(video_path: &Path) -> NfoMetadata {
     let target_dir = video_path.parent().unwrap_or(Path::new("."));
     let base_name = video_path.file_stem().and_then(|s| s.to_str()).unwrap_or_default();
     
-    // 1. NFO Detection - Scan all .nfo files in the directory
+    // 1. NFO Detection - Scan all .nfo files in the directory and up to 3 parent levels for TV shows
     let mut best_movie_nfo: Option<MovieNfo> = None;
     let mut best_tv_nfo: Option<TvShowNfo> = None;
 
-    if let Ok(entries) = std::fs::read_dir(target_dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) == Some("nfo") {
-                if let Ok(content) = std::fs::read_to_string(&path) {
-                    if content.contains("<movie") {
-                        if let Ok(nfo) = read_nfo_movie(&path) {
-                            if best_movie_nfo.is_none() || nfo.actor.len() > best_movie_nfo.as_ref().unwrap().actor.len() {
-                                best_movie_nfo = Some(nfo);
+    let mut current_dir = Some(target_dir);
+    let mut levels = 0;
+    while let Some(dir) = current_dir {
+        if levels >= 3 {
+            break;
+        }
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|s| s.to_str()) == Some("nfo") {
+                    if let Ok(content) = std::fs::read_to_string(&path) {
+                        if content.contains("<tvshow") {
+                            if let Ok(nfo) = read_nfo_tv(&path) {
+                                if best_tv_nfo.is_none() || nfo.actor.len() > best_tv_nfo.as_ref().unwrap().actor.len() {
+                                    best_tv_nfo = Some(nfo);
+                                }
                             }
-                        }
-                    } else if content.contains("<tvshow") {
-                        if let Ok(nfo) = read_nfo_tv(&path) {
-                            if best_tv_nfo.is_none() || nfo.actor.len() > best_tv_nfo.as_ref().unwrap().actor.len() {
-                                best_tv_nfo = Some(nfo);
+                        } else if content.contains("<movie") && levels == 0 {
+                            if let Ok(nfo) = read_nfo_movie(&path) {
+                                if best_movie_nfo.is_none() || nfo.actor.len() > best_movie_nfo.as_ref().unwrap().actor.len() {
+                                    best_movie_nfo = Some(nfo);
+                                }
                             }
                         }
                     }
                 }
             }
         }
+        current_dir = dir.parent();
+        levels += 1;
     }
 
     // Detect sidecar episode NFO file

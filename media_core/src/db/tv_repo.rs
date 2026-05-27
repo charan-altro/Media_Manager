@@ -246,9 +246,68 @@ impl TvReader for SqliteTvRepository {
     }
 }
 
+fn extract_year(s: &str) -> Option<i32> {
+    static RE_YEAR: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| {
+        regex::Regex::new(r"\b((?:19|20)\d{2})\b").unwrap()
+    });
+    RE_YEAR.captures(s)
+        .and_then(|c| c.get(1))
+        .and_then(|m| m.as_str().parse::<i32>().ok())
+}
+
+fn normalize_for_comparison(s: &str) -> String {
+    let mut normalized = s.to_lowercase()
+        .replace('.', " ")
+        .replace('_', " ")
+        .replace('-', " ")
+        .replace('(', " ")
+        .replace(')', " ")
+        .replace('[', " ")
+        .replace(']', " ");
+    
+    // Strip year
+    static RE_YEAR: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| {
+        regex::Regex::new(r"\b(?:19|20)\d{2}\b").unwrap()
+    });
+    normalized = RE_YEAR.replace_all(&normalized, "").to_string();
+    
+    // Collapse whitespace
+    static RE_SPACES: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| {
+        regex::Regex::new(r"\s+").unwrap()
+    });
+    normalized = RE_SPACES.replace_all(&normalized, " ").trim().to_string();
+    normalized
+}
+
 impl TvWriter for SqliteTvRepository {
     #[tracing::instrument(skip(self), err)]
     async fn upsert_show(&self, library_id: LibraryId, title: &str) -> Result<TvShowId> {
+        // Fetch all shows in this library to check for a normalized title match
+        let existing_shows: Vec<(TvShowId, String)> = crate::fetch_all_db!(
+            &*self.base.pool,
+            sqlx::query_as("SELECT id, title FROM tv_shows WHERE library_id = ?")
+                .bind(library_id)
+        ).await?;
+
+        let current_normalized = normalize_for_comparison(title);
+        let current_year = extract_year(title);
+
+        for (id, existing_title) in &existing_shows {
+            let existing_normalized = normalize_for_comparison(existing_title);
+            let existing_year = extract_year(existing_title);
+            
+            // If both have years and they are different, treat as different shows
+            if let (Some(cy), Some(ey)) = (current_year, existing_year) {
+                if cy != ey {
+                    continue;
+                }
+            }
+            
+            if existing_normalized == current_normalized {
+                return Ok(*id);
+            }
+        }
+
         let row: (TvShowId,) = crate::fetch_one_db!(
             &*self.base.pool,
             sqlx::query_as(

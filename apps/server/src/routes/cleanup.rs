@@ -65,9 +65,9 @@ async fn cleanup_batch(State(state): State<Arc<AppState>>, Json(payload): Json<B
                         let lib_root = PathBuf::from(&lib.path);
                         
                         // Get file details
-                        let file_info = repos.movie.find_file_by_movie_id(movie.id).await.unwrap_or_default();
+                        let files = repos.movie.find_files_by_movie_id(movie.id).await.unwrap_or_default();
                         
-                        if let Some(mut file) = file_info {
+                        for mut file in files {
                             let old_path = PathBuf::from(&file.file_path);
                             
                             // Optimization: If resolution is missing, try to get it now
@@ -199,17 +199,15 @@ async fn rename_movie(State(state): State<Arc<AppState>>, Path(id): Path<i64>) -
             let libraries = repos.library.find_all().await.unwrap_or_default();
             
             if let Some(lib) = libraries.into_iter().find(|l| l.id == movie.library_id) {
-                // Get the file path
-                let file_info = repos.movie.find_file_by_movie_id(movie_id).await.unwrap_or_default();
+                // Get all movie files
+                let files = repos.movie.find_files_by_movie_id(movie_id).await.unwrap_or_default();
                 
-                if let Some(file) = file_info {
+                if !files.is_empty() {
                     let repos_clone = repos.clone();
                     let lib_path = lib.path.clone();
-                    let old_path_str = file.file_path.clone();
                     
                     tokio::task::spawn_blocking(move || {
                         let renamer = media_core::renamer::Renamer::new(None, None);
-                        let old_path = std::path::PathBuf::from(&old_path_str);
                         let lib_root = std::path::PathBuf::from(&lib_path);
                         
                         // Fetch script path before starting the blocking operation
@@ -219,16 +217,18 @@ async fn rename_movie(State(state): State<Arc<AppState>>, Path(id): Path<i64>) -
                             settings.get("post_processing_script").cloned()
                         });
 
-                        match renamer.rename_movie(&movie, &old_path, &lib_root, file.resolution, file.codec.as_deref(), script_path.as_deref()) {
-                            Ok(new_path) => {
+                        for file in files {
+                            let old_path = std::path::PathBuf::from(&file.file_path);
+                            if let Ok(new_path) = renamer.rename_movie(&movie, &old_path, &lib_root, file.resolution, file.codec.as_deref(), script_path.as_deref()) {
                                 let new_path_str = new_path.to_string_lossy().to_string();
-                                // Update DB in a blocking-safe way
-                                tokio::runtime::Handle::current().spawn(async move {
-                                    let _ = repos_clone.movie.update_file_path(file.id, &new_path_str).await;
-                                });
-                                Ok::<String, String>("Movie renamed successfully".to_string())
+                                if new_path_str != file.file_path {
+                                    // Update DB in a blocking-safe way
+                                    let repos_inner = repos_clone.clone();
+                                    tokio::runtime::Handle::current().spawn(async move {
+                                        let _ = repos_inner.movie.update_file_path(file.id, &new_path_str).await;
+                                    });
+                                }
                             }
-                            Err(e) => Err(e.to_string())
                         }
                     });
                     

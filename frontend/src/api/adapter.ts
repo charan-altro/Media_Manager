@@ -69,6 +69,24 @@ export interface TVShow {
   hash?: string;
 }
 
+export interface MovieFile {
+  id: number;
+  movie_id: number;
+  file_path: string;
+  original_name: string;
+  size_bytes: number;
+  resolution?: string | null;
+  codec?: string | null;
+  audio_codec?: string | null;
+  duration_secs?: number | null;
+  hash?: string | null;
+  fingerprint?: string | null;
+  is_missing: number;
+  last_scanned: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface Season {
   id: number;
   show_id: number;
@@ -206,6 +224,18 @@ export const api = {
     request<number>('create_library', '/libraries', { name, path, media_type }),
   deleteLibrary: (library_id: number) =>
     request<void>('delete_library', `/libraries/${library_id}`, { method: 'DELETE', id: library_id }),
+  getMovieFiles: (movieId: number) =>
+    request<MovieFile[]>('get_movie_files', `/movies/${movieId}/files`, { method: 'GET', movieId }),
+  deleteMovie: (id: number) =>
+    request<void>('delete_movie', `/movies/${id}`, { method: 'DELETE', id }),
+  deleteMovieFile: (fileId: number) =>
+    request<void>('delete_movie_file', `/movies/files/${fileId}`, { method: 'DELETE', fileId }),
+  playMovieFile: (fileId: number) =>
+    request<void>('play_movie_file', `/movies/files/${fileId}/play`, { method: 'POST', fileId }),
+  deleteTvShow: (id: number) =>
+    request<void>('delete_tv_show', `/tvshows/${id}`, { method: 'DELETE', id }),
+  deleteEpisode: (id: number) =>
+    request<void>('delete_episode', `/episodes/${id}`, { method: 'DELETE', id }),
   getMovies: (library_id?: number, genre?: string, language?: string) => {
     let q = [];
     if (library_id) q.push(`library_id=${library_id}`);
@@ -292,9 +322,11 @@ export const api = {
   checkUpdates: () =>
     request<UpdateCheckResult>('check_updates', '/system/update-check', { method: 'GET' }),
 
-  startStreaming: async (id: number, type: 'movie' | 'episode' = 'movie', protocol?: 'hls' | 'dash' | 'direct') => {
+  startStreaming: async (id: number, type: 'movie' | 'episode' | 'movie_file' = 'movie', protocol?: 'hls' | 'dash' | 'direct') => {
     const path = type === 'movie' 
       ? `/stream/movie/${id}${protocol ? `?protocol=${protocol}` : ''}` 
+      : type === 'movie_file'
+      ? `/stream/movie_file/${id}${protocol ? `?protocol=${protocol}` : ''}`
       : `/stream/episode/${id}${protocol ? `?protocol=${protocol}` : ''}`;
     const playlistUrl = await api.request<string>('start_streaming', path, { method: 'POST', id, media_type: type });
     
@@ -323,9 +355,13 @@ export const api = {
     return urlWithBuster;
   },
 
-  generatePreview: async (id: number, type: 'movie' | 'episode' = 'movie') => {
-    const path = type === 'movie' ? `/stream/movie/${id}` : `/stream/episode/${id}`;
-    const playlistUrl = await request<string>('start_streaming', path, { method: 'POST', id });
+  generatePreview: async (id: number, type: 'movie' | 'episode' | 'movie_file' = 'movie') => {
+    const path = type === 'movie' 
+      ? `/stream/movie/${id}` 
+      : type === 'movie_file'
+      ? `/stream/movie_file/${id}`
+      : `/stream/episode/${id}`;
+    const playlistUrl = await request<string>('start_streaming', path, { method: 'POST', id, media_type: type });
     
     if (IS_TAURI && !playlistUrl.startsWith('http')) {
        return convertFileSrc(playlistUrl);

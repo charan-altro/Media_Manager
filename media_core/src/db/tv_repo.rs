@@ -17,6 +17,7 @@ pub trait TvReader: Send + Sync {
     async fn find_episode_by_path(&self, path: &str) -> Result<Option<Episode>>;
     async fn find_episode_by_hash(&self, hash: &str) -> Result<Option<Episode>>;
     async fn find_episode_by_fingerprint(&self, fp: &str) -> Result<Option<Episode>>;
+    async fn find_episode_by_id(&self, id: EpisodeId) -> Result<Option<Episode>>;
     async fn get_episode_full_path(&self, episode_id: EpisodeId) -> Result<Option<PathBuf>>;
 }
 
@@ -90,6 +91,8 @@ pub trait TvWriter: Send + Sync {
         poster_url: Option<String>,
     ) -> Result<()>;
     async fn mark_missing_in_library(&self, library_id: LibraryId) -> Result<i32>;
+    async fn delete_episode(&self, id: EpisodeId) -> Result<()>;
+    async fn delete_show(&self, id: TvShowId) -> Result<()>;
 }
 
 // --- Combined ---
@@ -233,6 +236,13 @@ impl TvReader for SqliteTvRepository {
         } else {
             Ok(None)
         }
+    }
+
+    #[tracing::instrument(skip(self), err)]
+    async fn find_episode_by_id(&self, id: EpisodeId) -> Result<Option<Episode>> {
+        let mut args = sqlx::sqlite::SqliteArguments::default();
+        sqlx::Arguments::add(&mut args, id);
+        self.base.fetch_optional(&*self.base.pool, "SELECT *, codec, codec as video_codec FROM episodes WHERE id = ?", args).await
     }
 }
 
@@ -544,6 +554,24 @@ impl TvWriter for SqliteTvRepository {
             .bind(library_id)
         ).await?;
         Ok(rows.len() as i32)
+    }
+
+    #[tracing::instrument(skip(self), err)]
+    async fn delete_episode(&self, id: EpisodeId) -> Result<()> {
+        crate::execute_db!(
+            &*self.base.pool,
+            sqlx::query("DELETE FROM episodes WHERE id = ?").bind(id)
+        ).await?;
+        Ok(())
+    }
+
+    #[tracing::instrument(skip(self), err)]
+    async fn delete_show(&self, id: TvShowId) -> Result<()> {
+        crate::execute_db!(
+            &*self.base.pool,
+            sqlx::query("DELETE FROM tv_shows WHERE id = ?").bind(id)
+        ).await?;
+        Ok(())
     }
 }
 

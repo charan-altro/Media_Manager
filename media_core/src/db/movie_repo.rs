@@ -16,7 +16,10 @@ pub trait MovieReader: Send + Sync {
     async fn find_file_by_hash(&self, hash: &str) -> Result<Option<MovieFile>>;
     async fn find_file_by_fingerprint(&self, fp: &str) -> Result<Option<MovieFile>>;
     async fn find_file_by_movie_id(&self, movie_id: MovieId) -> Result<Option<MovieFile>>;
+    async fn find_files_by_movie_id(&self, movie_id: MovieId) -> Result<Vec<MovieFile>>;
+    async fn find_file_by_id(&self, id: MovieFileId) -> Result<Option<MovieFile>>;
     async fn get_full_path(&self, movie_id: MovieId) -> Result<Option<PathBuf>>;
+    async fn get_file_full_path(&self, file_id: MovieFileId) -> Result<Option<PathBuf>>;
 }
 
 // --- Writer interface ---
@@ -61,6 +64,8 @@ pub trait MovieWriter: Send + Sync {
     async fn update_file_duration(&self, id: MovieFileId, duration_secs: i32) -> Result<()>;
     async fn update_file_metadata(&self, id: MovieFileId, duration_secs: i32, width: i32, height: i32) -> Result<()>;
     async fn mark_missing_in_library(&self, library_id: LibraryId) -> Result<i32>;
+    async fn delete_file(&self, id: MovieFileId) -> Result<()>;
+    async fn delete(&self, id: MovieId) -> Result<()>;
 }
 
 // --- Combined ---
@@ -177,6 +182,40 @@ impl MovieReader for SqliteMovieRepository {
             JOIN libraries l ON m.library_id = l.id 
             WHERE m.id = ? 
             LIMIT 1
+            "#, args).await?;
+
+        if let Some((lib_path, rel_path)) = row {
+            Ok(Some(crate::paths::make_absolute(&rel_path, std::path::Path::new(&lib_path))))
+        } else {
+            Ok(None)
+        }
+    }
+
+    #[tracing::instrument(skip(self), err)]
+    async fn find_files_by_movie_id(&self, movie_id: MovieId) -> Result<Vec<MovieFile>> {
+        let mut args = sqlx::sqlite::SqliteArguments::default();
+        sqlx::Arguments::add(&mut args, movie_id);
+        self.base.fetch_all(&*self.base.pool, "SELECT * FROM movie_files WHERE movie_id = ? ORDER BY resolution DESC, size_bytes DESC", args).await
+    }
+
+    #[tracing::instrument(skip(self), err)]
+    async fn find_file_by_id(&self, id: MovieFileId) -> Result<Option<MovieFile>> {
+        let mut args = sqlx::sqlite::SqliteArguments::default();
+        sqlx::Arguments::add(&mut args, id);
+        self.base.fetch_optional(&*self.base.pool, "SELECT * FROM movie_files WHERE id = ?", args).await
+    }
+
+    #[tracing::instrument(skip(self), err)]
+    async fn get_file_full_path(&self, file_id: MovieFileId) -> Result<Option<PathBuf>> {
+        let mut args = sqlx::sqlite::SqliteArguments::default();
+        sqlx::Arguments::add(&mut args, file_id);
+        let row: Option<(String, String)> = self.base.fetch_optional(&*self.base.pool, 
+            r#"
+            SELECT l.path, mf.file_path 
+            FROM movie_files mf 
+            JOIN movies m ON mf.movie_id = m.id 
+            JOIN libraries l ON m.library_id = l.id 
+            WHERE mf.id = ?
             "#, args).await?;
 
         if let Some((lib_path, rel_path)) = row {
@@ -421,6 +460,24 @@ impl MovieWriter for SqliteMovieRepository {
             .bind(library_id)
         ).await?;
         Ok(rows.len() as i32)
+    }
+
+    #[tracing::instrument(skip(self), err)]
+    async fn delete_file(&self, id: MovieFileId) -> Result<()> {
+        crate::execute_db!(
+            &*self.base.pool,
+            sqlx::query("DELETE FROM movie_files WHERE id = ?").bind(id)
+        ).await?;
+        Ok(())
+    }
+
+    #[tracing::instrument(skip(self), err)]
+    async fn delete(&self, id: MovieId) -> Result<()> {
+        crate::execute_db!(
+            &*self.base.pool,
+            sqlx::query("DELETE FROM movies WHERE id = ?").bind(id)
+        ).await?;
+        Ok(())
     }
 }
 

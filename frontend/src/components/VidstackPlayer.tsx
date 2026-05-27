@@ -85,7 +85,7 @@ const TimelineMarkers: React.FC<{
 
 interface VidstackPlayerProps {
   mediaId: number;
-  mediaType: 'movie' | 'episode';
+  mediaType: 'movie' | 'episode' | 'movie_file';
   title: string;
   posterUrl?: string;
   hash?: string;

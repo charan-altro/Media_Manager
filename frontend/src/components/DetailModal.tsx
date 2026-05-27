@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { X, Star, Play, Monitor, CheckCircle2, RefreshCw, Loader2 } from 'lucide-react';
-import { getImageUrl, api, type Movie, type TVShow } from '../api/adapter';
+import { getImageUrl, api, type Movie, type TVShow, type MovieFile } from '../api/adapter';
 import toast from 'react-hot-toast';
 import VidstackPlayer from './VidstackPlayer';
 
@@ -29,11 +29,12 @@ const DetailModal: React.FC<DetailModalProps> = ({
   const [selectedSeasonId, setSelectedSeasonId] = useState<number | null>(null);
   const [episodes, setEpisodes] = useState<Record<number, any[]>>({});
   const [playbackStatus, setPlaybackStatus] = useState<any>(null);
+  const [movieFiles, setMovieFiles] = useState<MovieFile[]>([]);
   
   const [isStartingStream, setIsStartingStream] = useState(false);
   const [streamingUrl, setStreamingUrl] = useState<string | null>(null);
   const [activeMediaId, setActiveMediaId] = useState<number | null>(null);
-  const [activeMediaType, setActiveMediaType] = useState<'movie' | 'episode' | null>(null);
+  const [activeMediaType, setActiveMediaType] = useState<'movie' | 'episode' | 'movie_file' | null>(null);
   const [activeTitle, setActiveTitle] = useState<string>('');
   const [activePosterUrl, setActivePosterUrl] = useState<string | undefined>(undefined);
   const [activeHash, setActiveHash] = useState<string | undefined>(undefined);
@@ -45,7 +46,7 @@ const DetailModal: React.FC<DetailModalProps> = ({
   const seasonNumber = currentSeason ? currentSeason.season_number : 1;
   const paddedSeason = seasonNumber.toString().padStart(2, '0');
 
-  const handlePlayMedia = async (mediaId: number, mediaType: 'movie' | 'episode', metadata?: { title: string, posterUrl?: string, videoCodec?: string, audioCodec?: string, hash?: string }) => {
+  const handlePlayMedia = async (mediaId: number, mediaType: 'movie' | 'episode' | 'movie_file', metadata?: { title: string, posterUrl?: string, videoCodec?: string, audioCodec?: string, hash?: string }) => {
     if (isStartingStream) return;
     setIsStartingStream(true);
     try {
@@ -145,9 +146,20 @@ const DetailModal: React.FC<DetailModalProps> = ({
     }
   };
 
+  const loadMovieFiles = async (movieId: number) => {
+    try {
+      const files = await api.getMovieFiles(movieId);
+      setMovieFiles(files);
+    } catch (err) {
+      console.error('Failed to load movie files', err);
+    }
+  };
+
   useEffect(() => {
     if (isShow) {
       loadSeasons(item.id);
+    } else {
+      loadMovieFiles(item.id);
     }
     const type = isShow ? 'tv' : 'movie';
     api.getPlaybackStatus(type, item.id).then(setPlaybackStatus).catch(() => setPlaybackStatus(null));
@@ -527,6 +539,25 @@ const DetailModal: React.FC<DetailModalProps> = ({
                                 >
                                   <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>
                                 </button>
+                                <button 
+                                  onClick={async (e) => { 
+                                    e.stopPropagation(); 
+                                    if (confirm("Are you sure you want to delete this episode and its physical files?")) {
+                                      try {
+                                        await api.deleteEpisode(ep.id);
+                                        toast.success("Episode deleted.");
+                                        loadEpisodes(selectedSeasonId!);
+                                        loadData();
+                                      } catch (err: any) {
+                                        toast.error("Failed to delete: " + err.message);
+                                      }
+                                    }
+                                  }} 
+                                  className="p-1.5 hover:bg-red-950/30 rounded-lg text-zinc-500 hover:text-red-500 transition"
+                                  title="Delete Episode"
+                                >
+                                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg>
+                                </button>
                               </div>
                             </div>
                           </div>
@@ -535,6 +566,104 @@ const DetailModal: React.FC<DetailModalProps> = ({
                     </div>
                   </div>
                 )}
+              </div>
+            )}
+
+            {/* Available Versions (Movies Only) */}
+            {!isShow && !isEditing && (
+              <div className="space-y-6 pt-4">
+                <div className="flex items-center justify-between border-b border-zinc-850 pb-4">
+                  <h3 className="text-xs font-black uppercase tracking-[0.2em] text-zinc-500">Available Versions</h3>
+                  {movieFiles.length > 1 && (
+                    <span className="text-[10px] bg-red-600/10 text-red-500 px-2 py-0.5 rounded-full font-black uppercase tracking-widest border border-red-950/20 animate-pulse">
+                      {movieFiles.length} Copies Found
+                    </span>
+                  )}
+                </div>
+
+                <div className="space-y-3">
+                  {movieFiles.map((file) => {
+                    const sizeGB = (file.size_bytes / (1024 * 1024 * 1024)).toFixed(2);
+                    return (
+                      <div 
+                        key={file.id}
+                        className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 bg-zinc-900/35 rounded-xl border border-zinc-850/80 hover:border-zinc-700/80 transition duration-300 hover:bg-zinc-850/10"
+                      >
+                        <div className="space-y-1.5 flex-1 min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="text-xs font-black text-white bg-zinc-850 px-2 py-0.5 rounded border border-zinc-750 font-mono">
+                              {file.resolution || 'Unknown'}
+                            </span>
+                            {file.codec && (
+                              <span className="text-[10px] font-bold text-zinc-400 bg-zinc-900/80 px-1.5 py-0.5 rounded border border-zinc-800 font-mono uppercase">
+                                {file.codec}
+                              </span>
+                            )}
+                            <span className="text-xs font-bold text-zinc-400 font-mono">
+                              {sizeGB} GB
+                            </span>
+                          </div>
+                          <div className="text-[11px] text-zinc-500 truncate font-mono" title={file.file_path}>
+                            {file.file_path.split(/[\\/]/).pop()}
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2 shrink-0">
+                          <button 
+                            onClick={() => handlePlayMedia(file.id, 'movie_file', { 
+                              title: `${item.title} (${file.resolution || 'Unknown'})`, 
+                              posterUrl: item.poster_url || item.backdrop_url,
+                              videoCodec: file.codec || undefined,
+                              audioCodec: file.audio_codec || undefined,
+                              hash: file.hash || undefined
+                            })}
+                            className="px-3.5 py-2 bg-white hover:bg-zinc-200 text-zinc-950 rounded-lg font-black uppercase tracking-wider text-[10px] flex items-center gap-1.5 transition active:scale-95 shadow-md"
+                          >
+                            <Play className="w-3 h-3 fill-current" /> Stream
+                          </button>
+                          
+                          <button 
+                            onClick={() => {
+                              api.playMovieFile(file.id);
+                              toast.success("Opening in local player...");
+                            }}
+                            className="p-2 bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-white rounded-lg border border-zinc-800 transition active:scale-95"
+                            title="Play Locally"
+                          >
+                            <Monitor className="w-3.5 h-3.5" />
+                          </button>
+
+                          <button 
+                            onClick={() => onDownload(file.id, 'movie')}
+                            className="p-2 bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-white rounded-lg border border-zinc-800 transition active:scale-95"
+                            title="Download Version"
+                          >
+                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>
+                          </button>
+
+                          <button 
+                            onClick={async () => {
+                              if (confirm("Are you sure you want to delete this specific version from your storage? This action cannot be undone.")) {
+                                try {
+                                  await api.deleteMovieFile(file.id);
+                                  toast.success("Version deleted successfully.");
+                                  loadMovieFiles(item.id);
+                                  loadData();
+                                } catch (err: any) {
+                                  toast.error("Failed to delete: " + err.message);
+                                }
+                              }
+                            }}
+                            className="p-2 bg-zinc-900/50 hover:bg-red-950/30 text-zinc-550 hover:text-red-500 rounded-lg border border-zinc-800/80 hover:border-red-900/40 transition active:scale-95"
+                            title="Delete Version"
+                          >
+                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg>
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             )}
 
@@ -623,6 +752,29 @@ const DetailModal: React.FC<DetailModalProps> = ({
                         Download File
                       </button>
                     )}
+                    <button 
+                      onClick={async () => {
+                        const typeLabel = isShow ? 'TV Show' : 'Movie';
+                        if (confirm(`ARE YOU ABSOLUTELY SURE you want to delete this entire ${typeLabel} (including all associated video files, subtitles, and NFO metadata)? This action cannot be undone.`)) {
+                          try {
+                            if (isShow) {
+                              await api.deleteTvShow(item.id);
+                              toast.success("TV Show deleted successfully.");
+                            } else {
+                              await api.deleteMovie(item.id);
+                              toast.success("Movie deleted successfully.");
+                            }
+                            onClose();
+                            loadData();
+                          } catch (err: any) {
+                            toast.error("Deletion failed: " + err.message);
+                          }
+                        }
+                      }}
+                      className="bg-red-950/20 hover:bg-red-900/35 py-3 rounded-lg font-black uppercase tracking-widest text-[10px] text-red-500 hover:text-red-400 transition border border-red-950/30 hover:border-red-900/40 flex items-center justify-center gap-2"
+                    >
+                      Delete {isShow ? 'Show' : 'Movie'}
+                    </button>
                   </>
                 )}
               </div>

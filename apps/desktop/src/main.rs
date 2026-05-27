@@ -6,7 +6,7 @@ use media_core::db::{self, Repositories, LibraryReader, LibraryWriter, MovieRead
 use media_core::task_manager::{TaskManager, ProgressSink};
 use media_core::scanner::service::{ScannerService, DefaultScannerService};
 use media_core::scraper::service::{ScraperService, DefaultScraperService};
-use media_core::models::{Library, Movie, MediaType, TVShow, Season, Episode, TaskUpdate, MovieId, TvShowId, LibraryId, Resolution};
+use media_core::models::{Library, Movie, MediaType, TVShow, Season, Episode, TaskUpdate, MovieId, TvShowId, LibraryId, Resolution, MovieFile, MovieFileId, EpisodeId};
 use media_core::cleanup::CleanupService;
 use media_core::exporter::Exporter;
 use sqlx::SqlitePool;
@@ -200,9 +200,9 @@ async fn cleanup_batch(ids: Vec<i64>, media_type: String, state: State<'_, AppSt
                     let libraries = repos.library.find_all().await.unwrap_or_default();
                     if let Some(lib) = libraries.into_iter().find(|l| l.id == movie.library_id) {
                         let lib_root = PathBuf::from(&lib.path);
-                        let file_info = repos.movie.find_file_by_movie_id(movie.id).await.unwrap_or_default();
+                        let files = repos.movie.find_files_by_movie_id(movie.id).await.unwrap_or_default();
                         
-                        if let Some(file) = file_info {
+                        for file in files {
                             let old_path = PathBuf::from(&file.file_path);
                             let settings = repos.settings.get_all().await.unwrap_or_default();
                             let script_path = settings.get("post_processing_script").map(|s| s.as_str());
@@ -365,28 +365,26 @@ async fn rename_movie(id: i64, state: State<'_, AppState>) -> Result<String, Str
             let movie_id = movie.id;
             let libraries = repos.library.find_all().await.unwrap_or_default();
             if let Some(lib) = libraries.into_iter().find(|l| l.id == movie.library_id) {
-                let file_info = repos.movie.find_file_by_movie_id(movie_id).await.unwrap_or_default();
-                if let Some(file) = file_info {
-                    let repos_clone = repos.clone();
-                    let lib_path = lib.path.clone();
-                    let old_path_str = file.file_path.clone();
+                let files = repos.movie.find_files_by_movie_id(movie_id).await.unwrap_or_default();
+                if !files.is_empty() {
                     let renamer = media_core::renamer::Renamer::new(None, None);
-                    let old_path = std::path::PathBuf::from(&old_path_str);
-                    let lib_root = std::path::PathBuf::from(&lib_path);
-                    let settings = repos_clone.settings.get_all().await.unwrap_or_default();
+                    let lib_root = std::path::PathBuf::from(&lib.path);
+                    let settings = repos.settings.get_all().await.unwrap_or_default();
                     let script_path = settings.get("post_processing_script").cloned();
 
-                    match renamer.rename_movie(&movie, &old_path, &lib_root, file.resolution, file.codec.as_deref(), script_path.as_deref()) {
-                        Ok(new_path) => {
+                    for file in files {
+                        let old_path = std::path::PathBuf::from(&file.file_path);
+                        if let Ok(new_path) = renamer.rename_movie(&movie, &old_path, &lib_root, file.resolution, file.codec.as_deref(), script_path.as_deref()) {
                             let new_path_str = new_path.to_string_lossy().to_string();
-                            let _ = repos_clone.movie.update_file_path(file.id, &new_path_str).await;
-                            return Ok("Movie renamed successfully".to_string());
+                            if new_path_str != file.file_path {
+                                let _ = repos.movie.update_file_path(file.id, &new_path_str).await;
+                            }
                         }
-                        Err(e) => return Err(e.to_string())
                     }
+                    return Ok("Movie renamed successfully".to_string());
                 }
             }
-            Err("Library or file not found".to_string())
+            Err("Library or files not found".to_string())
         }
         _ => Err("Movie not found".to_string())
     }
@@ -675,6 +673,8 @@ async fn cleanup_empty_folders(id: i64, state: State<'_, AppState>) -> Result<Ve
 async fn start_streaming(id: i64, media_type: String, state: State<'_, AppState>) -> Result<String, String> {
     let path = if media_type == "movie" {
         state.repos.movie.get_full_path(media_core::models::MovieId(id)).await
+    } else if media_type == "movie_file" {
+        state.repos.movie.get_file_full_path(media_core::models::MovieFileId(id)).await
     } else {
         state.repos.tv.get_episode_full_path(media_core::models::EpisodeId(id)).await
     }.map_err(|e| e.to_string())?;
@@ -682,6 +682,8 @@ async fn start_streaming(id: i64, media_type: String, state: State<'_, AppState>
     if let Some(input_path) = path {
         let stream_id = if media_type == "movie" {
             format!("movie_{}", id)
+        } else if media_type == "movie_file" {
+            format!("movie_file_{}", id)
         } else {
             format!("episode_{}", id)
         };
@@ -869,6 +871,133 @@ async fn delete_scene_marker(marker_id: i64, state: State<'_, AppState>) -> Resu
     }
 }
 
+// --- Multi-version media management and deletion commands ---
+
+fn delete_media_file_and_sidecars(file_path: &std::path::Path) -> std::io::Result<()> {
+    if !file_path.exists() {
+        return Ok(());
+    }
+    if let (Some(parent), Some(stem)) = (file_path.parent(), file_path.file_stem().and_then(|s| s.to_str())) {
+        if let Ok(entries) = std::fs::read_dir(parent) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_file() {
+                    if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
+                        if name.starts_with(stem) {
+                            if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
+                                let ext_lower = ext.to_lowercase();
+                                if ext_lower == "srt" || ext_lower == "nfo" || ext_lower == "vtt" {
+                                    let rest = &name[stem.len()..];
+                                    if rest.is_empty() || rest.starts_with('.') {
+                                        let _ = std::fs::remove_file(&path);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    std::fs::remove_file(file_path)?;
+    Ok(())
+}
+
+fn clean_empty_parent_dirs(path: &std::path::Path) {
+    if let Some(parent) = path.parent() {
+        if let Ok(mut entries) = std::fs::read_dir(parent) {
+            if entries.next().is_none() {
+                let _ = std::fs::remove_dir(parent);
+            }
+        }
+    }
+}
+
+#[tauri::command]
+async fn get_movie_files(movie_id: i64, state: State<'_, AppState>) -> Result<Vec<MovieFile>, String> {
+    state.repos.movie.find_files_by_movie_id(MovieId(movie_id)).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn delete_movie(id: i64, state: State<'_, AppState>) -> Result<(), String> {
+    let movie_id = MovieId(id);
+    let files = state.repos.movie.find_files_by_movie_id(movie_id).await.map_err(|e| e.to_string())?;
+    for file in files {
+        if let Ok(Some(path)) = state.repos.movie.get_file_full_path(file.id).await {
+            let _ = delete_media_file_and_sidecars(&path);
+            clean_empty_parent_dirs(&path);
+        }
+        let _ = state.repos.movie.delete_file(file.id).await;
+    }
+    state.repos.movie.delete(movie_id).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn delete_movie_file(file_id: i64, state: State<'_, AppState>) -> Result<(), String> {
+    let fid = MovieFileId(file_id);
+    match state.repos.movie.find_file_by_id(fid).await {
+        Ok(Some(file)) => {
+            let movie_id = file.movie_id;
+            if let Ok(Some(path)) = state.repos.movie.get_file_full_path(fid).await {
+                let _ = delete_media_file_and_sidecars(&path);
+                clean_empty_parent_dirs(&path);
+            }
+            state.repos.movie.delete_file(fid).await.map_err(|e| e.to_string())?;
+            if let Ok(remaining) = state.repos.movie.find_files_by_movie_id(movie_id).await {
+                if remaining.is_empty() {
+                    let _ = state.repos.movie.delete(movie_id).await;
+                }
+            }
+            Ok(())
+        }
+        Ok(None) => Err("Movie file not found".to_string()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+#[tauri::command]
+async fn play_movie_file(file_id: i64, state: State<'_, AppState>) -> Result<(), String> {
+    let fid = MovieFileId(file_id);
+    if let Ok(Some(path)) = state.repos.movie.get_file_full_path(fid).await {
+        opener::open(path).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn delete_tv_show(id: i64, state: State<'_, AppState>) -> Result<(), String> {
+    let show_id = TvShowId(id);
+    let seasons = state.repos.tv.find_seasons_by_show_id(show_id).await.map_err(|e| e.to_string())?;
+    for season in seasons {
+        if let Ok(episodes) = state.repos.tv.find_episodes_by_season_id(season.id).await {
+            for episode in episodes {
+                if let Ok(Some(path)) = state.repos.tv.get_episode_full_path(episode.id).await {
+                    let _ = delete_media_file_and_sidecars(&path);
+                    let _ = state.repos.tv.delete_episode(episode.id).await;
+                    clean_empty_parent_dirs(&path);
+                }
+            }
+        }
+    }
+    state.repos.tv.delete_show(show_id).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn delete_episode(id: i64, state: State<'_, AppState>) -> Result<(), String> {
+    let ep_id = EpisodeId(id);
+    match state.repos.tv.find_episode_by_id(ep_id).await {
+        Ok(Some(_episode)) => {
+            if let Ok(Some(path)) = state.repos.tv.get_episode_full_path(ep_id).await {
+                let _ = delete_media_file_and_sidecars(&path);
+                clean_empty_parent_dirs(&path);
+            }
+            state.repos.tv.delete_episode(ep_id).await.map_err(|e| e.to_string())
+        }
+        Ok(None) => Err("Episode not found".to_string()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 fn main() {
     dotenvy::dotenv().ok();
     let database_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| {
@@ -913,7 +1042,9 @@ fn main() {
             process_tv_show_advanced, process_library_advanced, sync_trakt,
             cleanup_duplicates, cleanup_empty_folders, start_streaming,
             download_to_local, get_playback_status, update_playback_progress,
-            get_scene_markers, create_scene_marker, delete_scene_marker
+            get_scene_markers, create_scene_marker, delete_scene_marker,
+            get_movie_files, delete_movie, delete_movie_file, play_movie_file,
+            delete_tv_show, delete_episode
         ])
         .setup(move |app| {
             // Resolve sidecar paths

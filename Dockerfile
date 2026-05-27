@@ -42,8 +42,8 @@ FROM cgr.dev/chainguard/wolfi-base
 # Install runtime dependencies (shadow for user management, pre-compiled ffmpeg)
 RUN apk update && apk add --no-cache shadow ffmpeg
 
-# Create non-root user
-RUN groupadd -r mediavault && useradd -r -g mediavault mediavault
+# Create non-root user with UID/GID 1000 (matching standard host UID 1000)
+RUN groupadd -g 1000 mediavault && useradd -u 1000 -r -g mediavault mediavault
 
 # Create application directories and set ownership
 RUN mkdir -p /app/data /app/transcodes /app/backups && \

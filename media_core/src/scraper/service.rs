@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use crate::errors::{CoreError, Result};
 use crate::models::{MovieId, TvShowId, LibraryId, MediaStatus, CastMember, TaskUpdate, now_ms};
-use crate::db::{Repositories, MovieReader, MovieWriter, TvReader, TvWriter, SettingsRepository};
+use crate::db::{Repositories, LibraryReader, MovieReader, MovieWriter, TvReader, TvWriter, SettingsRepository};
 use crate::task_manager::ProgressSink;
 use crate::scraper::{ScraperClients, ScraperSettings};
 use strsim::jaro_winkler;
@@ -346,6 +346,18 @@ impl ScraperService for DefaultScraperService {
 
         let tmdb_id_i32 = tmdb_id.parse::<i32>().unwrap_or(0);
 
+        let library = self.repos.library.find_by_id(existing.library_id).await?
+            .ok_or_else(|| CoreError::Internal(format!("Library with ID {} not found", existing.library_id.0)))?;
+        let library_root = std::path::Path::new(&library.path);
+
+        let mut show_root_abs: Option<std::path::PathBuf> = None;
+        if let Some(ref ep_file_path) = show_folder {
+            let ep_path = crate::paths::make_absolute(ep_file_path, library_root);
+            if let Some(season_folder) = ep_path.parent() {
+                show_root_abs = Some(season_folder.parent().unwrap_or(season_folder).to_path_buf());
+            }
+        }
+
         let tmdb_details_res = self.clients.tmdb.get_tv_details(&tmdb_id)
             .instrument(tracing::info_span!("tmdb_get_tv_details", tmdb_id = tmdb_id))
             .await;
@@ -370,40 +382,35 @@ impl ScraperService for DefaultScraperService {
                 }
 
                 let mut final_cast = Vec::new();
-                if let Some(ep_file_path) = show_folder {
-                    let ep_path = std::path::Path::new(&ep_file_path);
-                    if let Some(season_folder) = ep_path.parent() {
-                        let show_root = season_folder.parent().unwrap_or(season_folder);
+                if let Some(ref show_root) = show_root_abs {
+                    if let Some(url) = p_url.as_deref() {
+                        let dest = show_root.join("poster.jpg");
+                        let _ = download_to_file(url, &dest).await;
+                        p_url = Some(dest.to_string_lossy().to_string());
+                    }
+                    if let Some(url) = b_url.as_deref() {
+                        let dest = show_root.join("fanart.jpg");
+                        let _ = download_to_file(url, &dest).await;
+                        b_url = Some(dest.to_string_lossy().to_string());
+                    }
 
-                        if let Some(url) = p_url.as_deref() {
-                            let dest = show_root.join("poster.jpg");
-                            let _ = download_to_file(url, &dest).await;
-                            p_url = Some(dest.to_string_lossy().to_string());
-                        }
-                        if let Some(url) = b_url.as_deref() {
-                            let dest = show_root.join("fanart.jpg");
-                            let _ = download_to_file(url, &dest).await;
-                            b_url = Some(dest.to_string_lossy().to_string());
-                        }
-
-                        let actors_dir = show_root.join(".actors");
-                        let _ = std::fs::create_dir_all(&actors_dir);
-                        for member in details.cast.iter().take(10) {
-                            let mut member_image = None;
-                            if let Some(ref p_path) = member.profile_path {
-                                let clean_name = member.name.replace(|c: char| !c.is_alphanumeric(), "_");
-                                let dest = actors_dir.join(format!("{}.jpg", clean_name));
-                                let url = format!("https://image.tmdb.org/t/p/w185{}", p_path);
-                                if download_to_file(&url, &dest).await.is_ok() {
-                                    member_image = Some(dest.to_string_lossy().to_string());
-                                }
+                    let actors_dir = show_root.join(".actors");
+                    let _ = std::fs::create_dir_all(&actors_dir);
+                    for member in details.cast.iter().take(10) {
+                        let mut member_image = None;
+                        if let Some(ref p_path) = member.profile_path {
+                            let clean_name = member.name.replace(|c: char| !c.is_alphanumeric(), "_");
+                            let dest = actors_dir.join(format!("{}.jpg", clean_name));
+                            let url = format!("https://image.tmdb.org/t/p/w185{}", p_path);
+                            if download_to_file(&url, &dest).await.is_ok() {
+                                member_image = Some(dest.to_string_lossy().to_string());
                             }
-                            final_cast.push(CastMember {
-                                name: member.name.clone(),
-                                role: Some(member.character.clone()),
-                                image: member_image,
-                            });
                         }
+                        final_cast.push(CastMember {
+                            name: member.name.clone(),
+                            role: Some(member.character.clone()),
+                            image: member_image,
+                        });
                     }
                 }
 
@@ -439,16 +446,11 @@ impl ScraperService for DefaultScraperService {
                         let mut p_url = show.image.as_ref().and_then(|img| img.original.clone().or(img.medium.clone()));
                         let b_url = None;
 
-                        if let Some(ep_file_path) = show_folder {
-                            let ep_path = std::path::Path::new(&ep_file_path);
-                            if let Some(season_folder) = ep_path.parent() {
-                                let show_root = season_folder.parent().unwrap_or(season_folder);
-
-                                if let Some(url) = p_url.as_deref() {
-                                    let dest = show_root.join("poster.jpg");
-                                    let _ = download_to_file(url, &dest).await;
-                                    p_url = Some(dest.to_string_lossy().to_string());
-                                }
+                        if let Some(ref show_root) = show_root_abs {
+                            if let Some(url) = p_url.as_deref() {
+                                let dest = show_root.join("poster.jpg");
+                                let _ = download_to_file(url, &dest).await;
+                                p_url = Some(dest.to_string_lossy().to_string());
                             }
                         }
 

@@ -1,11 +1,8 @@
-# Stage 1: Build Rust binary
-FROM debian:13-slim AS builder
+# Stage 1: Build Rust binary on Wolfi Rust SDK (aligns glibc with runtime)
+FROM cgr.dev/chainguard/rust:latest-dev AS builder
+USER root
 WORKDIR /app
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-    curl pkg-config libssl-dev build-essential ca-certificates && \
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-ENV PATH="/root/.cargo/bin:${PATH}"
+RUN apk update && apk add --no-cache openssl-dev pkgconf build-base
 
 # Copy workspace configuration
 COPY Cargo.toml Cargo.lock ./
@@ -27,7 +24,7 @@ RUN cargo build --release -p server
 # Copy actual source code
 COPY . .
 
-# Final build (will be fast if only source changed)
+# Final build
 RUN cargo build --release -p server
 
 # Stage 2: Build React frontend
@@ -39,9 +36,9 @@ COPY . .
 WORKDIR /app/frontend
 RUN npm run build
 
-# Stage 3: Build Custom FFmpeg with RPi hardware acceleration
+# Stage 3: Build Custom FFmpeg with RPi hardware acceleration (on Wolfi base)
 FROM cgr.dev/chainguard/wolfi-base AS ffmpeg-builder
-RUN apk update && apk add build-base git nasm yasm linux-headers
+RUN apk update && apk add --no-cache build-base git nasm yasm linux-headers
 WORKDIR /ffmpeg
 RUN git clone --depth 1 https://github.com/FFmpeg/FFmpeg.git .
 RUN ./configure \
@@ -55,10 +52,10 @@ RUN ./configure \
     make -j$(nproc) && \
     make install
 
-# Stage 4: Minimal Hardened Runtime
+# Stage 4: Hardened Runtime (Wolfi-based for zero CVE posture)
 FROM cgr.dev/chainguard/wolfi-base
 # Shadow is needed for user management
-RUN apk update && apk add shadow
+RUN apk update && apk add --no-cache shadow
 
 # Create non-root user
 RUN groupadd -r mediavault && useradd -r -g mediavault mediavault
@@ -78,9 +75,9 @@ COPY --from=ffmpeg-builder /usr/local/bin/ffprobe /usr/local/bin/ffprobe
 # Ensure binaries are executable and owned by mediavault
 RUN chown -R mediavault:mediavault /app
 
-# Distroless Conversion: Remove package manager and shell
-RUN apk del apk-tools shadow && \
-    rm -rf /bin/sh /lib/apk /var/cache/apk /etc/apk
+# Optional Hardening: Remove package manager and shell for production.
+# Uncomment the following line to convert to a true distroless container after verifying startup:
+# RUN apk del apk-tools shadow && rm -rf /bin/sh /lib/apk /var/cache/apk /etc/apk
 
 # Declare volumes for persistence
 VOLUME ["/app/data", "/app/transcodes", "/app/backups"]
@@ -88,6 +85,8 @@ VOLUME ["/app/data", "/app/transcodes", "/app/backups"]
 # Set environment variables
 ENV DATABASE_URL=sqlite:/app/data/mediavault.db
 ENV RUST_LOG=info
+ENV FFMPEG_PATH=/usr/local/bin/ffmpeg
+ENV FFPROBE_PATH=/usr/local/bin/ffprobe
 
 # Switch to non-root user
 USER mediavault

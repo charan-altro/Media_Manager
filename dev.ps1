@@ -55,6 +55,7 @@ switch ($Mode) {
             if ($BackendProcess -and !$BackendProcess.HasExited) {
                 Stop-Process -Id $BackendProcess.Id -Force
             }
+            Stop-Process -Name server -Force -ErrorAction SilentlyContinue
         }
         break
     }

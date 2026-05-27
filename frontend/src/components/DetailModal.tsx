@@ -468,101 +468,230 @@ const DetailModal: React.FC<DetailModalProps> = ({
                 {selectedSeasonId && (
                   <div className="space-y-4 animate-in fade-in duration-300">
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                      {episodes[selectedSeasonId]?.map(ep => (
-                        <div 
-                          key={ep.id} 
-                          onClick={() => handlePlayMedia(ep.id, 'episode', { 
-                            title: `${item.title} - S${paddedSeason}E${ep.episode_number.toString().padStart(2, '0')} - ${ep.title || 'Episode ' + ep.episode_number}`,
-                            posterUrl: ep.thumbnail_path || item.poster_url || item.backdrop_url,
-                            videoCodec: ep.video_codec || ep.codec,
-                            audioCodec: ep.audio_codec,
-                            hash: ep.hash
-                          })} 
-                          className="flex flex-col bg-zinc-900/35 rounded-xl border border-zinc-850/80 hover:border-zinc-700/80 hover:bg-zinc-850/30 transition-all duration-300 group cursor-pointer overflow-hidden shadow-md"
-                        >
-                          {/* Episode Card Thumbnail */}
-                          <div className="relative aspect-video bg-zinc-950 overflow-hidden shrink-0">
-                            {ep.thumbnail_path ? (
-                              <img src={getImageUrl(ep.thumbnail_path)} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" alt={ep.title} />
-                            ) : (
-                              <div className="w-full h-full flex items-center justify-center text-zinc-700 bg-zinc-900/60">
-                                <Monitor className="w-7 h-7" />
+                      {(() => {
+                        const episodesList = episodes[selectedSeasonId] || [];
+                        
+                        // Group episodes by episode_number
+                        const grouped: Record<number, any[]> = {};
+                        for (const ep of episodesList) {
+                          if (!grouped[ep.episode_number]) {
+                            grouped[ep.episode_number] = [];
+                          }
+                          grouped[ep.episode_number].push(ep);
+                        }
+                        
+                        const sortedEpisodeNumbers = Object.keys(grouped)
+                          .map(Number)
+                          .sort((a, b) => a - b);
+
+                        return sortedEpisodeNumbers.map(epNum => {
+                          const versions = grouped[epNum];
+                          const ep = versions[0]; // representative for metadata
+                          const hasMultiple = versions.length > 1;
+
+                          const cardContent = (
+                            <>
+                              {/* Episode Card Thumbnail */}
+                              <div className="relative aspect-video bg-zinc-950 overflow-hidden shrink-0">
+                                {ep.thumbnail_path ? (
+                                  <img src={getImageUrl(ep.thumbnail_path)} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" alt={ep.title} />
+                                ) : (
+                                  <div className="w-full h-full flex items-center justify-center text-zinc-700 bg-zinc-900/60">
+                                    <Monitor className="w-7 h-7" />
+                                  </div>
+                                )}
+                                {!hasMultiple && (
+                                  <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center z-10">
+                                    <div className="w-10 h-10 rounded-full bg-white/20 hover:bg-white text-white hover:text-black flex items-center justify-center border border-white/30 transition duration-300 transform scale-90 group-hover:scale-100 shadow-2xl">
+                                      <Play className="w-4 h-4 fill-current translate-x-0.5" />
+                                    </div>
+                                  </div>
+                                )}
+                                <div className="absolute bottom-2 right-2 bg-black/75 px-1.5 py-0.5 rounded text-[9px] font-bold font-mono text-zinc-400">
+                                  {ep.runtime ? `${ep.runtime}m` : 'HD'}
+                                </div>
                               </div>
-                            )}
-                            <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center z-10">
-                              <div className="w-10 h-10 rounded-full bg-white/20 hover:bg-white text-white hover:text-black flex items-center justify-center border border-white/30 transition duration-300 transform scale-90 group-hover:scale-100 shadow-2xl">
-                                <Play className="w-4 h-4 fill-current translate-x-0.5" />
-                              </div>
-                            </div>
-                            <div className="absolute bottom-2 right-2 bg-black/75 px-1.5 py-0.5 rounded text-[9px] font-bold font-mono text-zinc-400">
-                              {ep.runtime ? `${ep.runtime}m` : 'HD'}
-                            </div>
-                          </div>
-                          
-                          {/* Episode Card Info */}
-                          <div className="p-4 flex-1 flex flex-col justify-between space-y-2">
-                            <div className="space-y-1">
-                              <div className="flex items-center gap-2 flex-wrap">
-                                <span className="text-xs font-black text-red-500 tracking-wider">E{ep.episode_number}</span>
-                                <span className="text-zinc-200 font-bold text-sm line-clamp-1 group-hover:text-white transition flex-1">{ep.title || `Episode ${ep.episode_number}`}</span>
-                                {ep.rating && ep.rating > 0 && (
-                                  <span className="text-[10px] bg-yellow-500/10 text-yellow-500 px-1.5 py-0.5 rounded font-bold shrink-0 flex items-center gap-0.5 border border-yellow-500/20">
-                                    ★ {ep.rating.toFixed(1)}
-                                  </span>
+                              
+                              {/* Episode Card Info */}
+                              <div className="p-4 flex-1 flex flex-col justify-between space-y-2">
+                                <div className="space-y-1">
+                                  <div className="flex items-center gap-2 flex-wrap">
+                                    <span className="text-xs font-black text-red-500 tracking-wider">E{ep.episode_number}</span>
+                                    <span className="text-zinc-200 font-bold text-sm line-clamp-1 group-hover:text-white transition flex-1">{ep.title || `Episode ${ep.episode_number}`}</span>
+                                    {ep.rating && ep.rating > 0 && (
+                                      <span className="text-[10px] bg-yellow-500/10 text-yellow-500 px-1.5 py-0.5 rounded font-bold shrink-0 flex items-center gap-0.5 border border-yellow-500/20">
+                                        ★ {ep.rating.toFixed(1)}
+                                      </span>
+                                    )}
+                                    {hasMultiple && (
+                                      <span className="text-[8px] font-black uppercase tracking-widest bg-red-650/15 text-red-500 px-1.5 py-0.5 rounded border border-red-950/20">
+                                        {versions.length} versions
+                                      </span>
+                                    )}
+                                  </div>
+                                  {ep.plot && <p className="text-[11px] text-zinc-500 line-clamp-2 leading-relaxed font-medium">{ep.plot}</p>}
+                                </div>
+                                
+                                {hasMultiple ? (
+                                  <div className="mt-3 pt-3 border-t border-zinc-800/60 space-y-2">
+                                    <div className="text-[9px] font-black uppercase tracking-wider text-zinc-500 mb-1">Select Version:</div>
+                                    {versions.map((ver) => {
+                                      const sizeGB = ver.size_bytes ? (ver.size_bytes / (1024 * 1024 * 1024)).toFixed(2) : null;
+                                      return (
+                                        <div key={ver.id} className="flex items-center justify-between gap-2 p-1.5 bg-zinc-950/50 rounded-lg border border-zinc-850 hover:border-zinc-700 transition">
+                                          <div className="flex items-center gap-1.5 min-w-0">
+                                            <span className="text-[8px] font-mono font-black text-white bg-zinc-800 px-1.5 py-0.5 rounded border border-zinc-700 shrink-0">
+                                              {ver.resolution || '1080p'}
+                                            </span>
+                                            {ver.codec && (
+                                              <span className="text-[8px] font-mono font-bold text-zinc-400 uppercase truncate shrink-0 max-w-[45px]">
+                                                {ver.codec}
+                                              </span>
+                                            )}
+                                            {sizeGB && (
+                                              <span className="text-[8px] font-mono text-zinc-500 shrink-0">
+                                                {sizeGB} GB
+                                              </span>
+                                            )}
+                                          </div>
+                                          <div className="flex items-center gap-1 shrink-0">
+                                            <button 
+                                              onClick={(e) => { 
+                                                e.stopPropagation(); 
+                                                handlePlayMedia(ver.id, 'episode', { 
+                                                  title: `${item.title} - S${paddedSeason}E${ver.episode_number.toString().padStart(2, '0')} - ${ver.title || 'Episode ' + ver.episode_number} (${ver.resolution || 'Unknown'})`,
+                                                  posterUrl: ver.thumbnail_path || item.poster_url || item.backdrop_url,
+                                                  videoCodec: ver.video_codec || ver.codec,
+                                                  audioCodec: ver.audio_codec,
+                                                  hash: ver.hash
+                                                }); 
+                                              }} 
+                                              className="px-2 py-1 bg-white hover:bg-zinc-200 text-zinc-950 rounded font-black uppercase tracking-wider text-[8px] flex items-center gap-0.5 transition active:scale-95 shadow-sm"
+                                            >
+                                              <Play className="w-2 h-2 fill-current" /> Stream
+                                            </button>
+                                            <button 
+                                              onClick={(e) => { 
+                                                e.stopPropagation(); 
+                                                api.playEpisode(ver.id); 
+                                                toast.success("Opening in local player..."); 
+                                              }} 
+                                              className="p-1 hover:bg-zinc-800 rounded text-zinc-400 hover:text-white transition"
+                                              title="Play Locally"
+                                            >
+                                              <Monitor className="w-3 h-3" />
+                                            </button>
+                                            <button 
+                                              onClick={(e) => { e.stopPropagation(); onDownload(ver.id, 'tv'); }} 
+                                              className="p-1 hover:bg-zinc-800 rounded text-zinc-400 hover:text-white transition"
+                                              title="Download"
+                                            >
+                                              <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>
+                                            </button>
+                                            <button 
+                                              onClick={async (e) => { 
+                                                e.stopPropagation(); 
+                                                if (confirm("Are you sure you want to delete this specific version from your storage?")) {
+                                                  try {
+                                                    await api.deleteEpisode(ver.id);
+                                                    toast.success("Version deleted.");
+                                                    loadEpisodes(selectedSeasonId!);
+                                                    loadData();
+                                                  } catch (err: any) {
+                                                    toast.error("Failed to delete: " + err.message);
+                                                  }
+                                                }
+                                              }} 
+                                              className="p-1 hover:bg-red-950/30 rounded text-zinc-500 hover:text-red-500 transition"
+                                              title="Delete Version"
+                                            >
+                                              <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg>
+                                            </button>
+                                          </div>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                ) : (
+                                  <div className="flex items-center justify-between pt-2 border-t border-zinc-900/50">
+                                    <div className="flex items-center gap-2 text-[9px] text-zinc-500 font-mono uppercase tracking-tighter">
+                                      <span>{ep.resolution || '1080p'}</span>
+                                      <span>•</span>
+                                      <span>{ep.codec || 'AVC'}</span>
+                                    </div>
+                                    <div className="flex items-center gap-1">
+                                      <button 
+                                        onClick={(e) => { 
+                                          e.stopPropagation(); 
+                                          api.playEpisode(ep.id); 
+                                          toast.success("Opening in local player...");
+                                        }} 
+                                        className="p-1.5 hover:bg-zinc-800 rounded-lg text-zinc-500 hover:text-white transition"
+                                        title="Play Locally"
+                                      >
+                                        <Monitor className="w-3.5 h-3.5" />
+                                      </button>
+                                      <button 
+                                        onClick={(e) => { e.stopPropagation(); onDownload(ep.id, 'tv'); }} 
+                                        className="p-1.5 hover:bg-zinc-800 rounded-lg text-zinc-500 hover:text-white transition"
+                                        title="Download"
+                                      >
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>
+                                      </button>
+                                      <button 
+                                        onClick={async (e) => { 
+                                          e.stopPropagation(); 
+                                          if (confirm("Are you sure you want to delete this episode and its physical files?")) {
+                                            try {
+                                              await api.deleteEpisode(ep.id);
+                                              toast.success("Episode deleted.");
+                                              loadEpisodes(selectedSeasonId!);
+                                              loadData();
+                                            } catch (err: any) {
+                                              toast.error("Failed to delete: " + err.message);
+                                            }
+                                          }
+                                        }} 
+                                        className="p-1.5 hover:bg-red-950/30 rounded-lg text-zinc-500 hover:text-red-500 transition"
+                                        title="Delete Episode"
+                                      >
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg>
+                                      </button>
+                                    </div>
+                                  </div>
                                 )}
                               </div>
-                              {ep.plot && <p className="text-[11px] text-zinc-500 line-clamp-2 leading-relaxed font-medium">{ep.plot}</p>}
-                            </div>
-                            
-                            <div className="flex items-center justify-between pt-2 border-t border-zinc-900/50">
-                              <div className="flex items-center gap-2 text-[9px] text-zinc-500 font-mono uppercase tracking-tighter">
-                                <span>{ep.resolution || '1080p'}</span>
-                                <span>•</span>
-                                <span>{ep.codec || 'AVC'}</span>
+                            </>
+                          );
+
+                          if (hasMultiple) {
+                            return (
+                              <div 
+                                key={`group-${epNum}`} 
+                                className="flex flex-col bg-zinc-900/35 rounded-xl border border-zinc-850/80 transition-all duration-300 group overflow-hidden shadow-md"
+                              >
+                                {cardContent}
                               </div>
-                              <div className="flex items-center gap-1">
-                                <button 
-                                  onClick={(e) => { 
-                                    e.stopPropagation(); 
-                                    api.playEpisode(ep.id); 
-                                    toast.success("Opening in local player...");
-                                  }} 
-                                  className="p-1.5 hover:bg-zinc-800 rounded-lg text-zinc-500 hover:text-white transition"
-                                  title="Play Locally"
-                                >
-                                  <Monitor className="w-3.5 h-3.5" />
-                                </button>
-                                <button 
-                                  onClick={(e) => { e.stopPropagation(); onDownload(ep.id, 'tv'); }} 
-                                  className="p-1.5 hover:bg-zinc-800 rounded-lg text-zinc-500 hover:text-white transition"
-                                  title="Download"
-                                >
-                                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>
-                                </button>
-                                <button 
-                                  onClick={async (e) => { 
-                                    e.stopPropagation(); 
-                                    if (confirm("Are you sure you want to delete this episode and its physical files?")) {
-                                      try {
-                                        await api.deleteEpisode(ep.id);
-                                        toast.success("Episode deleted.");
-                                        loadEpisodes(selectedSeasonId!);
-                                        loadData();
-                                      } catch (err: any) {
-                                        toast.error("Failed to delete: " + err.message);
-                                      }
-                                    }
-                                  }} 
-                                  className="p-1.5 hover:bg-red-950/30 rounded-lg text-zinc-500 hover:text-red-500 transition"
-                                  title="Delete Episode"
-                                >
-                                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg>
-                                </button>
+                            );
+                          } else {
+                            return (
+                              <div 
+                                key={ep.id} 
+                                onClick={() => handlePlayMedia(ep.id, 'episode', { 
+                                  title: `${item.title} - S${paddedSeason}E${ep.episode_number.toString().padStart(2, '0')} - ${ep.title || 'Episode ' + ep.episode_number}`,
+                                  posterUrl: ep.thumbnail_path || item.poster_url || item.backdrop_url,
+                                  videoCodec: ep.video_codec || ep.codec,
+                                  audioCodec: ep.audio_codec,
+                                  hash: ep.hash
+                                })} 
+                                className="flex flex-col bg-zinc-900/35 rounded-xl border border-zinc-850/80 hover:border-zinc-700/80 hover:bg-zinc-850/30 transition-all duration-300 group cursor-pointer overflow-hidden shadow-md"
+                              >
+                                {cardContent}
                               </div>
-                            </div>
-                          </div>
-                        </div>
-                      ))}
+                            );
+                          }
+                        });
+                      })()}
                     </div>
                   </div>
                 )}

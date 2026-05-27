@@ -110,6 +110,9 @@ export interface Episode {
   video_codec?: string;
   audio_codec?: string;
   hash?: string;
+  size_bytes?: number;
+  resolution?: string;
+  codec?: string;
 }
 
 export interface UpdateCheckResult {

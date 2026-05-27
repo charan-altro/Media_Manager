@@ -36,26 +36,11 @@ COPY . .
 WORKDIR /app/frontend
 RUN npm run build
 
-# Stage 3: Build Custom FFmpeg with RPi hardware acceleration (on Wolfi base)
-FROM cgr.dev/chainguard/wolfi-base AS ffmpeg-builder
-RUN apk update && apk add --no-cache build-base git nasm yasm linux-headers
-WORKDIR /ffmpeg
-RUN git clone --depth 1 https://github.com/FFmpeg/FFmpeg.git .
-RUN ./configure \
-    --prefix=/usr/local \
-    --enable-gpl \
-    --enable-nonfree \
-    --enable-v4l2-m2m \
-    --disable-debug \
-    --disable-doc \
-    --enable-optimizations && \
-    make -j$(nproc) && \
-    make install
-
-# Stage 4: Hardened Runtime (Wolfi-based for zero CVE posture)
+# Stage 3: Hardened Runtime (Wolfi-based for zero CVE posture)
 FROM cgr.dev/chainguard/wolfi-base
-# Shadow is needed for user management
-RUN apk update && apk add --no-cache shadow
+
+# Install runtime dependencies (shadow for user management, pre-compiled ffmpeg)
+RUN apk update && apk add --no-cache shadow ffmpeg
 
 # Create non-root user
 RUN groupadd -r mediavault && useradd -r -g mediavault mediavault
@@ -69,8 +54,6 @@ WORKDIR /app
 # Copy binaries and assets
 COPY --from=builder /app/target/release/server /app/server
 COPY --from=frontend-builder /app/frontend/dist /app/frontend/dist
-COPY --from=ffmpeg-builder /usr/local/bin/ffmpeg /usr/local/bin/ffmpeg
-COPY --from=ffmpeg-builder /usr/local/bin/ffprobe /usr/local/bin/ffprobe
 
 # Ensure binaries are executable and owned by mediavault
 RUN chown -R mediavault:mediavault /app
@@ -85,8 +68,8 @@ VOLUME ["/app/data", "/app/transcodes", "/app/backups"]
 # Set environment variables
 ENV DATABASE_URL=sqlite:/app/data/mediavault.db
 ENV RUST_LOG=info
-ENV FFMPEG_PATH=/usr/local/bin/ffmpeg
-ENV FFPROBE_PATH=/usr/local/bin/ffprobe
+ENV FFMPEG_PATH=/usr/bin/ffmpeg
+ENV FFPROBE_PATH=/usr/bin/ffprobe
 
 # Switch to non-root user
 USER mediavault

@@ -44,6 +44,11 @@ services:
       - PGID=1000
       - TZ=Asia/Kolkata
       - ALLOWED_ORIGIN=* # Allow access via domain
+      - TMDB_API_KEY
+      - OMDB_API_KEY
+      - FANART_API_KEY
+      - TRAKT_API_KEY
+      - TVDB_API_KEY
 
     labels:
       - "traefik.enable=true"

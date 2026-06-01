@@ -44,8 +44,12 @@ async fn test_stash_parity_integration() -> anyhow::Result<()> {
     scanner_service.scan_library(&lib, "test_task".into()).await?;
 
     // 4. Verify initial record and fingerprint
-    let movie_file = repos.movie.find_file_by_path(file_name).await?.expect("File should be in DB");
-    let fingerprint = movie_file.fingerprint.expect("Fingerprint should be set");
+    let movies = repos.movie.find_all(Some(lib_id), None, None).await?;
+    assert_eq!(movies.len(), 1);
+    let movie_file = sqlx::query_as::<_, models::MovieFile>("SELECT * FROM movie_files WHERE movie_id = ?")
+        .bind(movies[0].id)
+        .fetch_one(&pool).await?;
+    let fingerprint = movie_file.fingerprint.clone().expect("Fingerprint should be set");
     println!("Initial Fingerprint: {}", fingerprint);
 
     // 5. Manually populate MediaStream and GeneratedAsset (simulating advanced analysis/assets generation)
@@ -67,7 +71,8 @@ async fn test_stash_parity_integration() -> anyhow::Result<()> {
     // 6. Move file (Simulate file rename/move within library)
     let moved_file_name = "moved_test.mp4";
     let moved_file_path = test_dir.join(moved_file_name);
-    fs::rename(&file_path, &moved_file_path)?;
+    let organized_file_path = test_dir.join("integration test").join("integration test.mp4");
+    fs::rename(&organized_file_path, &moved_file_path)?;
 
     // 7. Scan again
     // The scanner should see the old path is gone, see the new path, calculate same fingerprint, and 'heal' the record.
@@ -75,7 +80,7 @@ async fn test_stash_parity_integration() -> anyhow::Result<()> {
 
     // 8. Verify Identity Resolution (Healing)
     let movie_file_after = repos.movie.find_file_by_fingerprint(&fingerprint).await?.expect("Should find file by fingerprint");
-    assert_eq!(movie_file_after.file_path, moved_file_name, "Path should be updated to new location");
+    assert_eq!(movie_file_after.file_path, "moved test/moved test.mp4", "Path should be updated to new location");
     assert_eq!(movie_file_after.fingerprint.unwrap(), fingerprint, "Fingerprint must be the same");
 
     // 9. Verify Assets are still linked via fingerprint

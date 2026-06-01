@@ -9,15 +9,21 @@ use tracing::info;
 use crate::scanner::service::ScannerService;
 use std::collections::{HashSet, HashMap};
 use crate::db::{Repositories, LibraryReader};
+use crate::task_manager::TaskManager;
 
 pub struct Watchdog {
     repos: Arc<Repositories>,
+    task_manager: Arc<TaskManager>,
     scanner_service: Arc<dyn ScannerService>,
 }
 
 impl Watchdog {
-    pub fn new(repos: Arc<Repositories>, scanner_service: Arc<dyn ScannerService>) -> Self {
-        Self { repos, scanner_service }
+    pub fn new(
+        repos: Arc<Repositories>,
+        task_manager: Arc<TaskManager>,
+        scanner_service: Arc<dyn ScannerService>,
+    ) -> Self {
+        Self { repos, task_manager, scanner_service }
     }
 
     pub async fn start(&self) -> crate::errors::Result<()> {
@@ -105,6 +111,12 @@ impl Watchdog {
                 let normalized_lib = crate::paths::normalize_slashes(&l.path);
                 normalized_path.starts_with(&normalized_lib)
             }) {
+                // Ignore changes if the library is currently scanning
+                if self.task_manager.is_library_scanning(lib.id).await {
+                    tracing::debug!("Watchdog: ignoring change in {:?} because library is actively scanning", path);
+                    return;
+                }
+
                 let task_id = format!("watchdog-{}", uuid::Uuid::new_v4());
                 let scanner_service = self.scanner_service.clone();
                 let path_clone = path.clone();

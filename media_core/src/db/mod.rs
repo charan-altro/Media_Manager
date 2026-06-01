@@ -63,6 +63,7 @@ pub async fn init_pool(database_url: &str) -> Result<SqlitePool> {
         .map_err(|e| DatabaseError::ConfigError(e.to_string()))?
         .create_if_missing(true)
         .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+        .busy_timeout(std::time::Duration::from_secs(30))
         .foreign_keys(true);
 
     let pool = SqlitePool::connect_with(opts).await?;

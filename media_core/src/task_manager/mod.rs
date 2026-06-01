@@ -69,6 +69,11 @@ impl TaskManager {
         let mut running = self.running_scans.lock().await;
         running.remove(&library_id);
     }
+
+    pub async fn is_library_scanning(&self, library_id: LibraryId) -> bool {
+        let running = self.running_scans.lock().await;
+        running.contains(&library_id)
+    }
 }
 
 impl Default for TaskManager {

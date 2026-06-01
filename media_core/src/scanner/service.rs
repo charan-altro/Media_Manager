@@ -723,6 +723,31 @@ impl ScannerService for DefaultScannerService {
         library: &Library,
         task_id: String,
     ) -> Result<()> {
+        if !self.ctx.task_manager.try_lock_library_scan(library.id).await {
+            tracing::warn!("Library scan already in progress for library ID {:?}", library.id);
+            return Ok(());
+        }
+
+        struct ScanGuard {
+            task_manager: Arc<crate::task_manager::TaskManager>,
+            library_id: crate::models::LibraryId,
+        }
+
+        impl Drop for ScanGuard {
+            fn drop(&mut self) {
+                let task_manager = self.task_manager.clone();
+                let library_id = self.library_id;
+                tokio::spawn(async move {
+                    task_manager.unlock_library_scan(library_id).await;
+                });
+            }
+        }
+
+        let _guard = ScanGuard {
+            task_manager: self.ctx.task_manager.clone(),
+            library_id: library.id,
+        };
+
         let start_time = Some(crate::models::now_ms());
         tracing::info!("Starting scan for library '{}' at path '{}'", library.name, library.path);
 

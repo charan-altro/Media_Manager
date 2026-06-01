@@ -58,8 +58,9 @@ async fn test_identity_healing() -> anyhow::Result<()> {
     // 5. Move file
     let archive_dir = test_dir.join("Archive");
     fs::create_dir_all(&archive_dir)?;
-    let new_file_path = archive_dir.join(file_name);
-    fs::rename(&file_path, &new_file_path)?;
+    let organized_file_path = test_dir.join("test café").join("test café.mp4");
+    let new_file_path = archive_dir.join("different_movie.mp4");
+    fs::rename(&organized_file_path, &new_file_path)?;
 
     // 6. Scan again
     scanner_service.scan_library(&lib, "test_task_2".into()).await?;
@@ -77,7 +78,7 @@ async fn test_identity_healing() -> anyhow::Result<()> {
 
     assert_eq!(movie_file_after.fingerprint.unwrap(), original_fingerprint, "Fingerprint must match");
     assert_ne!(movie_file_after.file_path, original_path, "Path must have updated");
-    assert!(movie_file_after.file_path.contains("Archive"), "Path should contain Archive");
+    assert!(movie_file_after.file_path.contains("different movie"), "Path should contain 'different movie'");
 
     // Cleanup
     fs::remove_dir_all(&test_dir)?;

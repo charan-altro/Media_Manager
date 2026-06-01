@@ -67,8 +67,9 @@ impl LibraryService {
     pub fn start_watchdog(&self) {
         let repos = self.ctx.repos.clone();
         let scanner = self.scanner.clone();
+        let task_manager = self.ctx.task_manager.clone();
         tokio::spawn(async move {
-            let watchdog = crate::scanner::watchdog::Watchdog::new(repos, scanner);
+            let watchdog = crate::scanner::watchdog::Watchdog::new(repos, task_manager, scanner);
             if let Err(e) = watchdog.start().await {
                 tracing::error!("Watchdog failed: {}", e);
             }

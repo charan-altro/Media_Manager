@@ -165,8 +165,18 @@ fn resolve_show_title_from_path(
 
 /// Convert a raw directory name (e.g. `Better.Call.Saul.S04.1080p.BluRay.x265-KONTRAST`)
 /// into a clean show title (`Better Call Saul`).
+///
+/// Also handles:
+/// - Bracket site prefixes: `[TorrentCouch net] Game of Thrones` → `Game of Thrones`
+/// - Standalone years: `Game of Thrones 2012` → `Game of Thrones`
 pub fn clean_dir_name_as_show_title(raw: &str) -> String {
-    // Replace dots/underscores/hyphens with spaces
+    // Strip leading bracket prefix like "[TorrentCouch net] " or "[www.site.com]"
+    static RE_BRACKET_PREFIX: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"(?i)^\s*\[[^\]]*\]\s*").unwrap()
+    });
+    let raw = RE_BRACKET_PREFIX.replace(raw.trim(), "");
+
+    // Replace dots/underscores with spaces (hyphens only between words, not at end)
     let spaced = raw.replace('.', " ").replace('_', " ");
 
     // Strip everything from the first Sxx/SxxExx marker onwards
@@ -182,6 +192,12 @@ pub fn clean_dir_name_as_show_title(raw: &str) -> String {
         ).unwrap()
     });
     let stripped = RE_QUALITY_STRIP.replace(&stripped, "");
+
+    // Strip trailing standalone year (e.g. "Game Of Thrones 2012" → "Game Of Thrones")
+    static RE_YEAR_SUFFIX: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"\s+\b(?:19|20)\d{2}\b\s*$").unwrap()
+    });
+    let stripped = RE_YEAR_SUFFIX.replace(stripped.trim_end(), "");
 
     // Collapse whitespace and trim
     static RE_SPACES: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s+").unwrap());
@@ -247,6 +263,24 @@ mod tests {
             clean_dir_name_as_show_title("Better.Call.Saul.S05.COMPLETE.720p"),
             "Better Call Saul"
         );
+        // Year stripping
+        assert_eq!(
+            clean_dir_name_as_show_title("Game Of Thrones 2012"),
+            "Game Of Thrones"
+        );
+        assert_eq!(
+            clean_dir_name_as_show_title("Game.Of.Thrones.2012"),
+            "Game Of Thrones"
+        );
+        // Bracket site prefix stripping
+        assert_eq!(
+            clean_dir_name_as_show_title("[TorrentCouch net] Game of Thrones"),
+            "Game of Thrones"
+        );
+        assert_eq!(
+            clean_dir_name_as_show_title("[www.1337x.to] Better.Call.Saul.S04.1080p"),
+            "Better Call Saul"
+        );
     }
 
     #[test]
@@ -271,5 +305,28 @@ mod tests {
         assert_eq!(p.season, Some(4));
         assert_eq!(p.episode, Some(1));
         assert!(p.is_tv);
+    }
+
+    #[test]
+    fn test_parse_file_path_torrent_prefix() {
+        let lib = Path::new("/media/tv");
+        let file = Path::new(
+            "/media/tv/[TorrentCouch net] Game of Thrones/Season 08/S08E01.mkv",
+        );
+        let p = parse_file_path(file, lib);
+        assert_eq!(p.title, "Game of Thrones");
+        assert_eq!(p.season, Some(8));
+        assert_eq!(p.episode, Some(1));
+    }
+
+    #[test]
+    fn test_parse_file_path_year_in_folder() {
+        let lib = Path::new("/media/tv");
+        let file = Path::new("/media/tv/Game Of Thrones 2012/Season 02/S02E01.mkv");
+        let p = parse_file_path(file, lib);
+        // Year should be stripped so title normalizes cleanly
+        assert_eq!(p.title, "Game Of Thrones");
+        assert_eq!(p.season, Some(2));
+        assert_eq!(p.episode, Some(1));
     }
 }

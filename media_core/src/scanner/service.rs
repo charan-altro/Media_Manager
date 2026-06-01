@@ -390,6 +390,54 @@ impl DefaultScannerService {
         Ok(if is_known { ProcessAction::Updated } else { ProcessAction::Added })
     }
 
+/// Normalise a show title to a stable grouping key used by the organiser.
+/// This is case-insensitive and strips years / quality / noise tokens so that
+/// `Band Of Brothers`, `Band of Brothers`, and `Band.Of.Brothers.S01.720p.BRRip`
+/// all collapse to the same key: `band of brothers`.
+fn normalize_organiser_key(title: &str) -> String {
+    use once_cell::sync::Lazy;
+    use regex::Regex;
+
+    // Strip bracket site prefix: "[TorrentCouch net] ..."
+    static RE_BRACKET: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"(?i)^\s*\[[^\]]*\]\s*").unwrap()
+    });
+    // Strip quality / noise tokens and everything after them
+    static RE_QUALITY: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r"(?i)\s+\b(2160p|1080p|720p|480p|576p|x264|x265|h264|h265|10bit|hdtv|web[- ]?dl|bluray|brrip|webrip|hevc|complete|mkvcage|eztv|yts|rarbg|1337x|tgx|kontrast|minx|memento)\b.*"
+        ).unwrap()
+    });
+    // Strip season / episode markers and everything after them
+    static RE_SEASON: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"(?i)\s*\b[Ss]\d{1,2}(?:[Ee]\d{1,2})?\b.*").unwrap()
+    });
+    // Strip trailing standalone year: "Game of Thrones 2012" → "Game of Thrones"
+    static RE_YEAR: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"\s+\b(?:19|20)\d{2}\b\s*$").unwrap()
+    });
+    static RE_SPACES: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s+").unwrap());
+
+    let s = RE_BRACKET.replace(title.trim(), "");
+    let s = s.replace('.', " ").replace('_', " ");
+    let s = RE_SEASON.replace(&s, "");
+    let s = RE_QUALITY.replace(&s, "");
+    let s = RE_YEAR.replace(s.trim_end(), "");
+    RE_SPACES.replace_all(s.trim(), " ").trim().to_lowercase()
+}
+
+/// Choose the better (canonical) of two show title candidates.
+/// Prefers: no dots/brackets, no quality tokens, then shorter.
+fn pick_canonical_title(a: &str, b: &str) -> String {
+    fn score(s: &str) -> usize {
+        // Penalise release-noise indicators
+        let noise = if s.contains('.') || s.contains('[') || s.to_ascii_lowercase().contains("p.blu") { 1000 } else { 0 };
+        noise + s.len()
+    }
+    if score(a) <= score(b) { a.to_string() } else { b.to_string() }
+}
+
+
     async fn organise_tv_library(&self, library: &Library, parsed_items: &mut [ParsedFile]) -> Result<()> {
         let library_root = Path::new(&library.path);
         
@@ -424,9 +472,16 @@ impl DefaultScannerService {
             })
             .collect();
 
-        // 2. Identify TV episodes from parsed_items and group them by (show_title, season, episode)
-        // We will store indices of parsed_items
-        let mut groups: std::collections::HashMap<(String, i32, i32), Vec<usize>> = std::collections::HashMap::new();
+        // 2. Identify TV episodes from parsed_items and group them by normalised key.
+        //    The key is (lowercase-normalised-show-title, season, episode) so that
+        //    "Band of Brothers", "Band Of Brothers", "Band.Of.Brothers.S01.720p..."
+        //    all land in the same bucket.
+        //    We track the canonical (cleanest) title per group separately.
+        let mut groups: std::collections::HashMap<(String, i32, i32), Vec<usize>> =
+            std::collections::HashMap::new();
+        // Maps (norm_key, season, episode) → best human-readable title for destination path
+        let mut canonical_titles: std::collections::HashMap<(String, i32, i32), String> =
+            std::collections::HashMap::new();
         
         for (idx, item) in parsed_items.iter().enumerate() {
             let relative_path = paths::make_relative(&item.path, library_root).unwrap_or_default();
@@ -457,12 +512,33 @@ impl DefaultScannerService {
                 let episode = dir_parsed.episode.or(item.parsed.episode).unwrap_or(1);
                 (show_title, season, episode)
             };
+
+            // Skip files with empty show title (e.g. orphan Season folders directly at library root)
+            if show_title.is_empty() {
+                tracing::warn!("Could not determine show title for {:?}, skipping organise", item.path);
+                continue;
+            }
             
-            groups.entry((show_title, season, episode)).or_default().push(idx);
+            let norm_key = (Self::normalize_organiser_key(&show_title), season, episode);
+
+            // Track the cleanest (canonical) title seen for this group
+            canonical_titles
+                .entry(norm_key.clone())
+                .and_modify(|existing| {
+                    *existing = Self::pick_canonical_title(existing, &show_title);
+                })
+                .or_insert_with(|| show_title);
+
+            groups.entry(norm_key).or_default().push(idx);
         }
 
         // 3. Process each group to rename and move the files
-        for ((show_title, season, episode), indices) in groups {
+        for ((norm_key, season, episode), indices) in groups {
+            // Use the canonical (cleanest) title from the tracker, fall back to norm_key
+            let show_title = canonical_titles
+                .get(&(norm_key.clone(), season, episode))
+                .cloned()
+                .unwrap_or_else(|| norm_key.clone());
             let sanitized_show_title = sanitize_name(&show_title);
             let dest_dir = library_root.join(&sanitized_show_title).join(format!("Season {:02}", season));
             

@@ -709,6 +709,12 @@ fn title_score(t: &str) -> usize {
 fn sanitize_db_show_title(raw: &str) -> String {
     use once_cell::sync::Lazy;
 
+    // Strip leading bracket prefix like "[TorrentCouch net] " or "[www.site.com]"
+    static RE_BRACKET_PREFIX: Lazy<regex::Regex> = Lazy::new(|| {
+        regex::Regex::new(r"(?i)^\s*\[[^\]]*\]\s*").unwrap()
+    });
+    let raw = RE_BRACKET_PREFIX.replace(raw.trim(), "");
+
     // Replace dots/underscores with spaces
     let spaced = raw.replace('.', " ").replace('_', " ");
 
@@ -725,6 +731,12 @@ fn sanitize_db_show_title(raw: &str) -> String {
         ).unwrap()
     });
     let stripped = RE_QUALITY.replace(&stripped, "");
+
+    // Strip trailing standalone year (e.g. "Game Of Thrones 2012" → "Game Of Thrones")
+    static RE_YEAR_SUFFIX: Lazy<regex::Regex> = Lazy::new(|| {
+        regex::Regex::new(r"\s+\b(?:19|20)\d{2}\b\s*$").unwrap()
+    });
+    let stripped = RE_YEAR_SUFFIX.replace(stripped.trim_end(), "");
 
     // Collapse whitespace
     static RE_SPACES: Lazy<regex::Regex> = Lazy::new(|| regex::Regex::new(r"\s+").unwrap());

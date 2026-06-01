@@ -434,17 +434,27 @@ impl DefaultScannerService {
             let (show_title, season, episode) = if let Some(db_info) = db_episodes_map.get(&relative_path) {
                 (db_info.0.clone(), db_info.1, db_info.2)
             } else {
-                let mut show_title = clean_show_title_for_db(&item.parsed.title);
+                // Use directory-aware parsing for grouping so release-folder files are bucketed
+                // under the correct canonical show title.
+                let dir_parsed = parser::parse_file_path(&item.path, library_root);
+                let mut show_title = clean_show_title_for_db(&dir_parsed.title);
                 if show_title.is_empty() {
-                    show_title = item.parsed.title.clone();
+                    show_title = dir_parsed.title.clone();
+                }
+                if show_title.is_empty() {
+                    // Last resort: fall back to the pre-computed parsed title
+                    show_title = clean_show_title_for_db(&item.parsed.title);
+                    if show_title.is_empty() {
+                        show_title = item.parsed.title.clone();
+                    }
                 }
                 if let Some(ref nfo) = item.metadata.tv_nfo {
                     if let Some(nfo_title) = nfo.title.first().filter(|t| !t.is_empty()) {
                         show_title = nfo_title.clone();
                     }
                 }
-                let season = item.parsed.season.unwrap_or(1);
-                let episode = item.parsed.episode.unwrap_or(1);
+                let season = dir_parsed.season.or(item.parsed.season).unwrap_or(1);
+                let episode = dir_parsed.episode.or(item.parsed.episode).unwrap_or(1);
                 (show_title, season, episode)
             };
             
@@ -854,6 +864,7 @@ impl ScannerService for DefaultScannerService {
         };
 
         let ffprobe_path = self.ctx.config.ffprobe_path.clone();
+        let is_tv = library.media_type == MediaType::Tv;
         let mut parsed_items: Vec<ParsedFile> = {
             use rayon::prelude::*;
             files.par_iter().map(|path| {
@@ -866,11 +877,19 @@ impl ScannerService for DefaultScannerService {
                 let size = metadata.map(|m| m.len() as i64).unwrap_or(0);
                 let relative_path = paths::make_relative(path, library_root).unwrap_or_default();
 
+                // For TV libraries use directory-aware parsing so bare `S01E01.mkv` files
+                // resolve their show title from the parent folder hierarchy.
+                let parsed = if is_tv {
+                    parser::parse_file_path(path, library_root)
+                } else {
+                    parser::parse_filename(filename)
+                };
+
                 if let Some((db_size, db_mtime)) = existing_files.get(&relative_path) {
                     if *db_size == size && *db_mtime == mtime {
                         return ParsedFile {
                             path: path.clone(),
-                            parsed: parser::parse_filename(filename),
+                            parsed,
                             size, mtime,
                             is_skipped: true,
                             metadata: nfo::reader::NfoMetadata::default(),
@@ -882,7 +901,7 @@ impl ScannerService for DefaultScannerService {
 
                 ParsedFile {
                     path: path.clone(),
-                    parsed: parser::parse_filename(filename),
+                    parsed,
                     size, mtime,
                     is_skipped: false,
                     metadata: nfo::reader::detect_metadata(path),
@@ -1221,6 +1240,7 @@ fn remove_empty_directories(dir: &Path, library_root: &Path) {
     if !dir.is_dir() {
         return;
     }
+    // Recurse into sub-dirs first (depth-first, so children are cleaned before parents)
     if let Ok(entries) = std::fs::read_dir(dir) {
         for entry in entries.flatten() {
             let path = entry.path();
@@ -1229,8 +1249,51 @@ fn remove_empty_directories(dir: &Path, library_root: &Path) {
             }
         }
     }
-    if dir != library_root {
-        let _ = std::fs::remove_dir(dir);
+
+    // Never remove the library root itself
+    if dir == library_root {
+        return;
+    }
+
+    // Check remaining contents after recursion
+    let entries: Vec<_> = match std::fs::read_dir(dir) {
+        Ok(r) => r.flatten().collect(),
+        Err(_) => return,
+    };
+
+    if entries.is_empty() {
+        // Truly empty directory — remove it
+        if let Err(e) = std::fs::remove_dir(dir) {
+            tracing::warn!("Could not remove empty dir {:?}: {}", dir, e);
+        } else {
+            tracing::info!("Removed empty directory: {:?}", dir);
+        }
+        return;
+    }
+
+    // If directory only contains non-video metadata files (artwork / .nfo), it is a
+    // leftover release-group folder whose video files have been moved. Remove it too.
+    const METADATA_EXTS: &[&str] = &["jpg", "jpeg", "png", "nfo", "txt", "srt", "sub", "idx", "sfv", "md5"];
+    let has_video = entries.iter().any(|e| {
+        let p = e.path();
+        if !p.is_file() { return true; } // sub-directory still present → keep parent
+        let ext = p.extension()
+            .and_then(|x| x.to_str())
+            .map(|x| x.to_lowercase())
+            .unwrap_or_default();
+        !METADATA_EXTS.contains(&ext.as_str())
+    });
+
+    if !has_video {
+        // Remove leftover metadata files then the directory itself
+        for entry in &entries {
+            let _ = std::fs::remove_file(entry.path());
+        }
+        if let Err(e) = std::fs::remove_dir(dir) {
+            tracing::warn!("Could not remove leftover dir {:?}: {}", dir, e);
+        } else {
+            tracing::info!("Removed leftover metadata-only directory: {:?}", dir);
+        }
     }
 }
 

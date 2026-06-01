@@ -704,9 +704,39 @@ fn title_score(t: &str) -> usize {
     t.len()
 }
 
+/// Sanitize a raw show title stored in the database into a clean human-readable name.
+/// E.g. `Better.Call.Saul.S04.1080p.BluRay.x265-KONTRAST` → `Better Call Saul`
+fn sanitize_db_show_title(raw: &str) -> String {
+    use once_cell::sync::Lazy;
+
+    // Replace dots/underscores with spaces
+    let spaced = raw.replace('.', " ").replace('_', " ");
+
+    // Strip from the first Sxx / SxxExx marker onwards
+    static RE_SEASON: Lazy<regex::Regex> = Lazy::new(|| {
+        regex::Regex::new(r"(?i)\s*\b[Ss]\d{1,2}(?:[Ee]\d{1,2})?\b.*").unwrap()
+    });
+    let stripped = RE_SEASON.replace(&spaced, "");
+
+    // Strip quality/release noise tokens
+    static RE_QUALITY: Lazy<regex::Regex> = Lazy::new(|| {
+        regex::Regex::new(
+            r"(?i)\s+\b(2160p|1080p|720p|480p|576p|x264|x265|h264|h265|10bit|hdtv|web[- ]?dl|webdl|bluray|brrip|hdrip|webrip|hevc|avc|complete|galaxy|tv|mkvcage|eztv|yts|rarbg|1337x|tgx|psarips|kontrast|minx|memento)\b.*"
+        ).unwrap()
+    });
+    let stripped = RE_QUALITY.replace(&stripped, "");
+
+    // Collapse whitespace
+    static RE_SPACES: Lazy<regex::Regex> = Lazy::new(|| regex::Regex::new(r"\s+").unwrap());
+    RE_SPACES.replace_all(stripped.trim(), " ").trim().to_string()
+}
+
 /// After migrations, deduplicate TV shows within each library.
-/// Shows that resolve to the same normalised key are merged into the entry
-/// with the best (shortest / cleanest) title.
+///
+/// Phase 1: Sanitize every show title in the DB (e.g. `Better.Call.Saul.S04...` →
+///          `Better Call Saul`) so the grouping key is computed on the clean title.
+/// Phase 2: Group shows by (library_id, normalised_key) and merge duplicates into the
+///          entry with the best (shortest / cleanest) title.
 pub async fn deduplicate_shows(pool: &sqlx::sqlite::SqlitePool) -> Result<()> {
     // Fetch all shows: (id, library_id, title)
     let all_shows: Vec<(i64, i64, String)> =
@@ -718,7 +748,38 @@ pub async fn deduplicate_shows(pool: &sqlx::sqlite::SqlitePool) -> Result<()> {
         return Ok(());
     }
 
-    // Group by (library_id, normalised_key)
+    // --- Phase 1: sanitize titles ---
+    // Build a mapping from (id, old_title) → cleaned_title and batch-update the DB.
+    let mut title_updates: Vec<(i64, String)> = Vec::new();
+    for (id, _lib_id, title) in &all_shows {
+        let cleaned = sanitize_db_show_title(title);
+        // Only update if the title actually changed and the clean version is non-empty
+        if !cleaned.is_empty() && &cleaned != title {
+            title_updates.push((*id, cleaned));
+        }
+    }
+
+    if !title_updates.is_empty() {
+        tracing::info!("Sanitizing {} show title(s) in database…", title_updates.len());
+        for (id, new_title) in &title_updates {
+            sqlx::query(
+                "UPDATE tv_shows SET title = ?, updated_at = datetime('now') WHERE id = ?"
+            )
+            .bind(new_title)
+            .bind(id)
+            .execute(pool)
+            .await?;
+            tracing::debug!("  Sanitized show id={} → '{}'", id, new_title);
+        }
+    }
+
+    // Reload after sanitization so grouping uses the updated titles
+    let all_shows: Vec<(i64, i64, String)> =
+        sqlx::query_as("SELECT id, library_id, title FROM tv_shows ORDER BY id ASC")
+            .fetch_all(pool)
+            .await?;
+
+    // --- Phase 2: group and merge ---
     let mut groups: std::collections::HashMap<(i64, String), Vec<(i64, String)>> =
         std::collections::HashMap::new();
 

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use walkdir::WalkDir;
 use crate::errors::Result;
 use sqlx::Row;
-use crate::models::{Library, MediaType, TaskUpdate, MediaStatus, Resolution, CastMember, MediaStream};
+use crate::models::{Library, MediaType, TaskUpdate, MediaStatus, Resolution, CastMember, MediaStream, EpisodeId};
 use crate::db::{Repositories, MovieReader, MovieWriter, TvReader, TvWriter, MediaRepository};
 use crate::task_manager::ProgressSink;
 use crate::{parser, nfo, paths, CoreContext};
@@ -389,6 +389,170 @@ impl DefaultScannerService {
 
         Ok(if is_known { ProcessAction::Updated } else { ProcessAction::Added })
     }
+
+    async fn organise_tv_library(&self, library: &Library, parsed_items: &mut [ParsedFile]) -> Result<()> {
+        let library_root = Path::new(&library.path);
+        
+        // 1. Fetch all episodes for this library from the database to map existing files
+        let db_episodes: Vec<(String, i32, i32, Option<String>, i64, String)> = sqlx::query(
+            r#"
+            SELECT t.title, s.season_number, e.episode_number, e.title, e.id, e.file_path
+            FROM episodes e
+            JOIN seasons s ON e.season_id = s.id
+            JOIN tv_shows t ON s.show_id = t.id
+            WHERE t.library_id = ?
+            "#
+        )
+        .bind(library.id)
+        .fetch_all(&self.repos.pool)
+        .await?
+        .into_iter()
+        .map(|r| (
+            r.get::<String, _>(0),
+            r.get::<i32, _>(1),
+            r.get::<i32, _>(2),
+            r.get::<Option<String>, _>(3),
+            r.get::<i64, _>(4),
+            r.get::<String, _>(5),
+        ))
+        .collect();
+        
+        let db_episodes_map: std::collections::HashMap<String, (String, i32, i32, Option<String>, i64)> = db_episodes
+            .into_iter()
+            .map(|(show_title, season, ep_num, ep_title, ep_id, file_path)| {
+                (file_path, (show_title, season, ep_num, ep_title, ep_id))
+            })
+            .collect();
+
+        // 2. Identify TV episodes from parsed_items and group them by (show_title, season, episode)
+        // We will store indices of parsed_items
+        let mut groups: std::collections::HashMap<(String, i32, i32), Vec<usize>> = std::collections::HashMap::new();
+        
+        for (idx, item) in parsed_items.iter().enumerate() {
+            let relative_path = paths::make_relative(&item.path, library_root).unwrap_or_default();
+            
+            let (show_title, season, episode) = if let Some(db_info) = db_episodes_map.get(&relative_path) {
+                (db_info.0.clone(), db_info.1, db_info.2)
+            } else {
+                let mut show_title = clean_show_title_for_db(&item.parsed.title);
+                if show_title.is_empty() {
+                    show_title = item.parsed.title.clone();
+                }
+                if let Some(ref nfo) = item.metadata.tv_nfo {
+                    if let Some(nfo_title) = nfo.title.first().filter(|t| !t.is_empty()) {
+                        show_title = nfo_title.clone();
+                    }
+                }
+                let season = item.parsed.season.unwrap_or(1);
+                let episode = item.parsed.episode.unwrap_or(1);
+                (show_title, season, episode)
+            };
+            
+            groups.entry((show_title, season, episode)).or_default().push(idx);
+        }
+
+        // 3. Process each group to rename and move the files
+        for ((show_title, season, episode), indices) in groups {
+            let sanitized_show_title = sanitize_name(&show_title);
+            let dest_dir = library_root.join(&sanitized_show_title).join(format!("Season {:02}", season));
+            
+            // Get suffixes for files in this group
+            let group_files: Vec<&ParsedFile> = indices.iter().map(|&idx| &parsed_items[idx]).collect();
+            let suffixes = get_episode_suffixes(&group_files);
+            
+            for (i, &idx) in indices.iter().enumerate() {
+                let item = &parsed_items[idx];
+                let relative_path = paths::make_relative(&item.path, library_root).unwrap_or_default();
+                
+                // Get episode title
+                let ep_title = if let Some(db_info) = db_episodes_map.get(&relative_path) {
+                    db_info.3.clone()
+                } else {
+                    item.metadata.episode.as_ref()
+                        .and_then(|e| e.title.first().cloned())
+                        .or_else(|| extract_episode_title(item.path.file_name().and_then(|s| s.to_str()).unwrap_or("")))
+                };
+                
+                let ext = item.path.extension().and_then(|s| s.to_str()).unwrap_or("mkv");
+                let suffix = &suffixes[i];
+                
+                let new_filename = if let Some(title) = ep_title {
+                    let sanitized_title = sanitize_name(&title);
+                    format!("{} - S{:02}E{:02} - {}{}.{}", sanitized_show_title, season, episode, sanitized_title, suffix, ext)
+                } else {
+                    format!("{} - S{:02}E{:02}{}.{}", sanitized_show_title, season, episode, suffix, ext)
+                };
+                
+                let dest_path = dest_dir.join(&new_filename);
+                
+                // If it is already in the correct place, do nothing
+                if item.path == dest_path {
+                    continue;
+                }
+                
+                // Ensure unique destination path to avoid collisions
+                let unique_dest_path = get_unique_dest_path(&dest_path);
+                
+                // Move files
+                let old_dir = item.path.parent().unwrap().to_path_buf();
+                let old_stem = item.path.file_stem().and_then(|s| s.to_str()).unwrap_or_default().to_string();
+                let new_stem = unique_dest_path.file_stem().and_then(|s| s.to_str()).unwrap_or_default().to_string();
+                
+                tracing::info!("Moving TV episode: {:?} -> {:?}", item.path, unique_dest_path);
+                
+                if let Err(err) = std::fs::create_dir_all(&dest_dir) {
+                    tracing::error!("Failed to create directory {:?}: {}", dest_dir, err);
+                    continue;
+                }
+                
+                if let Err(err) = move_item(&parsed_items[idx].path, &unique_dest_path) {
+                    tracing::error!("Failed to move file {:?}: {}", parsed_items[idx].path, err);
+                    continue;
+                }
+                
+                // Move companion files
+                if let Ok(entries) = std::fs::read_dir(&old_dir) {
+                    for entry in entries.flatten() {
+                        let p = entry.path();
+                        if !p.is_file() || p == unique_dest_path || p == parsed_items[idx].path {
+                            continue;
+                        }
+                        if let Some(file_name) = p.file_name().and_then(|s| s.to_str()) {
+                            if file_name.starts_with(&old_stem) {
+                                let new_name = file_name.replace(&old_stem, &new_stem);
+                                let _ = move_item(&p, &dest_dir.join(new_name));
+                            }
+                        }
+                    }
+                }
+                
+                // Move show level files
+                let new_show_dir = library_root.join(&sanitized_show_title);
+                move_show_level_files(&old_dir, &new_show_dir, season);
+                if let Some(grandparent) = old_dir.parent() {
+                    move_show_level_files(grandparent, &new_show_dir, season);
+                }
+                
+                // Update database record path if it already exists
+                let new_relative_path = paths::make_relative(&unique_dest_path, library_root).unwrap_or_default();
+                if let Some(db_info) = db_episodes_map.get(&relative_path) {
+                    let episode_id = db_info.4;
+                    if let Err(err) = self.repos.tv.update_episode_path(EpisodeId(episode_id), &new_relative_path).await {
+                        tracing::error!("Failed to update database episode path for ID {}: {}", episode_id, err);
+                    }
+                }
+                
+                // Update ParsedFile in memory so scanner uses the new path
+                parsed_items[idx].path = unique_dest_path;
+                parsed_items[idx].is_skipped = false; // Scan to refresh it at the new path
+            }
+        }
+        
+        // 4. Clean up empty parent directories
+        remove_empty_directories(library_root, library_root);
+        
+        Ok(())
+    }
 }
 
 #[async_trait::async_trait]
@@ -505,7 +669,7 @@ impl ScannerService for DefaultScannerService {
         };
 
         let ffprobe_path = self.ctx.config.ffprobe_path.clone();
-        let parsed_items: Vec<ParsedFile> = {
+        let mut parsed_items: Vec<ParsedFile> = {
             use rayon::prelude::*;
             files.par_iter().map(|path| {
                 let filename = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
@@ -542,6 +706,12 @@ impl ScannerService for DefaultScannerService {
                 }
             }).collect()
         };
+
+        if library.media_type == MediaType::Tv {
+            if let Err(e) = self.organise_tv_library(library, &mut parsed_items).await {
+                tracing::error!("Failed to organise TV library: {}", e);
+            }
+        }
 
         let mut progress_count = 0;
         for chunk in parsed_items.chunks(100) {
@@ -694,6 +864,153 @@ fn clean_show_title_for_db(raw: &str) -> String {
         regex::Regex::new(r"\s+").unwrap()
     });
     RE_SPACES.replace_all(&final_title, " ").trim().to_string()
+}
+
+fn sanitize_name(name: &str) -> String {
+    static RE: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| {
+        regex::Regex::new(r#"[\\/*?:"<>|]"#).unwrap()
+    });
+    RE.replace_all(name, "").trim().to_string()
+}
+
+fn extract_episode_title(filename: &str) -> Option<String> {
+    let stem = Path::new(filename).file_stem()?.to_str()?;
+    
+    static RE_SXXEXX: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| {
+        regex::Regex::new(r"(?i)[Ss]\d{2}[Ee]\d{2}").unwrap()
+    });
+    
+    let caps_loc = RE_SXXEXX.find(stem)?;
+    let after_sxxexx = &stem[caps_loc.end()..];
+    
+    static RE_QUALITY: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| {
+        regex::Regex::new(r"(?i)\b(2160p|1080p|720p|480p|576p|x264|x265|h264|h265|10bit|hdtv|web-dl|webdl|bluray|brrip|mkvcap|mkvcage|hevc|psa|eztv|torrenting|yts|rarbg|1337x|tgx)\b.*").unwrap()
+    });
+    
+    let cleaned = RE_QUALITY.replace_all(after_sxxexx, "").to_string();
+    let cleaned = cleaned.replace('.', " ").replace('_', " ");
+    
+    static RE_JUNK: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| {
+        regex::Regex::new(r"[\[\({}\)\]\-\–\—\s]+").unwrap()
+    });
+    
+    let cleaned = RE_JUNK.replace_all(&cleaned, " ").to_string();
+    let final_title = cleaned.trim().to_string();
+    if final_title.is_empty() {
+        None
+    } else {
+        Some(final_title)
+    }
+}
+
+fn get_episode_suffixes(group_files: &[&ParsedFile]) -> Vec<String> {
+    if group_files.len() <= 1 {
+        return vec!["".to_string()];
+    }
+    
+    let mut resolutions = std::collections::HashSet::new();
+    let mut all_res_distinct = true;
+    for f in group_files {
+        let res = f.parsed.resolution.or(f.media_info.as_ref().map(|i| Resolution::from_dimensions(i.width, i.height)));
+        if let Some(r) = res {
+            if !resolutions.insert(r.as_str().to_string()) {
+                all_res_distinct = false;
+            }
+        } else {
+            all_res_distinct = false;
+        }
+    }
+    
+    let mut suffixes = Vec::new();
+    for f in group_files {
+        let res = f.parsed.resolution.or(f.media_info.as_ref().map(|i| Resolution::from_dimensions(i.width, i.height)));
+        let res_str = res.map(|r| r.as_str().to_string()).unwrap_or_else(|| "unknown".to_string());
+        if all_res_distinct {
+            suffixes.push(format!(" [{}]", res_str));
+        } else {
+            let size_mb = f.size / (1024 * 1024);
+            suffixes.push(format!(" [{}-{}MB]", res_str, size_mb));
+        }
+    }
+    suffixes
+}
+
+fn get_unique_dest_path(dest_path: &Path) -> PathBuf {
+    if !dest_path.exists() {
+        return dest_path.to_path_buf();
+    }
+    
+    let parent = dest_path.parent().unwrap();
+    let stem = dest_path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+    let ext = dest_path.extension().and_then(|s| s.to_str()).unwrap_or("");
+    
+    let mut counter = 1;
+    loop {
+        let new_name = if ext.is_empty() {
+            format!("{}_{}", stem, counter)
+        } else {
+            format!("{}_{}.{}", stem, counter, ext)
+        };
+        let new_path = parent.join(new_name);
+        if !new_path.exists() {
+            return new_path;
+        }
+        counter += 1;
+    }
+}
+
+fn move_item(from: &Path, to: &Path) -> std::io::Result<()> {
+    match std::fs::rename(from, to) {
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::Other || e.to_string().contains("cross-device") => {
+            let options = fs_extra::file::CopyOptions::new();
+            fs_extra::file::move_file(from, to, &options)
+                .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, format!("Failed cross-device move: {}", err)))?;
+            Ok(())
+        }
+        Err(e) => Err(e),
+    }
+}
+
+fn move_show_level_files(old_show_dir: &Path, new_show_dir: &Path, season: i32) {
+    if old_show_dir == new_show_dir {
+        return;
+    }
+    let show_assets = ["tvshow.nfo", "poster.jpg", "fanart.jpg", "banner.jpg", "clearlogo.png"];
+    for asset in &show_assets {
+        let src = old_show_dir.join(asset);
+        if src.exists() {
+            let dest = new_show_dir.join(asset);
+            if !dest.exists() {
+                let _ = move_item(&src, &dest);
+            }
+        }
+    }
+    let season_poster = format!("season{:02}-poster.jpg", season);
+    let src = old_show_dir.join(&season_poster);
+    if src.exists() {
+        let dest = new_show_dir.join(&season_poster);
+        if !dest.exists() {
+            let _ = move_item(&src, &dest);
+        }
+    }
+}
+
+fn remove_empty_directories(dir: &Path, library_root: &Path) {
+    if !dir.is_dir() {
+        return;
+    }
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                remove_empty_directories(&path, library_root);
+            }
+        }
+    }
+    if dir != library_root {
+        let _ = std::fs::remove_dir(dir);
+    }
 }
 
 #[cfg(test)]

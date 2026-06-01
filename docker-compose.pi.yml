@@ -32,10 +32,10 @@ services:
           size: 2048M # 2GB for active transcoding sessions
 
       # Media Mappings — Mount your Raspberry Pi storage paths
-      - /mnt/fastmedia/MEDIA/Movies:/media/movies:ro
-      - /mnt/fastmedia/MEDIA/TVShows:/media/tv:ro
+      - /mnt/fastmedia/MEDIA/Movies:/media/movies:rw
+      - /mnt/fastmedia/MEDIA/TVShows:/media/tv:rw
       - /mnt/fastmedia/torrents:/downloads_torrent
-      - /mnt/fastmedia:/data:ro
+      - /mnt/fastmedia:/data:rw
 
     environment:
       - DATABASE_URL=sqlite:/app/data/mediavault.db

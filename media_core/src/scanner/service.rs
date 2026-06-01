@@ -1055,7 +1055,7 @@ fn extract_episode_title(filename: &str) -> Option<String> {
     let cleaned = cleaned.replace('.', " ").replace('_', " ");
     
     static RE_JUNK: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| {
-        regex::Regex::new(r"[\[\({}\)\]\-\–\—\s]+").unwrap()
+        regex::Regex::new(r"[\[\({}\)\]\-–—\s]+").unwrap()
     });
     
     let cleaned = RE_JUNK.replace_all(&cleaned, " ").to_string();
@@ -1222,6 +1222,13 @@ mod tests {
         assert_eq!(clean_show_title_for_db("Friends (1994)"), "Friends (1994)");
         assert_eq!(clean_show_title_for_db("Better.Call.Saul..1080p.BluRay.x265-KONTRAST"), "Better Call Saul");
         assert_eq!(clean_show_title_for_db("www.Torrenting.com - Game of Thrones S08E03 The Long Night"), "Game of Thrones");
+    }
+
+    #[test]
+    fn test_extract_episode_title() {
+        assert_eq!(extract_episode_title("Show.S01E01.Episode.Title.1080p.mkv"), Some("Episode Title".to_string()));
+        assert_eq!(extract_episode_title("Show S01E01 Episode - Title [1080p].mkv"), Some("Episode Title".to_string()));
+        assert_eq!(extract_episode_title("Show S01E01.mkv"), None);
     }
 }
 

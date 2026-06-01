@@ -48,6 +48,7 @@ async fn test_fast_skip_logic() -> anyhow::Result<()> {
     
     assert!(movie_file.mtime.is_some());
     assert!(movie_file.mtime.unwrap() > 0);
+    println!("MOVED MOVIE PATH: {}", movie_file.file_path);
     let original_mtime = movie_file.mtime.unwrap();
 
     // 5. MANUALLY sabotage the DB to prove skip
@@ -70,12 +71,13 @@ async fn test_fast_skip_logic() -> anyhow::Result<()> {
     // 7. Touch the file (Change mtime)
     // Small delay to ensure mtime definitely changes if the filesystem has low resolution
     tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    let moved_file_path = test_dir.join("test movie").join("test movie.mp4");
     {
-        let mut f = File::options().append(true).open(&file_path)?;
+        let mut f = File::options().append(true).open(&moved_file_path)?;
         f.write_all(&[2u8])?; // Append one byte to change size and mtime
     }
     
-    let new_mtime = file_path.metadata()?.modified()?
+    let new_mtime = moved_file_path.metadata()?.modified()?
         .duration_since(std::time::UNIX_EPOCH)?.as_secs() as i64;
     assert_ne!(new_mtime, original_mtime);
 

@@ -16,6 +16,59 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
   appSettings, setAppSettings, libraries, selectedLibrary, setSelectedLibrary, loadData 
 }) => {
   const [isAdding, setIsAdding] = React.useState(false);
+  const [diskSpace, setDiskSpace] = React.useState<any>(null);
+  const [isLoadingSpace, setIsLoadingSpace] = React.useState(false);
+
+  const fetchDiskSpace = React.useCallback(async () => {
+    setIsLoadingSpace(true);
+    try {
+      const data = await api.getDiskSpace();
+      setDiskSpace(data);
+    } catch (err: any) {
+      console.error('Failed to load disk space statistics:', err);
+    } finally {
+      setIsLoadingSpace(false);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    fetchDiskSpace();
+  }, [fetchDiskSpace]);
+
+  const handleDeleteMovie = async (id: number, title: string) => {
+    if (window.confirm(`Are you sure you want to delete the movie "${title}" and ALL of its files from disk? This action cannot be undone.`)) {
+      try {
+        await api.deleteMovie(id);
+        toast.success(`Movie "${title}" deleted successfully.`);
+        fetchDiskSpace();
+        loadData();
+      } catch (err: any) {
+        toast.error('Failed to delete movie: ' + err.message);
+      }
+    }
+  };
+
+  const handleDeleteTvShow = async (id: number, title: string) => {
+    if (window.confirm(`Are you sure you want to delete the TV show "${title}" and ALL of its episodes/seasons/files from disk? This action cannot be undone.`)) {
+      try {
+        await api.deleteTvShow(id);
+        toast.success(`TV Show "${title}" deleted successfully.`);
+        fetchDiskSpace();
+        loadData();
+      } catch (err: any) {
+        toast.error('Failed to delete TV show: ' + err.message);
+      }
+    }
+  };
+
+  const formatSize = (bytes: number) => {
+    if (!bytes) return '0 Bytes';
+    const k = 1024;
+    const dm = 2;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+  };
 
   return (
     <div className="px-4 md:px-12 py-24 min-h-screen">
@@ -205,6 +258,80 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
             >
               Export to JSON
             </button>
+          </div>
+        </div>
+
+        <div className="bg-[#181818] p-8 md:p-10 rounded-2xl border border-zinc-800 shadow-2xl space-y-8">
+          <div className="flex justify-between items-center">
+            <div className="space-y-2">
+              <h4 className="text-xl font-black text-white uppercase italic">Disk Space Explorer</h4>
+              <p className="text-zinc-500 text-sm">Analyze which movies and TV shows are consuming the most space on your disk.</p>
+            </div>
+            <button 
+              onClick={fetchDiskSpace} 
+              disabled={isLoadingSpace}
+              className="bg-[#242424] hover:bg-[#2a2a2a] px-5 py-2.5 rounded-xl text-xs font-black uppercase tracking-wider text-white border border-zinc-800 transition active:scale-95 disabled:opacity-50"
+            >
+              {isLoadingSpace ? 'Refreshing...' : 'Refresh'}
+            </button>
+          </div>
+
+          <div className="grid md:grid-cols-2 gap-8">
+            {/* Movies List */}
+            <div className="space-y-4">
+              <h5 className="text-sm font-black text-zinc-400 uppercase tracking-widest flex items-center gap-2 border-b border-zinc-800 pb-2">
+                <Film className="w-4 h-4 text-red-600" /> Top Movies By Size
+              </h5>
+              <div className="max-h-72 overflow-y-auto space-y-2 pr-2 custom-scrollbar">
+                {diskSpace?.movies && diskSpace.movies.length > 0 ? (
+                  diskSpace.movies.map((m: any) => (
+                    <div key={m.id} className="flex justify-between items-center bg-black/40 p-3 rounded-xl border border-zinc-900 hover:border-zinc-800 transition">
+                      <div className="min-w-0 flex-1 mr-4">
+                        <div className="text-sm font-black text-white truncate uppercase italic">{m.title} {m.year ? `(${m.year})` : ''}</div>
+                        <div className="text-xs text-zinc-500 mt-0.5">{formatSize(m.size_bytes)}</div>
+                      </div>
+                      <button 
+                        onClick={() => handleDeleteMovie(m.id, m.title)}
+                        className="p-2 hover:bg-red-950/40 text-zinc-500 hover:text-red-500 rounded-lg transition"
+                        title="Delete Movie"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  ))
+                ) : (
+                  <div className="text-zinc-600 text-xs py-4 text-center font-medium">No movie files indexed.</div>
+                )}
+              </div>
+            </div>
+
+            {/* TV Shows List */}
+            <div className="space-y-4">
+              <h5 className="text-sm font-black text-zinc-400 uppercase tracking-widest flex items-center gap-2 border-b border-zinc-800 pb-2">
+                <Tv className="w-4 h-4 text-red-600" /> Top TV Shows By Size
+              </h5>
+              <div className="max-h-72 overflow-y-auto space-y-2 pr-2 custom-scrollbar">
+                {diskSpace?.tv_shows && diskSpace.tv_shows.length > 0 ? (
+                  diskSpace.tv_shows.map((show: any) => (
+                    <div key={show.id} className="flex justify-between items-center bg-black/40 p-3 rounded-xl border border-zinc-900 hover:border-zinc-800 transition">
+                      <div className="min-w-0 flex-1 mr-4">
+                        <div className="text-sm font-black text-white truncate uppercase italic">{show.title}</div>
+                        <div className="text-xs text-zinc-500 mt-0.5">{formatSize(show.size_bytes)}</div>
+                      </div>
+                      <button 
+                        onClick={() => handleDeleteTvShow(show.id, show.title)}
+                        className="p-2 hover:bg-red-950/40 text-zinc-500 hover:text-red-500 rounded-lg transition"
+                        title="Delete TV Show"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  ))
+                ) : (
+                  <div className="text-zinc-600 text-xs py-4 text-center font-medium">No TV show episodes indexed.</div>
+                )}
+              </div>
+            </div>
           </div>
         </div>
 

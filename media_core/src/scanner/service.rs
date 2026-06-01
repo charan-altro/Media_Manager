@@ -553,6 +553,166 @@ impl DefaultScannerService {
         
         Ok(())
     }
+
+    async fn organise_movie_library(&self, library: &Library, parsed_items: &mut [ParsedFile]) -> Result<()> {
+        let library_root = Path::new(&library.path);
+        
+        // 1. Fetch all movies for this library from the database to map existing files
+        let db_movies: Vec<(String, Option<i32>, i64, String)> = sqlx::query(
+            r#"
+            SELECT m.title, m.year, mf.id, mf.file_path
+            FROM movie_files mf
+            JOIN movies m ON mf.movie_id = m.id
+            WHERE m.library_id = ?
+            "#
+        )
+        .bind(library.id)
+        .fetch_all(&self.repos.pool)
+        .await?
+        .into_iter()
+        .map(|r| (
+            r.get::<String, _>(0),
+            r.get::<Option<i32>, _>(1),
+            r.get::<i64, _>(2),
+            r.get::<String, _>(3),
+        ))
+        .collect();
+        
+        let db_movies_map: std::collections::HashMap<String, (String, Option<i32>, i64)> = db_movies
+            .into_iter()
+            .map(|(title, year, file_id, file_path)| {
+                (file_path, (title, year, file_id))
+            })
+            .collect();
+
+        // 2. Identify movies from parsed_items and group them by (title, year)
+        let mut groups: std::collections::HashMap<(String, Option<i32>), Vec<usize>> = std::collections::HashMap::new();
+        
+        for (idx, item) in parsed_items.iter().enumerate() {
+            let relative_path = paths::make_relative(&item.path, library_root).unwrap_or_default();
+            
+            let (title, year) = if let Some(db_info) = db_movies_map.get(&relative_path) {
+                (db_info.0.clone(), db_info.1)
+            } else {
+                let mut title = item.parsed.title.clone();
+                let mut year = item.parsed.year;
+                if let Some(ref nfo) = item.metadata.nfo {
+                    if let Some(nfo_title) = nfo.title.first().filter(|t| !t.is_empty()) {
+                        title = nfo_title.clone();
+                    }
+                    if let Some(nfo_year) = nfo.year.first().and_then(|y| y.trim().parse::<i32>().ok()) {
+                        year = Some(nfo_year);
+                    }
+                }
+                (title, year)
+            };
+            
+            groups.entry((title, year)).or_default().push(idx);
+        }
+
+        // 3. Process each group to rename and move the files
+        for ((title, year), indices) in groups {
+            let sanitized_title = sanitize_name(&title);
+            let folder_name = if let Some(y) = year {
+                format!("{} ({})", sanitized_title, y)
+            } else {
+                sanitized_title.clone()
+            };
+            let dest_dir = library_root.join(&folder_name);
+            
+            // Get suffixes for files in this group
+            let group_files: Vec<&ParsedFile> = indices.iter().map(|&idx| &parsed_items[idx]).collect();
+            let suffixes = get_movie_suffixes(&group_files);
+            
+            for (i, &idx) in indices.iter().enumerate() {
+                let item = &parsed_items[idx];
+                let relative_path = paths::make_relative(&item.path, library_root).unwrap_or_default();
+                
+                let ext = item.path.extension().and_then(|s| s.to_str()).unwrap_or("mkv");
+                let suffix = &suffixes[i];
+                
+                let new_filename = if let Some(y) = year {
+                    format!("{} ({}){}.{}", sanitized_title, y, suffix, ext)
+                } else {
+                    format!("{}{}.{}", sanitized_title, suffix, ext)
+                };
+                
+                let dest_path = dest_dir.join(&new_filename);
+                
+                // If it is already in the correct place, do nothing
+                if item.path == dest_path {
+                    continue;
+                }
+                
+                // Ensure unique destination path to avoid collisions
+                let unique_dest_path = get_unique_dest_path(&dest_path);
+                
+                // Move files
+                let old_dir = item.path.parent().unwrap().to_path_buf();
+                let old_stem = item.path.file_stem().and_then(|s| s.to_str()).unwrap_or_default().to_string();
+                let new_stem = unique_dest_path.file_stem().and_then(|s| s.to_str()).unwrap_or_default().to_string();
+                
+                tracing::info!("Moving movie: {:?} -> {:?}", item.path, unique_dest_path);
+                
+                if let Err(err) = std::fs::create_dir_all(&dest_dir) {
+                    tracing::error!("Failed to create directory {:?}: {}", dest_dir, err);
+                    continue;
+                }
+                
+                if let Err(err) = move_item(&parsed_items[idx].path, &unique_dest_path) {
+                    tracing::error!("Failed to move file {:?}: {}", parsed_items[idx].path, err);
+                    continue;
+                }
+                
+                // Move companion files
+                if let Ok(entries) = std::fs::read_dir(&old_dir) {
+                    for entry in entries.flatten() {
+                        let p = entry.path();
+                        if !p.is_file() || p == unique_dest_path || p == parsed_items[idx].path {
+                            continue;
+                        }
+                        if let Some(file_name) = p.file_name().and_then(|s| s.to_str()) {
+                            if file_name.starts_with(&old_stem) {
+                                let new_name = file_name.replace(&old_stem, &new_stem);
+                                let _ = move_item(&p, &dest_dir.join(new_name));
+                            }
+                        }
+                    }
+                }
+                
+                // Move movie level files
+                let movie_assets = ["poster.jpg", "fanart.jpg", "banner.jpg", "clearlogo.png", "movie.nfo"];
+                for asset in &movie_assets {
+                    let src = old_dir.join(asset);
+                    if src.exists() {
+                        let dest = dest_dir.join(asset);
+                        if !dest.exists() {
+                            let _ = move_item(&src, &dest);
+                        }
+                    }
+                }
+                
+                // Update database record path if it already exists
+                let new_relative_path = paths::make_relative(&unique_dest_path, library_root).unwrap_or_default();
+                if let Some(db_info) = db_movies_map.get(&relative_path) {
+                    let file_id = db_info.2;
+                    use crate::models::MovieFileId;
+                    if let Err(err) = self.repos.movie.update_file_path(MovieFileId(file_id), &new_relative_path).await {
+                        tracing::error!("Failed to update database movie path for ID {}: {}", file_id, err);
+                    }
+                }
+                
+                // Update ParsedFile in memory so scanner uses the new path
+                parsed_items[idx].path = unique_dest_path;
+                parsed_items[idx].is_skipped = false; // Scan to refresh it at the new path
+            }
+        }
+        
+        // 4. Clean up empty parent directories
+        remove_empty_directories(library_root, library_root);
+        
+        Ok(())
+    }
 }
 
 #[async_trait::async_trait]
@@ -710,6 +870,10 @@ impl ScannerService for DefaultScannerService {
         if library.media_type == MediaType::Tv {
             if let Err(e) = self.organise_tv_library(library, &mut parsed_items).await {
                 tracing::error!("Failed to organise TV library: {}", e);
+            }
+        } else if library.media_type == MediaType::Movie {
+            if let Err(e) = self.organise_movie_library(library, &mut parsed_items).await {
+                tracing::error!("Failed to organise movie library: {}", e);
             }
         }
 
@@ -904,6 +1068,38 @@ fn extract_episode_title(filename: &str) -> Option<String> {
 }
 
 fn get_episode_suffixes(group_files: &[&ParsedFile]) -> Vec<String> {
+    if group_files.len() <= 1 {
+        return vec!["".to_string()];
+    }
+    
+    let mut resolutions = std::collections::HashSet::new();
+    let mut all_res_distinct = true;
+    for f in group_files {
+        let res = f.parsed.resolution.or(f.media_info.as_ref().map(|i| Resolution::from_dimensions(i.width, i.height)));
+        if let Some(r) = res {
+            if !resolutions.insert(r.as_str().to_string()) {
+                all_res_distinct = false;
+            }
+        } else {
+            all_res_distinct = false;
+        }
+    }
+    
+    let mut suffixes = Vec::new();
+    for f in group_files {
+        let res = f.parsed.resolution.or(f.media_info.as_ref().map(|i| Resolution::from_dimensions(i.width, i.height)));
+        let res_str = res.map(|r| r.as_str().to_string()).unwrap_or_else(|| "unknown".to_string());
+        if all_res_distinct {
+            suffixes.push(format!(" [{}]", res_str));
+        } else {
+            let size_mb = f.size / (1024 * 1024);
+            suffixes.push(format!(" [{}-{}MB]", res_str, size_mb));
+        }
+    }
+    suffixes
+}
+
+fn get_movie_suffixes(group_files: &[&ParsedFile]) -> Vec<String> {
     if group_files.len() <= 1 {
         return vec!["".to_string()];
     }

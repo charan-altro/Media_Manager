@@ -13,6 +13,7 @@ use std::convert::Infallible;
 use media_core::exporter::Exporter;
 use crate::state::AppState;
 use media_core::db::{MovieReader, TvReader, SettingsRepository};
+use sqlx::Row;
 
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
@@ -24,6 +25,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/export/json", get(export_json))
         .route("/maintenance/backup", post(create_backup))
         .route("/system/update-check", get(check_updates))
+        .route("/system/disk-space", get(get_disk_space))
         .route("/sync/trakt", post(sync_trakt))
         .route("/settings", get(get_settings).post(set_settings))
 }
@@ -175,4 +177,62 @@ async fn check_updates() -> impl IntoResponse {
         Ok(version) => Json(serde_json::json!({ "latest_version": version, "current_version": "0.1.0" })).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
+}
+
+async fn get_disk_space(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let movies_res = sqlx::query(
+        r#"
+        SELECT m.id, m.title, m.year, SUM(mf.size_bytes) as total_size
+        FROM movies m
+        JOIN movie_files mf ON m.id = mf.movie_id
+        GROUP BY m.id
+        ORDER BY total_size DESC
+        "#
+    )
+    .fetch_all(&state.pool)
+    .await;
+
+    let tv_shows_res = sqlx::query(
+        r#"
+        SELECT t.id, t.title, SUM(e.size_bytes) as total_size
+        FROM tv_shows t
+        JOIN seasons s ON t.id = s.show_id
+        JOIN episodes e ON s.id = e.season_id
+        GROUP BY t.id
+        ORDER BY total_size DESC
+        "#
+    )
+    .fetch_all(&state.pool)
+    .await;
+
+    let movies = match movies_res {
+        Ok(rows) => rows.into_iter().map(|row| {
+            serde_json::json!({
+                "id": row.get::<i64, _>("id"),
+                "title": row.get::<String, _>("title"),
+                "year": row.get::<Option<i32>, _>("year"),
+                "size_bytes": row.get::<i64, _>("total_size"),
+            })
+        }).collect::<Vec<_>>(),
+        Err(_) => vec![],
+    };
+
+    let tv_shows = match tv_shows_res {
+        Ok(rows) => rows.into_iter().map(|row| {
+            serde_json::json!({
+                "id": row.get::<i64, _>("id"),
+                "title": row.get::<String, _>("title"),
+                "size_bytes": row.get::<i64, _>("total_size"),
+            })
+        }).collect::<Vec<_>>(),
+        Err(_) => vec![],
+    };
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "movies": movies,
+            "tv_shows": tv_shows,
+        }))
+    )
 }

@@ -120,6 +120,20 @@ export interface UpdateCheckResult {
   current_version: string;
 }
 
+export interface DiskSpaceInfo {
+  movies: {
+    id: number;
+    title: string;
+    year: number | null;
+    size_bytes: number;
+  }[];
+  tv_shows: {
+    id: number;
+    title: string;
+    size_bytes: number;
+  }[];
+}
+
 export interface PlaybackStatus {
   position_ms: number;
   duration_ms: number;
@@ -324,6 +338,9 @@ export const api = {
 
   checkUpdates: () =>
     request<UpdateCheckResult>('check_updates', '/system/update-check', { method: 'GET' }),
+
+  getDiskSpace: () =>
+    request<DiskSpaceInfo>('get_disk_space', '/system/disk-space', { method: 'GET' }),
 
   startStreaming: async (id: number, type: 'movie' | 'episode' | 'movie_file' = 'movie', protocol?: 'hls' | 'dash' | 'direct') => {
     const path = type === 'movie' 

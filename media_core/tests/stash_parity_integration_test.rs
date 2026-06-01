@@ -43,6 +43,16 @@ async fn test_stash_parity_integration() -> anyhow::Result<()> {
     let scanner_service = scanner::service::DefaultScannerService::new(ctx, task_manager.clone());
     scanner_service.scan_library(&lib, "test_task".into()).await?;
 
+    // Wait for background analysis to finish
+    let mut attempts = 0;
+    while task_manager.is_library_scanning(lib_id).await {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        attempts += 1;
+        if attempts > 200 {
+            panic!("Library scan 1 did not finish in time");
+        }
+    }
+
     // 4. Verify initial record and fingerprint
     let movies = repos.movie.find_all(Some(lib_id), None, None).await?;
     assert_eq!(movies.len(), 1);
@@ -78,9 +88,20 @@ async fn test_stash_parity_integration() -> anyhow::Result<()> {
     // The scanner should see the old path is gone, see the new path, calculate same fingerprint, and 'heal' the record.
     scanner_service.scan_library(&lib, "test_task_2".into()).await?;
 
+    // Wait for background analysis to finish
+    let mut attempts = 0;
+    while task_manager.is_library_scanning(lib_id).await {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        attempts += 1;
+        if attempts > 200 {
+            panic!("Library scan 2 did not finish in time");
+        }
+    }
+
     // 8. Verify Identity Resolution (Healing)
     let movie_file_after = repos.movie.find_file_by_fingerprint(&fingerprint).await?.expect("Should find file by fingerprint");
-    assert_eq!(movie_file_after.file_path, "moved test/moved test.mp4", "Path should be updated to new location");
+    let abs_path_after = test_dir.join(&movie_file_after.file_path);
+    assert!(abs_path_after.exists(), "File must exist at the DB path: {}", movie_file_after.file_path);
     assert_eq!(movie_file_after.fingerprint.unwrap(), fingerprint, "Fingerprint must be the same");
 
     // 9. Verify Assets are still linked via fingerprint

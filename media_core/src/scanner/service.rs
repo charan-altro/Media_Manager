@@ -36,6 +36,21 @@ enum ProcessAction {
     Skipped,
 }
 
+pub struct ScanGuard {
+    task_manager: Arc<crate::task_manager::TaskManager>,
+    library_id: crate::models::LibraryId,
+}
+
+impl Drop for ScanGuard {
+    fn drop(&mut self) {
+        let task_manager = self.task_manager.clone();
+        let library_id = self.library_id;
+        tokio::spawn(async move {
+            task_manager.unlock_library_scan(library_id).await;
+        });
+    }
+}
+
 #[cfg_attr(test, mockall::automock)]
 #[async_trait::async_trait]
 pub trait ScannerService: Send + Sync {
@@ -53,6 +68,7 @@ pub trait ScannerService: Send + Sync {
     ) -> Result<()>;
 }
 
+#[derive(Clone)]
 pub struct DefaultScannerService {
     pub ctx: CoreContext,
     pub repos: Arc<Repositories>,
@@ -66,6 +82,12 @@ impl DefaultScannerService {
     }
 
     fn is_video_file(&self, path: &Path) -> bool {
+        if let Some(filename) = path.file_name().and_then(|s| s.to_str()) {
+            let filename_lower = filename.to_lowercase();
+            if filename_lower.contains("preview") || filename_lower.contains("sample") {
+                return false;
+            }
+        }
         path.extension()
             .and_then(|ext| ext.to_str())
             .map(|ext| VIDEO_EXTENSIONS.iter().any(|&v| v.eq_ignore_ascii_case(ext)))
@@ -491,7 +513,7 @@ fn pick_canonical_title(a: &str, b: &str) -> String {
             } else {
                 // Use directory-aware parsing for grouping so release-folder files are bucketed
                 // under the correct canonical show title.
-                let dir_parsed = parser::parse_file_path(&item.path, library_root);
+                let dir_parsed = parser::parse_file_path(&item.path, library_root, true);
                 let mut show_title = clean_show_title_for_db(&dir_parsed.title);
                 if show_title.is_empty() {
                     show_title = dir_parsed.title.clone();
@@ -799,6 +821,336 @@ fn pick_canonical_title(a: &str, b: &str) -> String {
         
         Ok(())
     }
+
+    async fn run_background_analysis_and_organization(&self, library: Library) -> Result<()> {
+        let library_root = Path::new(&library.path);
+        let ffprobe_path = self.ctx.config.ffprobe_path.clone();
+
+        tracing::info!("Starting background analysis & organization for library '{}'", library.name);
+
+        if library.media_type == MediaType::Movie {
+            let db_files = sqlx::query(
+                r#"
+                SELECT mf.id, mf.file_path, mf.size_bytes
+                FROM movie_files mf
+                JOIN movies m ON mf.movie_id = m.id
+                WHERE m.library_id = ?
+                "#
+            )
+            .bind(library.id)
+            .fetch_all(&self.repos.pool)
+            .await?;
+
+            for row in &db_files {
+                let file_id: i64 = row.get(0);
+                let rel_path: String = row.get(1);
+                let _size: i64 = row.get(2);
+                let abs_path = library_root.join(&rel_path);
+
+                if abs_path.exists() {
+                    let file_record = self.repos.movie.find_file_by_id(crate::models::MovieFileId(file_id)).await?;
+                    if let Some(fr) = file_record {
+                        if fr.fingerprint.is_none() || fr.resolution.is_none() {
+                            tracing::info!("Analyzing movie file in background: {:?}", abs_path);
+                            let fingerprint = hash::calculate_oshash(&abs_path).ok();
+                            let media_info = mediainfo::get_media_info_with_path(&abs_path, &ffprobe_path).ok();
+
+                            if let Some(ref fp) = fingerprint {
+                                // Smart tracking in background:
+                                // Check if this fingerprint already exists in the database.
+                                if let Ok(Some(existing_file)) = self.repos.movie.find_file_by_fingerprint(fp).await {
+                                    if existing_file.id != crate::models::MovieFileId(file_id) {
+                                        let old_path = library_root.join(&existing_file.file_path);
+                                        if !old_path.exists() {
+                                            tracing::info!("File moved detected in background (healing): {} -> {}", existing_file.file_path, rel_path);
+                                            // IMPORTANT: Delete the temp record FIRST (to free up the path for UNIQUE constraint),
+                                            // then update the old record's path to point to the new location.
+                                            //
+                                            // Step 1: Check if temp movie needs deletion BEFORE we delete the file
+                                            let temp_movie_id = fr.movie_id;
+                                            // Step 2: Delete the temp file record (frees the path constraint)
+                                            self.repos.movie.delete_file(crate::models::MovieFileId(file_id)).await?;
+                                            // Step 3: Now update the original record's path safely
+                                            self.repos.movie.update_file_path(existing_file.id, &rel_path).await?;
+                                            // Step 4: Delete the temp movie if it has no remaining files
+                                            let other_files: i64 = sqlx::query_as::<_, (i64,)>("SELECT COUNT(*) FROM movie_files WHERE movie_id = ?")
+                                                .bind(temp_movie_id)
+                                                .fetch_one(&self.repos.pool)
+                                                .await
+                                                .map(|row| row.0)
+                                                .unwrap_or(0);
+                                            if other_files == 0 {
+                                                self.repos.movie.delete(temp_movie_id).await?;
+                                            }
+                                            // Since we healed, continue to next file.
+                                            continue;
+                                        }
+                                    }
+                                }
+
+                                let _ = self.repos.movie.update_file_fingerprint(crate::models::MovieFileId(file_id), fp).await;
+                            }
+
+                            if let Some(ref info) = media_info {
+                                let res = Resolution::from_dimensions(info.width, info.height);
+                                let _ = self.repos.movie.update_file_metadata(crate::models::MovieFileId(file_id), info.duration_secs, info.width, info.height).await;
+                                let _ = self.repos.movie.update_file_resolution(crate::models::MovieFileId(file_id), res).await;
+
+                                if let Some(ref fp) = fingerprint {
+                                    for stream in &info.streams {
+                                        let media_stream = MediaStream {
+                                            id: 0,
+                                            file_hash: fp.clone(),
+                                            stream_index: stream.index,
+                                            stream_type: stream.stream_type.clone(),
+                                            codec: Some(stream.codec.clone()),
+                                            language: stream.language.clone(),
+                                            title: stream.title.clone(),
+                                            channels: stream.channels,
+                                            is_default: false,
+                                        };
+                                        let _ = self.repos.media.upsert_stream(&media_stream).await;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            let db_movies = sqlx::query(
+                r#"
+                SELECT m.title, m.year, mf.id, mf.file_path, mf.size_bytes, mf.mtime, mf.resolution, mf.fingerprint, mf.duration_secs
+                FROM movie_files mf
+                JOIN movies m ON mf.movie_id = m.id
+                WHERE m.library_id = ?
+                "#
+            )
+            .bind(library.id)
+            .fetch_all(&self.repos.pool)
+            .await?;
+
+            let mut parsed_items = Vec::new();
+            for r in db_movies {
+                let _m_title: String = r.get(0);
+                let _m_year: Option<i32> = r.get(1);
+                let _mf_id: i64 = r.get(2);
+                let file_path_str: String = r.get(3);
+                let size_bytes: i64 = r.get(4);
+                let mtime: i64 = r.get(5);
+                let resolution_str: Option<String> = r.get(6);
+                let fingerprint: Option<String> = r.get(7);
+                let duration_secs: Option<i32> = r.get(8);
+
+                let parsed_res = resolution_str.and_then(|s| s.parse::<Resolution>().ok());
+                let parsed = parser::parse_file_path(Path::new(&file_path_str), library_root, false);
+
+                let media_info = duration_secs.map(|d| {
+                    let width = match parsed_res {
+                        Some(Resolution::R2160p) => 3840,
+                        Some(Resolution::R1080p) => 1920,
+                        Some(Resolution::R720p) => 1280,
+                        _ => 720,
+                    };
+                    mediainfo::MediaDetails {
+                        width,
+                        height: 720,
+                        duration_secs: d,
+                        video_codec: String::new(),
+                        audio_codec: String::new(),
+                        rotation: 0,
+                        streams: Vec::new(),
+                        ..Default::default()
+                    }
+                });
+
+                parsed_items.push(ParsedFile {
+                    path: library_root.join(file_path_str),
+                    parsed,
+                    size: size_bytes,
+                    mtime,
+                    is_skipped: false,
+                    metadata: nfo::reader::NfoMetadata::default(),
+                    fingerprint,
+                    media_info,
+                });
+            }
+
+            self.organise_movie_library(&library, &mut parsed_items).await?;
+
+        } else {
+            let db_episodes = sqlx::query(
+                r#"
+                SELECT e.id, e.file_path, e.size_bytes
+                FROM episodes e
+                JOIN seasons s ON e.season_id = s.id
+                JOIN tv_shows t ON s.show_id = t.id
+                WHERE t.library_id = ?
+                "#
+            )
+            .bind(library.id)
+            .fetch_all(&self.repos.pool)
+            .await?;
+
+            for row in db_episodes {
+                let episode_id: i64 = row.get(0);
+                let rel_path: String = row.get(1);
+                let _size: i64 = row.get(2);
+                let abs_path = library_root.join(&rel_path);
+
+                if abs_path.exists() {
+                    let ep_record = self.repos.tv.find_episode_by_id(crate::models::EpisodeId(episode_id)).await?;
+                    if let Some(er) = ep_record {
+                        if er.fingerprint.is_none() || er.resolution.is_none() {
+                            tracing::info!("Analyzing TV episode in background: {:?}", abs_path);
+                            let fingerprint = hash::calculate_oshash(&abs_path).ok();
+                            let media_info = mediainfo::get_media_info_with_path(&abs_path, &ffprobe_path).ok();
+
+                            if let Some(ref fp) = fingerprint {
+                                // Smart tracking in background:
+                                // Check if this fingerprint already exists in the database.
+                                if let Ok(Some(existing_ep)) = self.repos.tv.find_episode_by_fingerprint(fp).await {
+                                    if existing_ep.id != crate::models::EpisodeId(episode_id) {
+                                        let old_path = library_root.join(&existing_ep.file_path);
+                                        if !old_path.exists() {
+                                            tracing::info!("TV episode moved detected in background (healing): {} -> {}", existing_ep.file_path, rel_path);
+                                            // IMPORTANT: Delete the temp episode FIRST to free the path for the UNIQUE constraint.
+                                            // Step 1: Save season_id before deleting the temp episode
+                                            let season_id = er.season_id;
+                                            // Step 2: Delete the temporary episode record (frees the path constraint)
+                                            self.repos.tv.delete_episode(crate::models::EpisodeId(episode_id)).await?;
+                                            // Step 3: Now update the original record's path safely
+                                            self.repos.tv.update_episode_path(existing_ep.id, &rel_path).await?;
+                                            // Step 4: Find if the season / show associated with episode_id needs to be deleted.
+                                            let other_eps: i64 = sqlx::query_as::<_, (i64,)>("SELECT COUNT(*) FROM episodes WHERE season_id = ?")
+                                                .bind(season_id)
+                                                .fetch_one(&self.repos.pool)
+                                                .await
+                                                .map(|row| row.0)
+                                                .unwrap_or(0);
+                                            if other_eps == 0 {
+                                                // Fetch show_id before deleting season
+                                                let show_id_val: Option<(i64,)> = sqlx::query_as("SELECT show_id FROM seasons WHERE id = ?")
+                                                    .bind(season_id)
+                                                    .fetch_optional(&self.repos.pool)
+                                                    .await
+                                                    .unwrap_or(None);
+                                                // Delete empty season
+                                                let _ = sqlx::query("DELETE FROM seasons WHERE id = ?").bind(season_id).execute(&self.repos.pool).await;
+                                                
+                                                if let Some(sid) = show_id_val.map(|row| row.0) {
+                                                    let other_seasons: i64 = sqlx::query_as::<_, (i64,)>("SELECT COUNT(*) FROM seasons WHERE show_id = ?")
+                                                        .bind(sid)
+                                                        .fetch_one(&self.repos.pool)
+                                                        .await
+                                                        .map(|row| row.0)
+                                                        .unwrap_or(0);
+                                                    if other_seasons == 0 {
+                                                        let _ = self.repos.tv.delete_show(crate::models::TvShowId(sid)).await;
+                                                    }
+                                                }
+                                            }
+                                            // Since we healed, we should continue to next file.
+                                            continue;
+                                        }
+                                    }
+                                }
+
+                                let _ = self.repos.tv.update_episode_fingerprint(crate::models::EpisodeId(episode_id), fp).await;
+                            }
+
+                            if let Some(ref info) = media_info {
+                                let _ = self.repos.tv.update_episode_metadata(crate::models::EpisodeId(episode_id), info.duration_secs, info.width, info.height).await;
+
+                                if let Some(ref fp) = fingerprint {
+                                    for stream in &info.streams {
+                                        let media_stream = MediaStream {
+                                            id: 0,
+                                            file_hash: fp.clone(),
+                                            stream_index: stream.index,
+                                            stream_type: stream.stream_type.clone(),
+                                            codec: Some(stream.codec.clone()),
+                                            language: stream.language.clone(),
+                                            title: stream.title.clone(),
+                                            channels: stream.channels,
+                                            is_default: false,
+                                        };
+                                        let _ = self.repos.media.upsert_stream(&media_stream).await;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            let db_eps = sqlx::query(
+                r#"
+                SELECT t.title, s.season_number, e.episode_number, e.title, e.id, e.file_path, e.size_bytes, e.mtime, e.resolution, e.fingerprint, e.duration_secs
+                FROM episodes e
+                JOIN seasons s ON e.season_id = s.id
+                JOIN tv_shows t ON s.show_id = t.id
+                WHERE t.library_id = ?
+                "#
+            )
+            .bind(library.id)
+            .fetch_all(&self.repos.pool)
+            .await?;
+
+            let mut parsed_items = Vec::new();
+            for r in db_eps {
+                let _show_title: String = r.get(0);
+                let _season_num: i32 = r.get(1);
+                let _ep_num: i32 = r.get(2);
+                let _ep_title: Option<String> = r.get(3);
+                let _ep_id: i64 = r.get(4);
+                let file_path_str: String = r.get(5);
+                let size_bytes: i64 = r.get(6);
+                let mtime: i64 = r.get(7);
+                let resolution_str: Option<String> = r.get(8);
+                let fingerprint: Option<String> = r.get(9);
+                let duration_secs: Option<i32> = r.get(10);
+
+                let parsed_res = resolution_str.and_then(|s| s.parse::<Resolution>().ok());
+                let parsed = parser::parse_file_path(Path::new(&file_path_str), library_root, true);
+
+                let media_info = duration_secs.map(|d| {
+                    let width = match parsed_res {
+                        Some(Resolution::R2160p) => 3840,
+                        Some(Resolution::R1080p) => 1920,
+                        Some(Resolution::R720p) => 1280,
+                        _ => 720,
+                    };
+                    mediainfo::MediaDetails {
+                        width,
+                        height: 720,
+                        duration_secs: d,
+                        video_codec: String::new(),
+                        audio_codec: String::new(),
+                        rotation: 0,
+                        streams: Vec::new(),
+                        ..Default::default()
+                    }
+                });
+
+                parsed_items.push(ParsedFile {
+                    path: library_root.join(file_path_str),
+                    parsed,
+                    size: size_bytes,
+                    mtime,
+                    is_skipped: false,
+                    metadata: nfo::reader::NfoMetadata::default(),
+                    fingerprint,
+                    media_info,
+                });
+            }
+
+            self.organise_tv_library(&library, &mut parsed_items).await?;
+        }
+
+        tracing::info!("Background analysis & organization complete for library '{}'", library.name);
+        Ok(())
+    }
 }
 
 #[async_trait::async_trait]
@@ -814,22 +1166,7 @@ impl ScannerService for DefaultScannerService {
             return Ok(());
         }
 
-        struct ScanGuard {
-            task_manager: Arc<crate::task_manager::TaskManager>,
-            library_id: crate::models::LibraryId,
-        }
-
-        impl Drop for ScanGuard {
-            fn drop(&mut self) {
-                let task_manager = self.task_manager.clone();
-                let library_id = self.library_id;
-                tokio::spawn(async move {
-                    task_manager.unlock_library_scan(library_id).await;
-                });
-            }
-        }
-
-        let _guard = ScanGuard {
+        let guard = ScanGuard {
             task_manager: self.ctx.task_manager.clone(),
             library_id: library.id,
         };
@@ -939,12 +1276,10 @@ impl ScannerService for DefaultScannerService {
                 .collect()
         };
 
-        let ffprobe_path = self.ctx.config.ffprobe_path.clone();
         let is_tv = library.media_type == MediaType::Tv;
-        let mut parsed_items: Vec<ParsedFile> = {
+        let parsed_items: Vec<ParsedFile> = {
             use rayon::prelude::*;
             files.par_iter().map(|path| {
-                let filename = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
                 let metadata = path.metadata().ok();
                 let mtime = metadata.as_ref().and_then(|m| m.modified().ok())
                     .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
@@ -953,13 +1288,9 @@ impl ScannerService for DefaultScannerService {
                 let size = metadata.map(|m| m.len() as i64).unwrap_or(0);
                 let relative_path = paths::make_relative(path, library_root).unwrap_or_default();
 
-                // For TV libraries use directory-aware parsing so bare `S01E01.mkv` files
-                // resolve their show title from the parent folder hierarchy.
-                let parsed = if is_tv {
-                    parser::parse_file_path(path, library_root)
-                } else {
-                    parser::parse_filename(filename)
-                };
+                // Use directory-aware parsing for both TV and movie libraries so titles/seasons/years
+                // can be resolved from the parent directory hierarchy.
+                let parsed = parser::parse_file_path(path, library_root, is_tv);
 
                 if let Some((db_size, db_mtime)) = existing_files.get(&relative_path) {
                     if *db_size == size && *db_mtime == mtime {
@@ -981,21 +1312,11 @@ impl ScannerService for DefaultScannerService {
                     size, mtime,
                     is_skipped: false,
                     metadata: nfo::reader::detect_metadata(path),
-                    fingerprint: hash::calculate_oshash(path).ok(),
-                    media_info: mediainfo::get_media_info_with_path(path, &ffprobe_path).ok(),
+                    fingerprint: None,
+                    media_info: None,
                 }
             }).collect()
         };
-
-        if library.media_type == MediaType::Tv {
-            if let Err(e) = self.organise_tv_library(library, &mut parsed_items).await {
-                tracing::error!("Failed to organise TV library: {}", e);
-            }
-        } else if library.media_type == MediaType::Movie {
-            if let Err(e) = self.organise_movie_library(library, &mut parsed_items).await {
-                tracing::error!("Failed to organise movie library: {}", e);
-            }
-        }
 
         let mut progress_count = 0;
         for chunk in parsed_items.chunks(100) {
@@ -1061,6 +1382,16 @@ impl ScannerService for DefaultScannerService {
             ..Default::default()
         });
 
+        // Spawn background task taking ownership of the lock guard
+        let self_clone = self.clone();
+        let library_clone = library.clone();
+        tokio::spawn(async move {
+            let _guard = guard; // move lock guard here
+            if let Err(e) = self_clone.run_background_analysis_and_organization(library_clone).await {
+                tracing::error!("Failed background analysis & organization: {}", e);
+            }
+        });
+
         Ok(())
     }
 
@@ -1121,6 +1452,9 @@ impl ScannerService for DefaultScannerService {
 fn clean_show_title_for_db(raw: &str) -> String {
     let replaced = raw.replace('.', " ").replace('_', " ");
 
+    static RE_BRACKET_PREFIX: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| {
+        regex::Regex::new(r"(?i)^\s*\[[^\]]*\]\s*").unwrap()
+    });
     static RE_SEASON: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| {
         regex::Regex::new(r"(?i)\s*\b(?:season|series|s)\s*\d+\b.*").unwrap()
     });
@@ -1137,7 +1471,8 @@ fn clean_show_title_for_db(raw: &str) -> String {
         regex::Regex::new(r"(?i)\s*[\[\({][^\]\)}]*?(?:eztv|torrenting|yts|rarbg|1337x|x264|x265|1080p|720p|2160p|h264|h265|bluray|web-dl|hdtv|memento|kontrast|minx)[^\]\)}]*?[\]\)}]").unwrap()
     });
 
-    let cleaned = RE_SEASON.replace_all(&replaced, "");
+    let replaced_prefix = RE_BRACKET_PREFIX.replace(&replaced, "");
+    let cleaned = RE_SEASON.replace_all(&replaced_prefix, "");
     let cleaned = RE_QUALITY.replace_all(&cleaned, "");
     let cleaned = RE_SXXEXX.replace_all(&cleaned, "");
     
@@ -1349,7 +1684,14 @@ fn remove_empty_directories(dir: &Path, library_root: &Path) {
 
     // If directory only contains non-video metadata files (artwork / .nfo), it is a
     // leftover release-group folder whose video files have been moved. Remove it too.
-    const METADATA_EXTS: &[&str] = &["jpg", "jpeg", "png", "nfo", "txt", "srt", "sub", "idx", "sfv", "md5"];
+    const METADATA_EXTS: &[&str] = &[
+        "jpg", "jpeg", "png", "gif", "tbn", "svg",
+        "nfo", "xml", "json", "txt", "pdf",
+        "srt", "sub", "idx", "ass", "ssa", "vtt",
+        "sfv", "md5", "sha1",
+        "url", "torrent", "parts",
+        "ds_store", "db", "desktop", "ini",
+    ];
     let has_video = entries.iter().any(|e| {
         let p = e.path();
         if !p.is_file() { return true; } // sub-directory still present → keep parent
@@ -1357,7 +1699,16 @@ fn remove_empty_directories(dir: &Path, library_root: &Path) {
             .and_then(|x| x.to_str())
             .map(|x| x.to_lowercase())
             .unwrap_or_default();
-        !METADATA_EXTS.contains(&ext.as_str())
+        let is_meta = if ext.is_empty() {
+            let name = p.file_name()
+                .and_then(|x| x.to_str())
+                .map(|x| x.to_lowercase())
+                .unwrap_or_default();
+            name.starts_with('.') || name == "readme" || name == "install" || name == "license"
+        } else {
+            METADATA_EXTS.contains(&ext.as_str())
+        };
+        !is_meta
     });
 
     if !has_video {
@@ -1376,6 +1727,38 @@ fn remove_empty_directories(dir: &Path, library_root: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_remove_empty_directories() {
+        use std::fs::File;
+        let temp_dir = tempfile::tempdir().unwrap();
+        let library_root = temp_dir.path();
+
+        // 1. Create a release folder that only has metadata, torrent and OS leftovers (should be deleted)
+        let dup_dir = library_root.join("Show.S01.720p.BRRip.MkvCage");
+        std::fs::create_dir_all(&dup_dir).unwrap();
+        File::create(dup_dir.join("poster.jpg")).unwrap();
+        File::create(dup_dir.join("show.nfo")).unwrap();
+        File::create(dup_dir.join("some_link.url")).unwrap();
+        File::create(dup_dir.join("download.torrent")).unwrap();
+        File::create(dup_dir.join(".DS_Store")).unwrap();
+        File::create(dup_dir.join("Thumbs.db")).unwrap();
+
+        // 2. Create a clean folder that has video files (should be kept)
+        let keep_dir = library_root.join("Show");
+        let keep_season = keep_dir.join("Season 01");
+        std::fs::create_dir_all(&keep_season).unwrap();
+        File::create(keep_season.join("Show - S01E01.mkv")).unwrap();
+        File::create(keep_season.join("Show - S01E01.nfo")).unwrap();
+
+        // Run cleanup
+        remove_empty_directories(library_root, library_root);
+
+        // Assertions
+        assert!(!dup_dir.exists(), "Leftover release-group directory should be deleted");
+        assert!(keep_dir.exists(), "Clean show directory with video files should not be deleted");
+        assert!(keep_season.exists(), "Clean season directory with video files should not be deleted");
+    }
 
     #[test]
     fn test_clean_show_title_for_db() {

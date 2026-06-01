@@ -74,9 +74,22 @@ async fn test_tv_organizer_merge() -> anyhow::Result<()> {
     // 4. Run the first scan
     scanner_service.scan_library(&lib, "task_1".into()).await?;
 
+    // Wait for background analysis to finish
+    let mut attempts = 0;
+    while task_manager.is_library_scanning(lib_id).await {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        attempts += 1;
+        if attempts > 200 {
+            panic!("Library scan did not finish in time");
+        }
+    }
+
     // 5. Verify database representation
     // Verify we have only ONE show "Better Call Saul"
     let shows = repos.tv.find_all_shows(Some(lib_id), None, None).await?;
+    for show in &shows {
+        println!("DB SHOW: id={:?}, title={}", show.id, show.title);
+    }
     assert_eq!(shows.len(), 1, "Should have deduplicated the show to a single record");
     assert_eq!(shows[0].title, "Better Call Saul");
 

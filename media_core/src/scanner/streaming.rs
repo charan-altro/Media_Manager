@@ -181,11 +181,10 @@ pub fn is_direct_playable(path: &Path, details: &crate::scanner::mediainfo::Medi
     let video_ok = ["h264", "vp9", "av1", "hevc"].contains(&v_codec.as_str());
     
     // Direct playback compatible audio codecs (natively supported by standard HTML5 browsers)
-    // AC3, EAC3, DTS, and FLAC are excluded to trigger on-the-fly audio transcoding to Opus.
     let audio_ok = if is_webm_like {
         ["opus", "vorbis", "none"].contains(&a_codec.as_str())
     } else {
-        ["aac", "mp3", "opus", "vorbis", "none"].contains(&a_codec.as_str())
+        ["aac", "mp3", "opus", "vorbis", "flac", "none"].contains(&a_codec.as_str())
     };
 
     // 3. Rotation must be 0
@@ -612,6 +611,17 @@ impl StreamManager {
 
         args.extend(vec!["-i".to_string(), input_path.to_string()]);
 
+        // Explicit stream mapping: select only first video + first audio track.
+        // Without this, FFmpeg maps ALL streams (including SSA/ASS subtitle tracks),
+        // which causes "-22 Invalid argument" muxer errors and high memory usage.
+        args.extend(vec![
+            "-map".to_string(), "0:v:0".to_string(),
+            "-map".to_string(), "0:a:0?".to_string(),
+            "-sn".to_string(), // Disable subtitle streams
+            "-dn".to_string(), // Disable data streams
+            "-max_muxing_queue_size".to_string(), "1024".to_string(),
+        ]);
+
         // 2. Video Logic (Copy if possible, otherwise transcode with zerolatency)
         args.push("-c:v".to_string());
         if video_copyable {
@@ -673,14 +683,13 @@ impl StreamManager {
                 ]);
             }
         } else {
-            // MP4: Copy if AAC, MP3, or Opus, otherwise transcode to AAC
+            // MP4: Copy if AAC, MP3, or Opus, otherwise transcode to libopus (efficient, low resource)
             let audio_copyable = ["aac", "mp3", "opus"].contains(&details.audio_codec.to_lowercase().as_str());
             if audio_copyable {
                 args.push("copy".to_string());
             } else {
-                // MP4 must be AAC
                 args.extend(vec![
-                    "aac".to_string(),
+                    "libopus".to_string(),
                     "-b:a".to_string(), "128k".to_string(),
                     "-ac".to_string(), "2".to_string()
                 ]);
@@ -694,7 +703,7 @@ impl StreamManager {
                 "frag_keyframe+empty_moov+default_base_moof".to_string()
             ]);
         } else if format == "mkv" {
-            args.extend(vec!["-live".to_string(), "1".to_string()]);
+            // Remove -live 1 to prevent muxer packet copy timestamp crashes (-22 Invalid argument)
         }
 
         let container = if format == "mkv" {

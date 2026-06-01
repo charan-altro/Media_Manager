@@ -643,10 +643,9 @@ async fn serve_direct_hls_manifest(
             };
 
             if let Some(_path) = path_str {
-                // We use MPEG-TS (.ts) for the internal HLS segment because it is a streamable
-                // format natively supported by Hls.js without requiring initialization segments.
-                // Video/audio will still be 'copied' (zero CPU) if they are browser-compatible.
-                let stream_url = format!("/api/stream/direct/{}/stream.ts?start={}", id, start_time);
+                // We use fragmented MP4 (.mp4) for the internal HLS segment to support
+                // modern codecs (like HEVC, AV1, and Opus) natively via Hls.js fMP4.
+                let stream_url = format!("/api/stream/direct/{}/stream.mp4?start={}", id, start_time);
                 let manifest = media_core::scanner::streaming::generate_direct_hls_manifest(dur as f64, &stream_url);
                 return (
                     [(header::CONTENT_TYPE, "application/vnd.apple.mpegurl")],

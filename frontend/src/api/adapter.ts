@@ -113,6 +113,7 @@ export interface Episode {
   size_bytes?: number;
   resolution?: string;
   codec?: string;
+  duration_secs?: number;
 }
 
 export interface UpdateCheckResult {

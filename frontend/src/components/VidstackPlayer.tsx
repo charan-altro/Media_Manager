@@ -426,6 +426,24 @@ const PlayerContent: React.FC<VidstackPlayerProps & {
     }).catch(err => console.error("[VidstackPlayer] Final heartbeat failed:", err));
   }, [mediaId, mediaType]);
 
+  // Set duration override on mount/src change
+  useEffect(() => {
+    const video = playerRef.current?.el?.querySelector('video');
+    if (video && isPiped && duration > 0) {
+      try {
+        Object.defineProperty(video, 'duration', {
+          get() {
+            return duration;
+          },
+          configurable: true
+        });
+        video.dispatchEvent(new Event('durationchange'));
+      } catch (err) {
+        console.warn("[VidstackPlayer] Failed to override duration in useEffect:", err);
+      }
+    }
+  }, [duration, isPiped, sources]);
+
   // Handle initial seek / source reloads
   const handleCanPlay = useCallback((e: any) => {
     setIsBuffering(false);
@@ -434,6 +452,22 @@ const PlayerContent: React.FC<VidstackPlayerProps & {
     
     const player = playerRef.current;
     if (!player) return;
+
+    // Apply the duration override here to ensure Vidstack picks it up immediately
+    const video = player.el?.querySelector('video');
+    if (video && isPiped && duration > 0) {
+      try {
+        Object.defineProperty(video, 'duration', {
+          get() {
+            return duration;
+          },
+          configurable: true
+        });
+        video.dispatchEvent(new Event('durationchange'));
+      } catch (err) {
+        console.warn("[VidstackPlayer] Failed to override duration in handleCanPlay:", err);
+      }
+    }
 
     // Use current source URL or path to identify source changes
     const currentSrc = (sources[0]?.src as string) ?? '';
@@ -787,8 +821,8 @@ const VidstackPlayer: React.FC<VidstackPlayerProps> = (props) => {
     }
 
     const url = new URL(finalUrlStr, window.location.origin);
-    // Only append start parameter for piped streams (but not for HLS playlist itself)
-    const finalIsPiped = url.pathname.includes('/stream.ts') || url.pathname.includes('/stream.mp4') || url.pathname.includes('/stream.webm') || url.pathname.includes('/stream.mkv');
+    // Only append start parameter for piped streams (including HLS playlist itself to enable segment shifts)
+    const finalIsPiped = url.pathname.includes('/playlist.m3u8') || url.pathname.includes('/stream.ts') || url.pathname.includes('/stream.mp4') || url.pathname.includes('/stream.webm') || url.pathname.includes('/stream.mkv');
     if (finalIsPiped && startOffset > 0) {
       url.searchParams.set("start", startOffset.toString());
     }

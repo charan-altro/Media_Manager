@@ -95,21 +95,66 @@ pub fn parse_filename(name: &str) -> ParsedMedia {
 /// first folder that is NOT a "Season XX" folder and use that as the show title.
 ///
 /// `library_root` is used to bound the upward walk.
-pub fn parse_file_path(path: &Path, library_root: &Path) -> ParsedMedia {
+pub fn parse_file_path(path: &Path, library_root: &Path, is_tv: bool) -> ParsedMedia {
     let filename = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
     let mut parsed = parse_filename(filename);
 
-    // If we already got a clean title with no release noise, we're done.
-    if !parsed.title.is_empty() && !RELEASE_NOISE_RE.is_match(&parsed.title) {
-        return parsed;
-    }
+    if is_tv {
+        // If we already got a clean title with no release noise, we're done.
+        if !parsed.title.is_empty() && !RELEASE_NOISE_RE.is_match(&parsed.title) {
+            return parsed;
+        }
 
-    // Walk up the directory tree looking for the show folder.
-    let show_title = resolve_show_title_from_path(path, library_root, &mut parsed.season);
+        // Walk up the directory tree looking for the show folder.
+        let show_title = resolve_show_title_from_path(path, library_root, &mut parsed.season);
 
-    if let Some(title) = show_title {
-        parsed.title = title;
-        parsed.is_tv = true;
+        if let Some(title) = show_title {
+            parsed.title = title;
+            parsed.is_tv = true;
+        }
+    } else {
+        parsed.is_tv = false;
+
+        let cleaned_title = clean_dir_name_as_show_title(&parsed.title);
+        if !cleaned_title.is_empty() {
+            parsed.title = cleaned_title;
+        }
+
+        // If we already have a clean title with a year, we're done.
+        if !parsed.title.is_empty() && parsed.year.is_some() && !RELEASE_NOISE_RE.is_match(&parsed.title) {
+            return parsed;
+        }
+
+        // Check the immediate parent folder name
+        if let Some(parent) = path.parent() {
+            if parent != library_root && parent.starts_with(library_root) {
+                if let Some(dir_name) = parent.file_name().and_then(|s| s.to_str()) {
+                    // Strip leading bracket prefix like "[TorrentCouch net] "
+                    static RE_BRACKET_PREFIX: Lazy<Regex> = Lazy::new(|| {
+                        Regex::new(r"(?i)^\s*\[[^\]]*\]\s*").unwrap()
+                    });
+                    let cleaned_dir = RE_BRACKET_PREFIX.replace(dir_name.trim(), "");
+
+                    // Parse with MOVIE_RE
+                    if let Some(caps) = MOVIE_RE.captures(&cleaned_dir) {
+                        let title = clean_title(caps.name("title").unwrap().as_str());
+                        let year = caps.name("year").and_then(|y| y.as_str().parse::<i32>().ok());
+
+                        // Strip release noise from the parsed title
+                        let final_title = clean_dir_name_as_show_title(&title);
+                        if !final_title.is_empty() {
+                            parsed.title = final_title;
+                        } else {
+                            parsed.title = title;
+                        }
+
+                        if year.is_some() {
+                            parsed.year = year;
+                        }
+                    }
+                }
+            }
+        }
     }
 
     parsed
@@ -287,7 +332,7 @@ mod tests {
     fn test_parse_file_path_bare_sxxexx() {
         let lib = Path::new("/media/tv");
         let file = Path::new("/media/tv/Game of Thrones/Season 01/S01E01 - Winter Is Coming.mkv");
-        let p = parse_file_path(file, lib);
+        let p = parse_file_path(file, lib, true);
         assert_eq!(p.title, "Game of Thrones");
         assert_eq!(p.season, Some(1));
         assert_eq!(p.episode, Some(1));
@@ -300,7 +345,7 @@ mod tests {
         let file = Path::new(
             "/media/tv/Better.Call.Saul.S04.1080p.BluRay.x265-KONTRAST/S04E01.mkv",
         );
-        let p = parse_file_path(file, lib);
+        let p = parse_file_path(file, lib, true);
         assert_eq!(p.title, "Better Call Saul");
         assert_eq!(p.season, Some(4));
         assert_eq!(p.episode, Some(1));
@@ -313,7 +358,7 @@ mod tests {
         let file = Path::new(
             "/media/tv/[TorrentCouch net] Game of Thrones/Season 08/S08E01.mkv",
         );
-        let p = parse_file_path(file, lib);
+        let p = parse_file_path(file, lib, true);
         assert_eq!(p.title, "Game of Thrones");
         assert_eq!(p.season, Some(8));
         assert_eq!(p.episode, Some(1));
@@ -323,10 +368,20 @@ mod tests {
     fn test_parse_file_path_year_in_folder() {
         let lib = Path::new("/media/tv");
         let file = Path::new("/media/tv/Game Of Thrones 2012/Season 02/S02E01.mkv");
-        let p = parse_file_path(file, lib);
+        let p = parse_file_path(file, lib, true);
         // Year should be stripped so title normalizes cleanly
         assert_eq!(p.title, "Game Of Thrones");
         assert_eq!(p.season, Some(2));
         assert_eq!(p.episode, Some(1));
+    }
+
+    #[test]
+    fn test_parse_file_path_movie() {
+        let lib = Path::new("/media/movies");
+        let file = Path::new("/media/movies/Inception.2010.1080p.BluRay/inception.mkv");
+        let p = parse_file_path(file, lib, false);
+        assert_eq!(p.title, "Inception");
+        assert_eq!(p.year, Some(2010));
+        assert!(!p.is_tv);
     }
 }

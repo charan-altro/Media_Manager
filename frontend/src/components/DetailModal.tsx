@@ -38,6 +38,7 @@ const DetailModal: React.FC<DetailModalProps> = ({
   const [activeTitle, setActiveTitle] = useState<string>('');
   const [activePosterUrl, setActivePosterUrl] = useState<string | undefined>(undefined);
   const [activeHash, setActiveHash] = useState<string | undefined>(undefined);
+  const [activeDuration, setActiveDuration] = useState<number>(0);
   const [resumePosition, setResumePosition] = useState(0);
   const [showResumeDialog, setShowResumeDialog] = useState(false);
   const [pendingUrl, setPendingUrl] = useState<string | null>(null);
@@ -46,7 +47,18 @@ const DetailModal: React.FC<DetailModalProps> = ({
   const seasonNumber = currentSeason ? currentSeason.season_number : 1;
   const paddedSeason = seasonNumber.toString().padStart(2, '0');
 
-  const handlePlayMedia = async (mediaId: number, mediaType: 'movie' | 'episode' | 'movie_file', metadata?: { title: string, posterUrl?: string, videoCodec?: string, audioCodec?: string, hash?: string }) => {
+  const handlePlayMedia = async (
+    mediaId: number, 
+    mediaType: 'movie' | 'episode' | 'movie_file', 
+    metadata?: { 
+      title: string, 
+      posterUrl?: string, 
+      videoCodec?: string, 
+      audioCodec?: string, 
+      hash?: string,
+      duration?: number
+    }
+  ) => {
     if (isStartingStream) return;
     setIsStartingStream(true);
     try {
@@ -60,10 +72,12 @@ const DetailModal: React.FC<DetailModalProps> = ({
         setActiveTitle(metadata.title);
         setActivePosterUrl(metadata.posterUrl);
         setActiveHash(metadata.hash);
+        setActiveDuration(metadata.duration || 0);
       } else {
         setActiveTitle(item.title);
         setActivePosterUrl(item.poster_url || item.backdrop_url);
         setActiveHash(item.hash);
+        setActiveDuration((item as any).duration_secs || ((item as any).runtime ? (item as any).runtime * 60 : 0));
       }
 
       if (status && status.position_ms > 5000 && !status.is_finished) {
@@ -292,7 +306,8 @@ const DetailModal: React.FC<DetailModalProps> = ({
                       posterUrl: item.poster_url || item.backdrop_url,
                       videoCodec: item.video_codec,
                       audioCodec: item.audio_codec,
-                      hash: item.hash
+                      hash: item.hash,
+                      duration: movieFiles[0]?.duration_secs || (item.runtime ? item.runtime * 60 : 0)
                     })}
                     disabled={isStartingStream}
                     className={`px-8 py-3.5 rounded-lg font-black uppercase tracking-widest text-xs transition-all active:scale-95 flex items-center gap-2 shadow-2xl ${
@@ -563,7 +578,8 @@ const DetailModal: React.FC<DetailModalProps> = ({
                                                   posterUrl: ver.thumbnail_path || item.poster_url || item.backdrop_url,
                                                   videoCodec: ver.video_codec || ver.codec,
                                                   audioCodec: ver.audio_codec,
-                                                  hash: ver.hash
+                                                  hash: ver.hash,
+                                                  duration: ver.duration_secs || 0
                                                 }); 
                                               }} 
                                               className="px-2 py-1 bg-white hover:bg-zinc-200 text-zinc-950 rounded font-black uppercase tracking-wider text-[8px] flex items-center gap-0.5 transition active:scale-95 shadow-sm"
@@ -682,7 +698,8 @@ const DetailModal: React.FC<DetailModalProps> = ({
                                   posterUrl: ep.thumbnail_path || item.poster_url || item.backdrop_url,
                                   videoCodec: ep.video_codec || ep.codec,
                                   audioCodec: ep.audio_codec,
-                                  hash: ep.hash
+                                  hash: ep.hash,
+                                  duration: ep.duration_secs || 0
                                 })} 
                                 className="flex flex-col bg-zinc-900/35 rounded-xl border border-zinc-850/80 hover:border-zinc-700/80 hover:bg-zinc-850/30 transition-all duration-300 group cursor-pointer overflow-hidden shadow-md"
                               >
@@ -744,7 +761,8 @@ const DetailModal: React.FC<DetailModalProps> = ({
                               posterUrl: item.poster_url || item.backdrop_url,
                               videoCodec: file.codec || undefined,
                               audioCodec: file.audio_codec || undefined,
-                              hash: file.hash || undefined
+                              hash: file.hash || undefined,
+                              duration: file.duration_secs || 0
                             })}
                             className="px-3.5 py-2 bg-white hover:bg-zinc-200 text-zinc-950 rounded-lg font-black uppercase tracking-wider text-[10px] flex items-center gap-1.5 transition active:scale-95 shadow-md"
                           >
@@ -1035,7 +1053,7 @@ const DetailModal: React.FC<DetailModalProps> = ({
           title={activeTitle}
           posterUrl={activePosterUrl}
           hash={activeHash}
-          duration={(item as any).duration_secs || ((item as any).runtime ? (item as any).runtime * 60 : 0)}
+          duration={activeDuration}
           initialPosition={resumePosition}
           onClose={async () => {
             setStreamingUrl(null);

@@ -1,0 +1,180 @@
+I tested other video files could not forward and backword but the one we used to play working fine 
+
+
+Now dont change any logic and analyse why media file not able to forward or seek
+
+2026-06-01T18:37:51.800856Z ERROR media_core::scanner::streaming: FFmpeg stderr for direct stream: [aost#0:1/libopus @ 000001bcddcea700] Error submitting a packet to the muxer: Invalid argument
+    Last message repeated 1 times
+[out#0/matroska @ 000001bcddcf8000] Error muxing a packet
+[out#0/matroska @ 000001bcddcf8000] Task finished with error code: -22 (Invalid argument)
+[out#0/matroska @ 000001bcddcf8000] Terminating thread with return code -22 (Invalid argument)
+2026-06-01T18:38:04.194820Z ERROR media_core::scanner::streaming: FFmpeg stderr for direct stream: [vost#0:0/copy @ 000001e28736a200] Error submitting a packet to the muxer: Invalid argument
+2026-06-01T18:38:04.200723Z  INFO server::routes::streaming: Direct mkv stream requested for episode_210 at 0s
+2026-06-01T18:38:04.548852Z ERROR media_core::scanner::streaming: FFmpeg stderr for direct stream: [aost#0:1/libopus @ 0000026542c89600] Error submitting a packet to the muxer: Invalid argument
+    Last message re
+2026-06-01T18:38:04.554370Z  INFO server::routes::streaming: Direct mkv stream requested for episode_210 at 0s
+2026-06-01T18:38:06.645581Z  INFO server::routes::streaming: Direct mkv stream requested for episode_210 at 0s
+2026-06-01T18:38:06.653638Z ERROR media_core::scanner::streaming: FFmpeg stderr for direct stream: [aost#0:1/libopus @ 00000277044f8ec0]
+2026-06-01T18:38:09.288001Z ERROR media_core::scanner::streaming: FFmpeg stderr for direct stream: [aost#0:1/libopus @ 00000249095e9f00] Error submitting a packet to the muxer: Invalid argument
+    Last message rep
+
+
+2026-06-01T18:35:38.804681Z ERROR media_core::scanner::streaming: FFmpeg stderr for direct stream: [aost#0:1/libopus @ 000001a95c08eb00] Error submitting a packet to the muxer: Invalid argument
+2026-06-01T18:35:38.814815Z  INFO server::routes::streaming: Direct mkv stream requested for movie_6 at 2921.78315s
+2026-06-01T18:35:39.275617Z  INFO server::routes::streaming: Direct mkv stream requested for movie_6 at 2921.78315s
+2026-06-01T18:35:39.584405Z ERROR media_core::scanner::streaming: FFmpeg stderr for direct stream: [aost#0:1/libopus @ 000001998a53ebc0]
+2026-06-01T18:35:39.590037Z  INFO server::routes::streaming: Direct mkv stream requested for movie_6 at 2921.78315s
+2026-06-01T18:35:41.891466Z ERROR media_core::scanner::streaming: FFmpeg stderr for direct stream: [aost#0:1/libopus @ 00000227e9d18d00] Error submitting a packet to the muxer: Invalid argument
+    Last message repeated 1 times
+[out#0/matroska @ 00000227e9cb4700] Error muxing a packet
+[out#0/matroska @ 00000227e9cb4700] Task finished with error code: -22 (Invalid argument)
+[out#0/matroska @ 00000227e9cb4700] Terminating thread with return code -22 (Invalid argument)
+2026-06-01T18:35:41.909456Z  INFO server::routes::streaming: Direct mkv stream requested for movie_6 at 3585.4621s
+2026-06-01T18:35:43.178706Z  INFO server::routes::streaming: Direct mkv stream requested for movie_6 at 3585.4621s
+2026-06-01T18:35:43.204149Z  INFO server::routes::streaming: Direct mkv stream requested for movie_6 at 3585.4621s
+2026-06-01T18:35:43.459245Z  INFO server::routes::streaming: Direct mkv stream requested for movie_6 at 4104.983849s
+2026-06-01T18:35:44.865414Z ERROR media_core::scanner::streaming: FFmpeg stderr for direct stream: [aost#0:1/libopus @ 0000022dcd7ccb00] Error submitting a packet to the muxer: Invalid argument
+2026-06-01T18:35:44.873362Z  INFO server::routes::streaming: Direct mkv stream requested for movie_6 at 5018.7863s
+2026-06-01T18:35:51.284931Z  INFO server::routes::streaming: Direct mkv stream requested for movie_6 at 5855.5794s
+2026-06-01T18:35:57.891141Z  INFO server::routes::streaming: Direct mkv stream requested for movie_6 at 7000.32025s
+2026-06-01T18:35:59.435160Z  INFO server::routes::streaming: Direct mkv stream requested for movie_6 at 7942.99s
+2026-06-01T18:36:00.862438Z  INFO server::routes::streaming: Direct mkv stream requested for movie_6 at 8472.014649s
+2026-06-01T18:36:02.723420Z  INFO server::routes::streaming: Direct mkv stream requested for movie_6 at 8746.16435s
+2026-06-01T18:36:03.148203Z  INFO server::routes::streaming: Direct mkv stream requested for movie_6 at 8746.16435s
+2026-06-01T18:36:03.403685Z ERROR media_core::scanner::streaming: FFmpeg stderr for direct stream: [aost#0:1/libopus @ 000001fda7df0300] Error submitting a packet to the muxer: Invalid argument
+    Last message repeated 1 times
+[out#0/matroska @ 000001fda61bf800] Error muxing a packet
+[out#0/matroska @ 000001fda61bf800] Task finished with error code: -22 (Invalid argument)
+2026-06-01T18:36:03.408901Z  INFO server::routes::streaming: Direct mkv stream requested for movie_6 at 8746.16435s
+2026-06-01T18:36:12.517341Z DEBUG server::routes::assets: Artwork request for path: "D:/MEDIA/TVShows/Band of Brothers/fanart.jpg"
+2026-06-01T18:36:12.574836Z DEBUG server::routes::assets: Artwork request for path: "D:/MEDIA/TVShows/Band of Brothers/poster.jpg"
+2026-06-01T18:36:12.633589Z DEBUG server::routes::assets: Artwork request for path: "D:/MEDIA/TVShows/Better Call Saul/poster.jpg"
+2026-06-01T18:36:12.645783Z DEBUG server::routes::assets: Artwork request for path: "D:/MEDIA/TVShows/Game of Thrones/poster.jpg"
+2026-06-01T18:36:12.653345Z DEBUG server::routes::assets: Artwork request for path: "D:/MEDIA/TVShows/The Wire/poster.jpg"
+2026-06-01T18:36:14.276210Z DEBUG server::routes::assets: Artwork request for path: "D:/MEDIA/TVShows/Game of Thrones/fanart.jpg"
+2026-06-01T18:36:14.297383Z DEBUG server::routes::assets: Artwork request for path: "D:/MEDIA/TVShows/Game of Thrones/.actors/Peter_Dinklage.jpg"
+2026-06-01T18:36:14.307128Z DEBUG server::routes::assets: Artwork request for path: "D:/MEDIA/TVShows/Game of Thrones/.actors/Lena_Headey.jpg"
+2026-06-01T18:36:14.308579Z DEBUG server::routes::assets: Artwork request for path: "D:/MEDIA/TVShows/Game of Thrones/.actors/Nikolaj_Coster_Waldau.jpg"
+2026-06-01T18:36:14.352724Z DEBUG server::routes::assets: Artwork request for path: "D:/MEDIA/TVShows/Game of Thrones/.actors/Kit_Harington.jpg"
+2026-06-01T18:36:14.501075Z DEBUG server::routes::assets: Artwork request for path: "D:/MEDIA/TVShows/Game of Thrones/.actors/Emilia_Clarke.jpg"
+2026-06-01T18:36:21.934299Z  INFO server::routes::streaming: Stream requested for episode ID: 208
+2026-06-01T18:36:22.243477Z  INFO server::routes::streaming: Tier 2: Video is compatible but audio is incompatible, enabling progressive piped remux with audio transcode for episode ID: 208
+2026-06-01T18:36:22.298618Z  INFO server::routes::streaming: Stream requested for episode ID: 208
+2026-06-01T18:36:22.308076Z  INFO server::routes::streaming: Stream requested for episode ID: 208
+2026-06-01T18:36:22.432581Z  INFO server::routes::streaming: Tier 2: Video is compatible but audio is incompatible, enabling progressive piped remux with audio transcode for episode ID: 208
+2026-06-01T18:36:22.448349Z  INFO server::routes::streaming: Tier 2: Video is compatible but audio is incompatible, enabling progressive piped remux with audio transcode for episode ID: 208
+2026-06-01T18:36:22.455686Z  INFO server::routes::streaming: Direct mkv stream requested for episode_208 at 0s
+2026-06-01T18:36:22.484993Z  INFO server::routes::streaming: Direct mkv stream requested for episode_208 at 0s
+2026-06-01T18:36:22.573783Z  INFO server::routes::streaming: Direct mkv stream requested for episode_208 at 0s
+2026-06-01T18:36:22.637047Z  INFO server::routes::streaming: Direct mkv stream requested for episode_208 at 0s
+2026-06-01T18:36:26.139979Z  INFO server::routes::streaming: Direct mkv stream requested for episode_208 at 0s
+2026-06-01T18:36:26.166046Z ERROR media_core::scanner::streaming: FFmpeg stderr for direct stream: [aost#0:1/libopus @ 000001ff4b50a080] Error submitting a packet to the muxer: Invalid argument
+2026-06-01T18:36:27.882493Z  INFO server::routes::streaming: Direct mkv stream requested for episode_208 at 0s
+2026-06-01T18:36:27.896691Z ERROR media_core::scanner::streaming: FFmpeg stderr for direct stream: [aost#0:1/libopus @ 000001d3c723ebc0] Error submitting a packet to the muxer: Invalid argument
+    Last message repeated 1 times
+[out#0/matroska @ 000001d3c7248a40]
+2026-06-01T18:36:28.754860Z  INFO server::routes::streaming: Direct mkv stream requested for episode_208 at 0s
+2026-06-01T18:36:28.770097Z ERROR media_core::scanner::streaming: FFmpeg stderr for direct stream: [aost#0:1/libopus @ 0000026e3a4197c0] Error submitting a packet to the muxer: Invalid argument
+2026-06-01T18:36:29.024111Z  INFO server::routes::streaming: Direct mkv stream requested for episode_208 at 0s
+2026-06-01T18:36:29.029831Z ERROR media_core::scanner::streaming: FFmpeg stderr for direct stream: [aost#0:1/libopus @ 0000027c8403d940] Error submitting a packet to the muxer: Invalid argument
+    Last message repeated 1 times
+[out#0/matroska @ 0000027c8404d380]
+2026-06-01T18:36:38.101754Z ERROR media_core::scanner::streaming: FFmpeg stderr for direct stream: [aost#0:1/libopus @ 0000026f08ea9480] Error submitting a packet to the muxer: Invalid argument
+    Last
+2026-06-01T18:36:40.156477Z  INFO server::routes::streaming: Stream requested for episode ID: 210
+2026-06-01T18:36:40.432596Z  INFO server::routes::streaming: Tier 2: Video is compatible but audio is incompatible, enabling progressive piped remux with audio transcode for episode ID: 210
+2026-06-01T18:36:40.483169Z  INFO server::routes::streaming: Stream requested for episode ID: 210
+2026-06-01T18:36:40.495961Z  INFO server::routes::streaming: Stream requested for episode ID: 210
+2026-06-01T18:36:40.621343Z  INFO server::routes::streaming: Tier 2: Video is compatible but audio is incompatible, enabling progressive piped remux with audio transcode for episode ID: 210
+2026-06-01T18:36:40.630400Z  INFO server::routes::streaming: Tier 2: Video is compatible but audio is incompatible, enabling progressive piped remux with audio transcode for episode ID: 210
+2026-06-01T18:36:40.641999Z  INFO server::routes::streaming: Direct mkv stream requested for episode_210 at 0s
+2026-06-01T18:36:40.673480Z  INFO server::routes::streaming: Direct mkv stream requested for episode_210 at 0s
+2026-06-01T18:36:40.749028Z  INFO server::routes::streaming: Direct mkv stream requested for episode_210 at 0s
+2026-06-01T18:36:40.818277Z  INFO server::routes::streaming: Direct mkv stream requested for episode_210 at 0s
+2026-06-01T18:36:42.854471Z  INFO server::routes::streaming: Direct mkv stream requested for episode_210 at 0s
+2026-06-01T18:36:42.871601Z ERROR media_core::scanner::streaming: FFmpeg stderr for direct stream: [aost#0:1/libopus @ 000002cbef1a8500]
+2026-06-01T18:36:43.758680Z  INFO server::routes::streaming: Direct mkv stream requested for episode_210 at 0s
+2026-06-01T18:36:44.359319Z  INFO server::routes::streaming: Direct mkv stream requested for episode_210 at 0s
+
+
+Let me analyze this carefully without changing any logic. I need to look at two things: why seeking doesn't trigger for episodes (all `at 0s`) vs. movie_6 which does seek, and what the libopus `-22` error means.
+
+Searched for "VidstackPlayer"
+Viewed VidstackPlayer.tsx:1-800
+Viewed VidstackPlayer.tsx:800-890
+
+Now let me check the adapter to understand how `duration` is populated for episodes vs movies:
+
+Searched for "duration"
+Searched for "duration_secs"
+Viewed adapter.ts:1-436
+
+Now let me find where VidstackPlayer is called for episodes to see what `duration` prop is passed:
+
+Searched for "VidstackPlayer"
+Searched for "VidstackPlayer"
+Viewed DetailModal.tsx:1020-1076
+
+Now let me find where `activeDuration` is set, especially for episodes:
+
+Searched for "activeDuration"
+Searched for "activeDuration\|activeHash\|activeTitle\|activeMediaId\|activeMediaType"
+Searched for "duration"
+Viewed DetailModal.tsx:1-120
+
+Now let me find exactly where episodes are played to see what duration is passed:
+
+Searched for "handlePlayMedia"
+Searched for "episode"
+Viewed DetailModal.tsx:600-700
+Viewed DetailModal.tsx:700-730
+
+I now have the complete picture. Let me analyze everything:
+
+---
+
+## Root Cause Analysis — Two Separate Issues
+
+### Issue 1: Seeking NOT triggering for episodes (all `at 0s`)
+
+**The seeking mechanism depends entirely on `duration > 0`** in the player. Trace the dependency chain:
+
+```
+ep.duration_secs → activeDuration → VidstackPlayer `duration` prop
+                                              ↓
+                              isPiped && duration > 0 → duration override on <video>
+                                              ↓
+                              Vidstack knows video length → scrubber enabled
+                                              ↓
+                              handleSeeking fires → onSeek(targetTime) → setStartOffset
+                                              ↓
+                              sources recomputed → URL appended with ?start=XXX
+```
+
+**The break point**: At line 702 in `DetailModal.tsx`, `duration: ep.duration_secs || 0` — if `ep.duration_secs` is `null` or `0` in the DB for episodes, the entire seek chain breaks.
+
+**Why movie_6 works**: `movie_6` has a non-zero `duration_secs` stored in `movie_files`, so seeking triggers correctly. Episodes that fail likely have `duration_secs = 0` or `NULL` in the `episodes` table — they were never scanned/updated with this value.
+
+**Verify**: In `handleSeeking` (line 508), there's this guard:
+```js
+if (Math.abs(targetTime - startOffset) < 2.0) return; // Prevents seek when duration=0
+```
+With `duration=0`, the `<video>` element has `duration=Infinity` (piped stream), the scrubber is disabled entirely, so `handleSeeking` never fires, and `onSeek` is never called → backend always gets `start=0`.
+
+---
+
+### Issue 2: libopus `-22 Invalid argument` error (even with subtitle fix)
+
+Error is now `[aost#0:1/libopus]` — the **audio encoder** failing on Matroska pipe. This is a **separate FFmpeg bug** with libopus + matroska + pipe:1 + `-ss` seeking. When FFmpeg seeks before input and encounters the audio encoder writing to a pipe, certain timestamp edge cases cause invalid packets. **This error is benign when seeking works** (the old process is killed, new one starts at the right position), but you're seeing it cascade because:
+
+1. Episode duration is `0` → seek never sends a timestamp → FFmpeg restarts always at `0s`
+2. The browser keeps requesting `0s` repeatedly (network error/retry loop from the pipe closing prematurely)
+
+**The fix needed**: Ensure `duration_secs` is populated in the `episodes` table for all episodes by running a rescan or triggering an ffprobe on them from the scan pipeline.
+
+**To confirm**: Check the DB directly — run a query like:
+```sql
+SELECT id, title, duration_secs FROM episodes WHERE duration_secs IS NULL OR duration_secs = 0 LIMIT 20;
+```
+
+The episodes with `duration_secs = 0` or `NULL` are exactly the ones that won't seek.

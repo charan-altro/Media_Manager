@@ -244,7 +244,7 @@ const PlayerContent: React.FC<VidstackPlayerProps & {
   const isPipedRef = useRef(isPiped);
   const sourcesRef = useRef(sources);
   const lastHeartbeatTime = useRef(0);
-  const durationRef = useRef(0);
+  const durationRef = useRef(duration);
   const hasSeeked = useRef(false);
   const seekTimeoutRef = useRef<any>(null);
   const isRewritingSourceRef = useRef(false);
@@ -266,10 +266,15 @@ const PlayerContent: React.FC<VidstackPlayerProps & {
     sourcesRef.current = sources;
   }, [sources]);
 
+  useEffect(() => {
+    durationRef.current = duration;
+  }, [duration]);
+
   const seek = useCallback((time: number) => {
     if (playerRef.current) {
       if (isPipedRef.current) {
         console.log(`[VidstackPlayer] seek called directly. targetTime: ${time}s`);
+        setIsBuffering(true); // Show buffering instantly!
         // Since we are starting a stream reload, update startOffsetRef and isRewritingSourceRef synchronously
         startOffsetRef.current = time;
         isRewritingSourceRef.current = true;
@@ -448,74 +453,98 @@ const PlayerContent: React.FC<VidstackPlayerProps & {
     }).catch(err => console.error("[VidstackPlayer] Final heartbeat failed:", err));
   }, [mediaId, mediaType]);
 
+  const applyVirtualOverrides = useCallback((video: HTMLVideoElement) => {
+    if (!isPipedRef.current) return;
+
+    try {
+      const originalMediaProto = HTMLMediaElement.prototype;
+      const originalCurrentTime = Object.getOwnPropertyDescriptor(originalMediaProto, 'currentTime')!;
+      const originalBuffered = Object.getOwnPropertyDescriptor(originalMediaProto, 'buffered')!;
+
+      const durationVal = durationRef.current;
+      console.log(`[VidstackPlayer] Applying virtual offset overrides. startOffset: ${startOffsetRef.current}, duration: ${durationVal}`);
+
+      // Override duration
+      if (durationVal > 0) {
+        Object.defineProperty(video, 'duration', {
+          get() {
+            return durationVal;
+          },
+          configurable: true
+        });
+      }
+
+      // Override currentTime
+      Object.defineProperty(video, 'currentTime', {
+        get() {
+          const realTime = originalCurrentTime.get!.call(video);
+          const offset = startOffsetRef.current;
+          return (typeof realTime === 'number' && !isNaN(realTime)) ? offset + realTime : offset;
+        },
+        set(value) {
+          lastSetTimeRef.current = value;
+          const targetOffset = value - startOffsetRef.current;
+          console.log(`[VidstackPlayer] video.currentTime set to virtual: ${value}s (target relative: ${targetOffset}s, startOffset: ${startOffsetRef.current}s)`);
+          originalCurrentTime.set!.call(video, targetOffset);
+        },
+        configurable: true
+      });
+
+      // Override buffered
+      Object.defineProperty(video, 'buffered', {
+        get() {
+          const realBuffered = originalBuffered.get!.call(video);
+          return {
+            length: realBuffered.length,
+            start(index: number) {
+              return startOffsetRef.current + realBuffered.start(index);
+            },
+            end(index: number) {
+              return startOffsetRef.current + realBuffered.end(index);
+            }
+          } as TimeRanges;
+        },
+        configurable: true
+      });
+
+    } catch (err) {
+      console.warn("[VidstackPlayer] Failed to apply virtual offset overrides:", err);
+    }
+  }, []);
+
+  // Eagerly inject virtual overrides and dispatch duration/time events on source change
+  useEffect(() => {
+    const player = playerRef.current;
+    if (!player) return;
+    const video = player.el?.querySelector('video') as HTMLVideoElement | null;
+    if (video && isPipedRef.current) {
+      applyVirtualOverrides(video);
+      // Eagerly notify the video element to update its duration and current time in Vidstack's state
+      video.dispatchEvent(new Event('durationchange'));
+      video.dispatchEvent(new Event('timeupdate'));
+    }
+  }, [sources, applyVirtualOverrides]);
+
   // Handle initial seek / source reloads, and apply virtual offset overrides to the video element.
   const handleCanPlay = useCallback((e: any) => {
     setIsBuffering(false);
 
     const playerDuration = e?.detail?.duration ?? playerRef.current?.duration ?? 0;
-    durationRef.current = duration || playerDuration;
+    if (playerDuration > 0 && (!durationRef.current || durationRef.current <= 0)) {
+      durationRef.current = playerDuration;
+    }
     
     const player = playerRef.current;
     if (!player) return;
 
-    const video = player.el?.querySelector('video');
+    const video = player.el?.querySelector('video') as HTMLVideoElement | null;
     const currentIsPiped = isPipedRef.current;
     const currentStartOffset = startOffsetRef.current;
 
     if (video && currentIsPiped) {
-      try {
-        const originalMediaProto = HTMLMediaElement.prototype;
-        const originalCurrentTime = Object.getOwnPropertyDescriptor(originalMediaProto, 'currentTime')!;
-        const originalBuffered = Object.getOwnPropertyDescriptor(originalMediaProto, 'buffered')!;
-
-        console.log(`[VidstackPlayer] Applying virtual offset overrides. startOffset: ${currentStartOffset}, duration: ${durationRef.current}`);
-
-        // Override duration
-        if (durationRef.current > 0) {
-          Object.defineProperty(video, 'duration', {
-            get() {
-              return durationRef.current;
-            },
-            configurable: true
-          });
-          video.dispatchEvent(new Event('durationchange'));
-        }
-
-        // Override currentTime
-        Object.defineProperty(video, 'currentTime', {
-          get() {
-            const realTime = originalCurrentTime.get!.call(video);
-            return startOffsetRef.current + realTime;
-          },
-          set(value) {
-            lastSetTimeRef.current = value;
-            const targetOffset = value - startOffsetRef.current;
-            console.log(`[VidstackPlayer] video.currentTime set to virtual: ${value}s (target relative: ${targetOffset}s, startOffset: ${startOffsetRef.current}s)`);
-            originalCurrentTime.set!.call(video, targetOffset);
-          },
-          configurable: true
-        });
-
-        // Override buffered
-        Object.defineProperty(video, 'buffered', {
-          get() {
-            const realBuffered = originalBuffered.get!.call(video);
-            return {
-              length: realBuffered.length,
-              start(index: number) {
-                return startOffsetRef.current + realBuffered.start(index);
-              },
-              end(index: number) {
-                return startOffsetRef.current + realBuffered.end(index);
-              }
-            } as TimeRanges;
-          },
-          configurable: true
-        });
-
-      } catch (err) {
-        console.warn("[VidstackPlayer] Failed to apply virtual offset overrides:", err);
-      }
+      applyVirtualOverrides(video);
+      // Dispatch immediate events to align Vidstack
+      video.dispatchEvent(new Event('durationchange'));
     }
 
     // Use current source URL or path to identify source changes
@@ -540,7 +569,7 @@ const PlayerContent: React.FC<VidstackPlayerProps & {
     // Clear rewriting and seek target tracking flags AFTER the source load completes and alignment seek has been processed
     isRewritingSourceRef.current = false;
     lastSetTimeRef.current = null;
-  }, [initialPosition, duration]);
+  }, [initialPosition, applyVirtualOverrides]);
 
   const handleSeeking = useCallback(() => {
     const player = playerRef.current;
@@ -551,7 +580,7 @@ const PlayerContent: React.FC<VidstackPlayerProps & {
       return;
     }
 
-    const video = player.el?.querySelector('video');
+    const video = player.el?.querySelector('video') as HTMLVideoElement | null;
     if (!video) return;
 
     // Use target set time from setter when available, fallback to video.currentTime (getter)
@@ -591,18 +620,21 @@ const PlayerContent: React.FC<VidstackPlayerProps & {
     // Capture the playing state before rewriting source
     wasPlayingRef.current = !player.paused;
 
+    // Set buffering state to true instantly to show the spinner immediately
+    setIsBuffering(true);
+
     // Debounce stream restarts to prevent backend hammering during scrubbing
     if (seekTimeoutRef.current) {
       clearTimeout(seekTimeoutRef.current);
     }
 
-    console.log(`[VidstackPlayer] Scheduling stream reload in 250ms for target time: ${targetTime}s`);
+    console.log(`[VidstackPlayer] Scheduling stream reload in 150ms for target time: ${targetTime}s`);
     seekTimeoutRef.current = setTimeout(() => {
       isRewritingSourceRef.current = true;
       startOffsetRef.current = targetTime; // Synchronously update the ref to prevent race conditions in events before next render
       console.log(`[VidstackPlayer] Reloading stream with onSeek at target time: ${targetTime}s`);
       onSeek(targetTime);
-    }, 250);
+    }, 150);
   }, [onSeek]);
 
   const handleProviderChange = useCallback((provider: any) => {

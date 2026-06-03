@@ -305,13 +305,32 @@ pub struct PlaybackHeartbeat {
 }
 
 async fn update_playback_progress(State(state): State<Arc<AppState>>, Json(payload): Json<PlaybackHeartbeat>) -> impl IntoResponse {
-    // MVP 2: Update stream manager heartbeat to keep FFmpeg alive
+    // Keep FFmpeg alive using the original requested stream ID
     let stream_id = if payload.media_type == "movie" {
         format!("movie_{}", payload.media_id)
+    } else if payload.media_type == "movie_file" {
+        format!("movie_file_{}", payload.media_id)
     } else {
         format!("episode_{}", payload.media_id)
     };
     state.stream_manager.update_heartbeat(&stream_id).await;
+
+    let mut media_type = payload.media_type.clone();
+    let mut media_id = payload.media_id;
+
+    // Map movie_file to movie and look up the movie_id from the database
+    if media_type == "movie_file" {
+        if let Ok(Some(movie_id)) = sqlx::query_scalar::<_, i64>("SELECT movie_id FROM movie_files WHERE id = ?")
+            .bind(payload.media_id)
+            .fetch_optional(&state.pool)
+            .await
+        {
+            media_type = "movie".to_string();
+            media_id = movie_id;
+        } else {
+            return (StatusCode::BAD_REQUEST, "Movie file not found").into_response();
+        }
+    }
 
     let duration_ms = payload.duration_ms.unwrap_or(0);
 
@@ -326,8 +345,8 @@ async fn update_playback_progress(State(state): State<Arc<AppState>>, Json(paylo
             updated_at = excluded.updated_at
         "#
     )
-    .bind(payload.media_id)
-    .bind(&payload.media_type)
+    .bind(media_id)
+    .bind(&media_type)
     .bind(payload.position_ms)
     .bind(duration_ms)
     .bind(payload.is_finished)
@@ -339,9 +358,23 @@ async fn update_playback_progress(State(state): State<Arc<AppState>>, Json(paylo
 }
 
 async fn get_playback_status(State(state): State<Arc<AppState>>, Path((m_type, id)): Path<(String, i64)>) -> impl IntoResponse {
+    let mut resolved_type = m_type.clone();
+    let mut resolved_id = id;
+
+    if m_type == "movie_file" {
+        if let Ok(Some(movie_id)) = sqlx::query_scalar::<_, i64>("SELECT movie_id FROM movie_files WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&state.pool)
+            .await
+        {
+            resolved_type = "movie".to_string();
+            resolved_id = movie_id;
+        }
+    }
+
     let res: Option<(i32, i32, bool)> = sqlx::query_as("SELECT position_ms, duration_ms, is_finished FROM playback_state WHERE media_id = ? AND media_type = ?")
-        .bind(id)
-        .bind(m_type)
+        .bind(resolved_id)
+        .bind(resolved_type)
         .fetch_optional(&state.pool)
         .await
         .unwrap_or_default();
@@ -396,8 +429,7 @@ async fn start_movie_stream(
                 return (StatusCode::OK, Json(format!("/api/stream/direct/movie/{}?ext={}", id, ext))).into_response();
             } else if video_ok {
                 tracing::info!("Tier 2: Video is compatible but audio is incompatible, enabling progressive piped remux with audio transcode for movie ID: {}", id);
-                let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("mp4").to_lowercase();
-                let stream_ext = if ext == "mkv" || ext == "webm" { "mkv" } else { "mp4" };
+                let stream_ext = "mp4";
                 return (StatusCode::OK, Json(format!("/api/stream/direct/{}/stream.{}", stream_id, stream_ext))).into_response();
             } else {
                 tracing::info!("Tier 2: File is browser-incompatible, enabling piped HLS remux/transcode for movie ID: {}", id);
@@ -469,8 +501,7 @@ async fn start_movie_file_stream(
                 return (StatusCode::OK, Json(format!("/api/stream/direct/movie_file/{}?ext={}", file_id, ext))).into_response();
             } else if video_ok {
                 tracing::info!("Tier 2: Video is compatible but audio is incompatible, enabling progressive piped remux with audio transcode for movie file ID: {}", file_id);
-                let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("mp4").to_lowercase();
-                let stream_ext = if ext == "mkv" || ext == "webm" { "mkv" } else { "mp4" };
+                let stream_ext = "mp4";
                 return (StatusCode::OK, Json(format!("/api/stream/direct/{}/stream.{}", stream_id, stream_ext))).into_response();
             } else {
                 tracing::info!("Tier 2: File is browser-incompatible, enabling piped HLS remux/transcode for movie file ID: {}", file_id);
@@ -547,8 +578,7 @@ async fn start_episode_stream(
                 return (StatusCode::OK, Json(format!("/api/stream/direct/episode/{}?ext={}", id, ext))).into_response();
             } else if video_ok {
                 tracing::info!("Tier 2: Video is compatible but audio is incompatible, enabling progressive piped remux with audio transcode for episode ID: {}", id);
-                let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("mp4").to_lowercase();
-                let stream_ext = if ext == "mkv" || ext == "webm" { "mkv" } else { "mp4" };
+                let stream_ext = "mp4";
                 return (StatusCode::OK, Json(format!("/api/stream/direct/{}/stream.{}", stream_id, stream_ext))).into_response();
             } else {
                 tracing::info!("Tier 2: File is browser-incompatible, enabling piped HLS remux/transcode for episode ID: {}", id);

@@ -239,15 +239,46 @@ const PlayerContent: React.FC<VidstackPlayerProps & {
   const playerRef = useRef<MediaPlayerInstance>(null);
   const abLoop = useVidstackAbLoop();
 
+  // Synchronous refs to prevent stale closure issues in event listeners
+  const startOffsetRef = useRef(startOffset);
+  const isPipedRef = useRef(isPiped);
+  const sourcesRef = useRef(sources);
+  const lastHeartbeatTime = useRef(0);
+  const durationRef = useRef(0);
+  const hasSeeked = useRef(false);
+  const seekTimeoutRef = useRef<any>(null);
+  const isRewritingSourceRef = useRef(false);
+  const loadedSourceRef = useRef<string>('');
+  const [hasStarted, setHasStarted] = useState(false);
+  const wasPlayingRef = useRef(true);
+  const lastSetTimeRef = useRef<number | null>(null);
+
+  // Keep refs updated on prop changes
+  useEffect(() => {
+    startOffsetRef.current = startOffset;
+  }, [startOffset]);
+
+  useEffect(() => {
+    isPipedRef.current = isPiped;
+  }, [isPiped]);
+
+  useEffect(() => {
+    sourcesRef.current = sources;
+  }, [sources]);
+
   const seek = useCallback((time: number) => {
     if (playerRef.current) {
-      if (isPiped) {
+      if (isPipedRef.current) {
+        console.log(`[VidstackPlayer] seek called directly. targetTime: ${time}s`);
+        // Since we are starting a stream reload, update startOffsetRef and isRewritingSourceRef synchronously
+        startOffsetRef.current = time;
+        isRewritingSourceRef.current = true;
         onSeek(time);
       } else {
         playerRef.current.currentTime = time;
       }
     }
-  }, [isPiped, onSeek]);
+  }, [onSeek]);
   
   // Scene Markers State
   const [markers, setMarkers] = useState<any[]>([]);
@@ -383,15 +414,6 @@ const PlayerContent: React.FC<VidstackPlayerProps & {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [seek, loadMarkers]);
-  
-  const lastHeartbeatTime = useRef(0);
-  const durationRef = useRef(0);
-  const hasSeeked = useRef(false);
-  const seekTimeoutRef = useRef<any>(null);
-  const isRewritingSourceRef = useRef(false);
-  const loadedSourceRef = useRef<string>('');
-  const [hasStarted, setHasStarted] = useState(false);
-  const wasPlayingRef = useRef(true);
 
   const handleTimeUpdate = useCallback((event: any) => {
     const currentTime = event?.detail?.currentTime ?? playerRef.current?.currentTime ?? 0;
@@ -426,57 +448,86 @@ const PlayerContent: React.FC<VidstackPlayerProps & {
     }).catch(err => console.error("[VidstackPlayer] Final heartbeat failed:", err));
   }, [mediaId, mediaType]);
 
-  // Set duration override on mount/src change
-  useEffect(() => {
-    const video = playerRef.current?.el?.querySelector('video');
-    if (video && isPiped && duration > 0) {
-      try {
-        Object.defineProperty(video, 'duration', {
-          get() {
-            return duration;
-          },
-          configurable: true
-        });
-        video.dispatchEvent(new Event('durationchange'));
-      } catch (err) {
-        console.warn("[VidstackPlayer] Failed to override duration in useEffect:", err);
-      }
-    }
-  }, [duration, isPiped, sources]);
-
-  // Handle initial seek / source reloads
+  // Handle initial seek / source reloads, and apply virtual offset overrides to the video element.
   const handleCanPlay = useCallback((e: any) => {
     setIsBuffering(false);
+
     const playerDuration = e?.detail?.duration ?? playerRef.current?.duration ?? 0;
     durationRef.current = duration || playerDuration;
     
     const player = playerRef.current;
     if (!player) return;
 
-    // Apply the duration override here to ensure Vidstack picks it up immediately
     const video = player.el?.querySelector('video');
-    if (video && isPiped && duration > 0) {
+    const currentIsPiped = isPipedRef.current;
+    const currentStartOffset = startOffsetRef.current;
+
+    if (video && currentIsPiped) {
       try {
-        Object.defineProperty(video, 'duration', {
+        const originalMediaProto = HTMLMediaElement.prototype;
+        const originalCurrentTime = Object.getOwnPropertyDescriptor(originalMediaProto, 'currentTime')!;
+        const originalBuffered = Object.getOwnPropertyDescriptor(originalMediaProto, 'buffered')!;
+
+        console.log(`[VidstackPlayer] Applying virtual offset overrides. startOffset: ${currentStartOffset}, duration: ${durationRef.current}`);
+
+        // Override duration
+        if (durationRef.current > 0) {
+          Object.defineProperty(video, 'duration', {
+            get() {
+              return durationRef.current;
+            },
+            configurable: true
+          });
+          video.dispatchEvent(new Event('durationchange'));
+        }
+
+        // Override currentTime
+        Object.defineProperty(video, 'currentTime', {
           get() {
-            return duration;
+            const realTime = originalCurrentTime.get!.call(video);
+            return startOffsetRef.current + realTime;
+          },
+          set(value) {
+            lastSetTimeRef.current = value;
+            const targetOffset = value - startOffsetRef.current;
+            console.log(`[VidstackPlayer] video.currentTime set to virtual: ${value}s (target relative: ${targetOffset}s, startOffset: ${startOffsetRef.current}s)`);
+            originalCurrentTime.set!.call(video, targetOffset);
           },
           configurable: true
         });
-        video.dispatchEvent(new Event('durationchange'));
+
+        // Override buffered
+        Object.defineProperty(video, 'buffered', {
+          get() {
+            const realBuffered = originalBuffered.get!.call(video);
+            return {
+              length: realBuffered.length,
+              start(index: number) {
+                return startOffsetRef.current + realBuffered.start(index);
+              },
+              end(index: number) {
+                return startOffsetRef.current + realBuffered.end(index);
+              }
+            } as TimeRanges;
+          },
+          configurable: true
+        });
+
       } catch (err) {
-        console.warn("[VidstackPlayer] Failed to override duration in handleCanPlay:", err);
+        console.warn("[VidstackPlayer] Failed to apply virtual offset overrides:", err);
       }
     }
 
     // Use current source URL or path to identify source changes
-    const currentSrc = (sources[0]?.src as string) ?? '';
+    const currentSrc = (sourcesRef.current[0]?.src as string) ?? '';
     if (currentSrc !== loadedSourceRef.current) {
       loadedSourceRef.current = currentSrc;
-      if (isPiped) {
+      if (currentIsPiped) {
+        console.log(`[VidstackPlayer] Loaded new piped source, seeking video element to startOffset: ${currentStartOffset}s`);
         // Piped stream is seeked by backend starting at startOffset,
-        // so we must seek the video element to startOffset to align with the stream
-        player.currentTime = startOffset;
+        // so we must seek the video element to startOffset to align with the stream.
+        // Under our override, this sets the actual video currentTime to 0.
+        player.currentTime = currentStartOffset;
         if (wasPlayingRef.current) {
           player.play().catch(err => console.warn("[VidstackPlayer] Failed to resume playback:", err));
         }
@@ -485,27 +536,55 @@ const PlayerContent: React.FC<VidstackPlayerProps & {
         hasSeeked.current = true;
       }
     }
-  }, [initialPosition, duration, isPiped, startOffset, sources]);
+
+    // Clear rewriting and seek target tracking flags AFTER the source load completes and alignment seek has been processed
+    isRewritingSourceRef.current = false;
+    lastSetTimeRef.current = null;
+  }, [initialPosition, duration]);
 
   const handleSeeking = useCallback(() => {
     const player = playerRef.current;
     if (!player) return;
 
     // For static files (native range seeks), browser handles seeks natively without reloading source URL
-    if (!isPiped) {
+    if (!isPipedRef.current) {
       return;
     }
 
-    const targetTime = player.currentTime;
+    const video = player.el?.querySelector('video');
+    if (!video) return;
+
+    // Use target set time from setter when available, fallback to video.currentTime (getter)
+    const targetTime = lastSetTimeRef.current !== null ? lastSetTimeRef.current : video.currentTime;
+    const currentStartOffset = startOffsetRef.current;
+    console.log(`[VidstackPlayer] handleSeeking event. video.currentTime: ${video.currentTime}s, targetTime: ${targetTime}s, player.currentTime: ${player.currentTime}s, startOffset: ${currentStartOffset}s`);
 
     // If we're reloading the source, ignore the temporary seeked events caused by browser source resets
     if (isRewritingSourceRef.current) {
-      isRewritingSourceRef.current = false;
+      console.log(`[VidstackPlayer] handleSeeking ignored: isRewritingSource is true`);
       return;
     }
 
     // Ignore seek triggers that are close to our target offset to prevent loops
-    if (Math.abs(targetTime - startOffset) < 2.0) {
+    if (Math.abs(targetTime - currentStartOffset) < 2.0) {
+      console.log(`[VidstackPlayer] handleSeeking ignored: targetTime is close to startOffset`);
+      return;
+    }
+
+    // Check if target seek position is within the currently buffered range.
+    // If it is, allow the browser to perform a native local seek instead of reloading the source.
+    const buffered = video.buffered;
+    let isBuffered = false;
+    for (let i = 0; i < buffered.length; i++) {
+      if (targetTime >= buffered.start(i) && targetTime <= buffered.end(i)) {
+        isBuffered = true;
+        break;
+      }
+    }
+
+    if (isBuffered) {
+      console.log(`[VidstackPlayer] handleSeeking ignored: targetTime ${targetTime}s is within buffered range`);
+      lastSetTimeRef.current = null; // Clear it since we are handling this seek locally
       return;
     }
 
@@ -517,11 +596,14 @@ const PlayerContent: React.FC<VidstackPlayerProps & {
       clearTimeout(seekTimeoutRef.current);
     }
 
+    console.log(`[VidstackPlayer] Scheduling stream reload in 250ms for target time: ${targetTime}s`);
     seekTimeoutRef.current = setTimeout(() => {
       isRewritingSourceRef.current = true;
+      startOffsetRef.current = targetTime; // Synchronously update the ref to prevent race conditions in events before next render
+      console.log(`[VidstackPlayer] Reloading stream with onSeek at target time: ${targetTime}s`);
       onSeek(targetTime);
     }, 250);
-  }, [onSeek, startOffset, isPiped]);
+  }, [onSeek]);
 
   const handleProviderChange = useCallback((provider: any) => {
     if (provider && provider.type === 'hls') {

@@ -168,9 +168,8 @@ pub fn is_direct_playable(path: &Path, details: &crate::scanner::mediainfo::Medi
     
     let is_mp4_like = ext == "mp4" || ext == "m4v" || ext == "mov";
     let is_webm_like = ext == "webm";
-    let is_mkv = ext == "mkv";
 
-    if !is_mp4_like && !is_webm_like && !is_mkv {
+    if !is_mp4_like && !is_webm_like {
         return false;
     }
 
@@ -223,6 +222,13 @@ impl StreamManager {
     }
 
     async fn start_stream_at(&self, id: &str, input_path: &Path, start_segment: usize, is_dash: bool) -> Result<PathBuf> {
+        if !input_path.exists() {
+            return Err(crate::errors::CoreError::IoError(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("Input file not found: {:?}", input_path),
+            )));
+        }
+
         // Stop existing process if any, but KEEP THE FILES
         self.stop_stream(id).await;
 
@@ -581,8 +587,6 @@ impl StreamManager {
         if start_time_secs > 0.0 {
             args.extend(vec![
                 "-ss".to_string(), format!("{:.3}", start_time_secs),
-                "-copyts".to_string(),
-                "-avoid_negative_ts".to_string(), "disabled".to_string(),
             ]);
         }
 
@@ -683,13 +687,13 @@ impl StreamManager {
                 ]);
             }
         } else {
-            // MP4: Copy if AAC, MP3, or Opus, otherwise transcode to libopus (efficient, low resource)
+            // MP4: Copy if AAC, MP3, or Opus, otherwise transcode to aac (100% standard MP4 compatibility)
             let audio_copyable = ["aac", "mp3", "opus"].contains(&details.audio_codec.to_lowercase().as_str());
             if audio_copyable {
                 args.push("copy".to_string());
             } else {
                 args.extend(vec![
-                    "libopus".to_string(),
+                    "aac".to_string(),
                     "-b:a".to_string(), "128k".to_string(),
                     "-ac".to_string(), "2".to_string()
                 ]);
@@ -699,12 +703,15 @@ impl StreamManager {
         // 4. Container & Pipe flags
         if format == "mp4" {
             args.extend(vec![
+                "-flags".to_string(), "+global_header".to_string(),
                 "-movflags".to_string(),
                 "frag_keyframe+empty_moov+default_base_moof".to_string()
             ]);
         } else if format == "mkv" {
             // Remove -live 1 to prevent muxer packet copy timestamp crashes (-22 Invalid argument)
         }
+
+
 
         let container = if format == "mkv" {
             "matroska"
@@ -1302,6 +1309,8 @@ mod tests {
         // Test MP4 (transcode if needed)
         let args = manager.build_direct_args("input.mkv", &details, 0.0, "mp4");
         assert!(args.contains(&"mp4".to_string()));
+        assert!(args.contains(&"-flags".to_string()));
+        assert!(args.contains(&"+global_header".to_string()));
         assert!(args.contains(&"-movflags".to_string()));
         assert!(args.contains(&"frag_keyframe+empty_moov+default_base_moof".to_string()));
 
